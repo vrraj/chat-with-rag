@@ -224,16 +224,22 @@ async def debug_index():
         for name in collection_names:
             try:
                 logger.info(f"Fetching documents from collection: {name}")
-                docs = embeddings_manager.qdrant.client.scroll(
-                    collection_name=name,
-                    limit=10,
-                    with_payload=True
-                    #with_vectors=True # enable only if you need to view   
-                )
-                logger.info(f"Scroll response for {name}: {docs}")
-                if isinstance(docs, tuple) and len(docs) >= 1:
+                all_docs = []
+                next_offset = None
+                while True:
+                    docs, next_offset = embeddings_manager.qdrant.client.scroll(
+                        collection_name=name,
+                        limit=100,  # Batch size per scroll request (not total limit). Adjust for performance/memory.
+                        with_payload=True,
+                        offset=next_offset
+                    )
+                    all_docs.extend(docs)
+                    if next_offset is None:
+                        break
+                logger.info(f"Scroll response for {name}: {len(all_docs)} docs retrieved")
+                if all_docs:
                     sorted_docs = sorted(
-                        docs[0],
+                        all_docs,
                         key=lambda d: (
                             d.payload.get("url", ""),
                             d.payload.get("section_index", 0),
@@ -248,7 +254,7 @@ async def debug_index():
                         )
                     debug_info[name] = sorted_docs
                 else:
-                    debug_info[name] = f"Unexpected scroll response format: {docs}"
+                    debug_info[name] = f"No documents found in collection {name}"
             except Exception as inner_e:
                 logger.error(f"Error retrieving documents from {name}: {str(inner_e)}")
                 debug_info[name] = f"Error retrieving documents: {str(inner_e)}"
