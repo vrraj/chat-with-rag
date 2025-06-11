@@ -92,12 +92,11 @@ class EmbeddingsManager:
             print(f"[DEBUG] No max_chars limit specified (original length: {len(text)})")
             truncated_text = text
 
-        if "<html" in text.lower() or "<!doctype html" in text.lower():
-            doc_type = "html"
+        doc_type = document.get("doc_type", "HTML")
+        if doc_type == "HTML":
             chunk_size = settings.html_chunk_size
             chunk_overlap = settings.html_chunk_overlap
-        elif "%PDF" in text[:1024]:
-            doc_type = "pdf"
+        elif doc_type == "PDF":
             chunk_size = settings.pdf_chunk_size or len(text)
             chunk_overlap = settings.pdf_chunk_overlap
         else:
@@ -109,25 +108,41 @@ class EmbeddingsManager:
         print(f"[DEBUG] Chunk Size: {chunk_size}")
         print(f"[DEBUG] Chunk Overlap: {chunk_overlap}")
 
-        text_splitter = TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        #print(f"[DEBUG] Using truncated text type: {type(truncated_text)}, length: {len(truncated_text)}")
-        chunks = text_splitter.split_text(truncated_text, document)
+        # Use Langchain-based token splitter (not manual tiktoken-based splitter)
+        text_splitter = TextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            use_manual_splitter=False
+        )
+        print(f"[DEBUG] Using chunk size: {text_splitter.chunk_size}")
+        print(f"[DEBUG] Using chunk overlap: {text_splitter.chunk_overlap}")
+        # Only pass the raw text to split_text
+        chunks = text_splitter.split_text(truncated_text)
         #print(f"[DEBUG] Number of chunks generated: {len(chunks)}")
-        total_chars = sum(len(chunk['text']) for chunk in chunks)
-        #print(f"[DEBUG] Total characters across all chunks: {total_chars}")
-
+        # Attach MediaWiki-style metadata manually
         processed_chunks = []
-        for idx, chunk in enumerate(chunks):
+        total_chunks = len(chunks)
+        for idx, chunk_text in enumerate(chunks):
             try:
                 chunk_id = str(uuid.uuid4())
                 print(f"[DEBUG] Embedding chunk ID: {chunk_id}")
-                embedding = self.generate_embeddings(chunk["text"])
+                embedding = self.generate_embeddings(chunk_text)
                 processed_chunks.append({
                     "id": chunk_id,
                     "vector": embedding,
                     "payload": {
-                        **chunk,
-                        "text": chunk["text"]
+                        "text": chunk_text,
+                        "section": None,
+                        "subsection": None,
+                        "chunk_index": idx,
+                        "total_chunks": total_chunks,
+                        "url": document.get("url", ""),
+                        "document_type": document.get("document_type", "HTML"),
+                        "source": document.get("url", ""),
+                        "section_index": None,
+                        "subsection_index": None,
+                        "title": document.get("title", ""),
+                        "description": document.get("description", ""),
                     }
                 })
             except Exception as e:
@@ -155,15 +170,10 @@ class EmbeddingsManager:
             print(f"[DEBUG] Force delete is enabled. Deleting existing entries for: {url}")
             self.delete_document(url)
         # Process document and generate embeddings  
-        print(f"[DEBUG] Processing chunks for document: {url}")
+        #print(f"[DEBUG] Processing chunks for document: {url}")
         processed_chunks = self.process_document(document)
-        print(f"Processed {len(processed_chunks)} chunks for document: {document.get('url', 'N/A')}")
-        #for idx, chunk in enumerate(processed_chunks[:3]):
-        #    print(f"[DEBUG] Chunk {idx+1} ID: {chunk['id']}")
-        #    print(f"[DEBUG] Chunk {idx+1} vector type: {type(chunk['vector'])}, length: {len(chunk['vector'])}")
-        #    print(f"[DEBUG] First 5 vector values: {chunk['vector'][:5]}")
         try:
-            print(f"[DEBUG] Inserting {len(processed_chunks)} vectors into Qdrant collection: {self.qdrant.collection_name}")
+            #print(f"[DEBUG] Inserting {len(processed_chunks)} vectors into Qdrant collection: {self.qdrant.collection_name}")
             success = self.qdrant.add_embeddings(processed_chunks)
             if not success:
                 raise Exception("Failed to add embeddings to Qdrant")

@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     collection_name: str = "website_collection"
     html_chunk_size: int = 500
     html_chunk_overlap: int = 100
-    pdf_chunk_size: Optional[int] = None  # Will be determined by section length
-    pdf_chunk_overlap: int = 0
+    pdf_chunk_size: Optional[int] = 500  # Will be determined by section length
+    pdf_chunk_overlap: int = 100
     max_urls: int = 10
     default_chunk_size: int = 500
-    default_chunk_overlap: int = 50
+    default_chunk_overlap: int = 100
     vector_size: int = 1536  # default for OpenAI; changeable for other models
 
     model_config = {

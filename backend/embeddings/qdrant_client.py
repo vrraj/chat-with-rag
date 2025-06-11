@@ -142,8 +142,8 @@ class QdrantStorage:
                 point["payload"] = enriched_payload
                 print(f"[DEBUG] Inserting point ID: {point['id']} for URL: {enriched_payload.get('url')}")
 
-            print("[DEBUG] Prepared payloads with keys: text, title, description, url, date")
-            print("[DEBUG] Sample payload:", batch[0]["payload"])
+            #print("[DEBUG] Prepared payloads with keys: text, title, description, url, date")
+            #print("[DEBUG] Sample payload:", batch[0]["payload"])
 
             try:
                 # Upsert the points directly - Qdrant will update existing points with same ID

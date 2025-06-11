@@ -51,10 +51,9 @@ from backend.chat.chat_manager import ChatManager
 
 class URLInput(BaseModel):
     urls: List[str]
-    types: List[str]  # 'HTML' or 'PDF'
-    skip_references: Optional[bool] = True
+    doc_type: str = "HTML"  # 'HTML' or 'PDF'
     force_crawl: Optional[bool] = True
-    max_chars: Optional[int] = None  # New field to limit characters
+    max_chars: Optional[int] = 1000  # Limit characters to to embed for a web page (Testing)
     force_delete: Optional[bool] = True
 
 class ChatMessage(BaseModel):
@@ -69,14 +68,13 @@ chat_manager = ChatManager()
 async def index_content(url_input: URLInput):
     """Index content from URLs (HTML or PDF)"""
     try:
-        print("DEBUG: Entered index_content route")
-        print("Received input:", url_input.dict())  # Debugging line
+        #print("DEBUG: Entered index_content route")
+        #print("Received input:", url_input.dict())  # Debugging line
         # Process each URL
-        for url, doc_type in zip(url_input.urls, url_input.types):
-            if doc_type == "HTML":
+        for url in url_input.urls:
+            if url_input.doc_type == "HTML":
                 crawler = WebCrawler(
                     url,
-                    skip_references=url_input.skip_references,
                     force_crawl=url_input.force_crawl
                 )
                 pages = await crawler.crawl(url, 1)  # Depth 1 for now
@@ -87,24 +85,14 @@ async def index_content(url_input: URLInput):
                     print("Raw page content length:", len(page['content']))
                     content = ContentExtractor.extract_content(page['content'], url=page['url'])
                     if content:
-                        text = content['text']
-                        document = {
-                            'text': text,
-                            'document_type': 'HTML',
-                            'title': content['title'],
-                            'domain': url.split('/')[2],  # Extract domain
-                            'headers': content['headers'],
-                            'date': content['date'],
-                            'url': page['url']
-                        }
                         if url_input.max_chars:
-                            document["max_chars"] = url_input.max_chars
+                            content["max_chars"] = url_input.max_chars
+                        document = content
                         print("DEBUG: Full document to index:", document)
                         print("DEBUG: Document prepared for indexing:", document['url'])
                         embeddings_manager.index_document(document, force_delete=url_input.force_delete)
-                        print("DEBUG: Document indexed successfully:", document['url'])
                     
-            elif doc_type == "PDF":
+            elif url_input.doc_type == "PDF":
                 pdf_crawler = PDFCrawler()
                 pdf_data = pdf_crawler.crawl(url)
                 print("PDF data retrieved:", pdf_data)
@@ -114,7 +102,7 @@ async def index_content(url_input: URLInput):
                         document = {
                             'url': url,
                             'text': section['content'],
-                            'document_type': 'PDF',
+                            'doc_type': 'PDF',
                             'title': pdf_data['title'],
                             'page_number': section['page_number']
                         }

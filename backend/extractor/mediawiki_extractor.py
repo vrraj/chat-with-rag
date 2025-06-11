@@ -4,37 +4,12 @@ import requests
 from urllib.parse import unquote, urlparse
 import tiktoken
 
-# Assume TextSplitter is available somewhere in your codebase
-# from .text_splitter import TextSplitter
-class TextSplitter:
-    def __init__(self, chunk_size=200, chunk_overlap=20):
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-    def split_text(self, text: str) -> List[str]:
-        # Use OpenAI's tiktoken library to split text into actual LLM tokens (token IDs)
-        # This ensures chunking is based on the number of tokens, not characters or words,
-        # providing more accurate control for LLM context windows.
-        enc = tiktoken.get_encoding("cl100k_base")
-        tokens = enc.encode(text)
-        chunks = []
-        i = 0
-        while i < len(tokens):
-            # Create a chunk of token IDs based on chunk_size
-            chunk_ids = tokens[i:i + self.chunk_size]
-            # Decode the token IDs back into readable text
-            chunk_text = enc.decode(chunk_ids)
-            chunks.append(chunk_text)
-            if len(chunk_ids) == 0:
-                break
-            # Move the window forward by chunk_size minus overlap
-            i += self.chunk_size - self.chunk_overlap
-        print(f"[DEBUG] Text length: {len(text)} chars | Tokenized length: {len(tokens)} tokens | Chunks created: {len(chunks)}")
-        return chunks
+from backend.embeddings.text_splitter import TextSplitter
 
 
 class MediaWikiExtractor:
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100):
-        self.splitter = TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        self.splitter = TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, use_manual_splitter=True)
 
     def parse(self, wikitext: str, url: str, skip_sections: Optional[List[str]] = None) -> List[Dict]:
         """

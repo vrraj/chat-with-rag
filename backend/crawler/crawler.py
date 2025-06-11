@@ -4,9 +4,9 @@ from typing import List, Dict
 from urllib.parse import urljoin
 
 class WebCrawler:
-    def __init__(self, base_url: str, skip_references: bool = True, force_crawl: bool = False):
+    def __init__(self, base_url: str, force_crawl: bool = False):
         self.base_url = base_url
-        self.skip_references = skip_references
+
         self.visited_urls = set()
         self.force_crawl = force_crawl
         self.client = httpx.AsyncClient(headers={
@@ -62,42 +62,6 @@ class WebCrawler:
         removed_reference_count = 0
         reference_excerpt = ""
 
-        if self.skip_references:
-            print("[DEBUG] skip_references is True: removing references from page content.")
-            # Remove inline references like [1], [2], etc.
-            references = soup.find_all("sup", class_="reference")
-            removed_reference_count += len(references)
-            for tag in references:
-                tag.decompose()
-
-            # Remove Wikipedia-style reference list sections by id
-            reference_sections = soup.find_all(id="References")
-            for div in reference_sections:
-                reference_excerpt += div.get_text(separator="\n")[:1000]
-                div.decompose()
-
-            # Remove ordered lists of references
-            reference_ols = soup.find_all("ol", class_="references")
-            for ol in reference_ols:
-                reference_excerpt += ol.get_text(separator="\n")[:1000]
-                ol.decompose()
-
-            # Look for headers like "References" and remove all following siblings until next section
-            reference_headers = soup.find_all(["h2", "h3", "h4"], string=lambda s: s and "reference" in s.lower())
-            for header in reference_headers:
-                next_siblings = []
-                sibling = header.find_next_sibling()
-                while sibling and sibling.name not in ["h2", "h3", "h4"]:
-                    next_siblings.append(sibling)
-                    sibling = sibling.find_next_sibling()
-
-                for tag in [header] + next_siblings:
-                    reference_excerpt += tag.get_text(separator="\n")[:1000]
-                    tag.decompose()
-
-            print(f"[DEBUG] References removed. Count: {removed_reference_count}")
-            print(f"[DEBUG] Reference excerpt (first 300 chars): {reference_excerpt[:300]}")
-        
         # Extract content and metadata
         print(f"[DEBUG] Initial content length: {len(content)}")
         print(f"[DEBUG] Filtered content length: {len(str(soup))}")

@@ -1,6 +1,7 @@
 import trafilatura
 from bs4 import BeautifulSoup
 from typing import Dict, List
+from urllib.parse import urlparse
 
 class ContentExtractor:
     @staticmethod
@@ -58,10 +59,9 @@ class ContentExtractor:
             if not date_published:
                 try:
                     from htmldate import find_date
-                    date_published = find_date(html_content, original_url=url)
-                    print("DEBUG: Date from htmldate:", repr(date_published))
-                except Exception as date_err:
-                    print(f"DEBUG: htmldate failed: {date_err}")
+                    date_published = find_date(html_content)
+                except Exception:
+                    pass
             
             extracted_data = {
                 'title': title,
@@ -69,14 +69,10 @@ class ContentExtractor:
                 'headers': headers,
                 'description': meta_description,
                 'date': date_published,
-                'url': url
+                'url': url,
+                'document_type': 'HTML',
+                'domain': urlparse(url).netloc
             }
-            print("DEBUG: Extracted content keys:", extracted_data.keys())
-            print("DEBUG: Extracted title:", repr(title))
-            print("DEBUG: Extracted meta description:", repr(meta_description))
-            print("DEBUG: Extracted headers:", headers)
-            print("DEBUG: Extracted date:", repr(date_published))
-            print("DEBUG: URL passed in:", url)
             return extracted_data
         except Exception as e:
             print(f"Error extracting content: {e}")
