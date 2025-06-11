@@ -1,31 +1,55 @@
-# Website Chat Agent
+# Website PDF Chat Agent
 
-A modular system for crawling, embedding, and chatting with website content using AI.
+A powerful AI-powered system for interacting with website and PDF content using modern AI technologies.
 
 ## Features
 
-- Web crawling and content extraction
-- Semantic search using embeddings
-- Chat interface with GPT
-- Real-time web search capabilities
-- FastAPI backend
-- Modern web interface
+- 📚 PDF and Website Content Processing
+  - Extract text from both websites and PDF documents
+  - Handle structured and unstructured content
+  - Preserve document hierarchy and formatting
+
+- 🧠 Semantic Search and Embeddings
+  - Generate embeddings using OpenAI's text-embedding-3-small model
+  - Store and search embeddings using Qdrant vector database
+  - Smart chunking of text for optimal search performance
+
+- 💬 AI-Powered Chat Interface
+  - Chat with content using GPT-4.1-mini
+  - Context-aware responses
+  - Real-time web search integration
+
+## Prerequisites
+
+- Python 3.10+
+- Docker and Docker Compose (for production)
+- OpenAI API Key
+- Qdrant vector database
 
 ## Setup
 
-1. Install dependencies:
+1. Clone the repository:
 ```bash
+git clone https://github.com/vrraj/website_pdf_chat.git
+```
+
+2. Create a virtual environment and install dependencies:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-2. Create a `.env` file with your API keys:
+3. Configure environment variables:
 ```env
 OPENAI_API_KEY=your_openai_key
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
 ```
 
-3. Run the development server:
+4. Run the development server:
 ```bash
-uvicorn backend.main:app --reload
+python run.py
 ```
 
 ## Project Structure
@@ -33,16 +57,14 @@ uvicorn backend.main:app --reload
 ```
 backend/
 ├── core/          # Core configuration and settings
+├── chat/          # Chat management and OpenAI integration
 ├── crawler/       # URL crawling functionality
-├── extractor/     # Content extraction from HTML
-├── embeddings/    # Embedding generation and storage
-├── db/           # Database operations
-├── chat/         # Chat functionality with GPT
-└── web/          # Web interface components
+├── extractor/     # Content extraction from HTML and PDFs
+├── embeddings/    # Embedding generation and Qdrant integration
+└── test/          # Test files and configurations
+
+frontend/
+├── app.js         # Main application logic
+├── index.html     # HTML template
+└── styles.css     # Styling
 ```
-
-## Usage
-
-1. Submit URLs to be crawled and indexed
-2. Chat with the system to query the indexed content
-3. Use web search fallback for additional context
