@@ -1,0 +1,10 @@
+services:
+  qdrant:
+    image: ghcr.io/qdrant/qdrant:1.5.1
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
