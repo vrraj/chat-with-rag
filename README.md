@@ -43,8 +43,16 @@ pip install -r requirements.txt
 3. Configure environment variables:
 ```env
 OPENAI_API_KEY=your_openai_key
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
+
+# Note: Qdrant settings are configured in settings.py with defaults:
+# qdrant_host=localhost
+# qdrant_port=6333
+
+# Additional configuration
+EMBEDDING_MODEL=text-embedding-3-small
+CHAT_MODEL=gpt-4.1-mini-2025-04-14
+MAX_HISTORY_TOKENS=4000
+COLLECTION_NAME=website_collection
 ```
 
 4. Run the development server:
