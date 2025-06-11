@@ -1,23 +1,39 @@
-# Website PDF Chat Agent
+# Website and PDF Document Chat Agent
 
-A powerful AI-powered system for interacting with website and PDF content using modern AI technologies.
+An intelligent chat agent that enables natural language interaction with both website content and PDF documents using advanced AI technologies.
 
 ## Features
 
-- 📚 PDF and Website Content Processing
-  - Extract text from both websites and PDF documents
-  - Handle structured and unstructured content
-  - Preserve document hierarchy and formatting
+- 📚 Document Processing
+  - Extract and process content from both websites and PDF documents
+  - Preserve document structure and formatting
+  - Handle both structured and unstructured content
 
-- 🧠 Semantic Search and Embeddings
-  - Generate embeddings using OpenAI's text-embedding-3-small model
-  - Store and search embeddings using Qdrant vector database
-  - Smart chunking of text for optimal search performance
+- 🧠 Intelligent Search
+  - Semantic search using OpenAI embeddings
+  - Vector database storage with Qdrant
+  - Smart text chunking for better search results
 
-- 💬 AI-Powered Chat Interface
-  - Chat with content using GPT-4.1-mini
+- 💬 Natural Language Chat
+  - Chat with documents using GPT-4.1-mini
   - Context-aware responses
-  - Real-time web search integration
+  - Real-time search across multiple documents
+
+## Usage
+
+1. Start the application:
+```bash
+python run.py
+```
+
+2. Access the web interface at `http://localhost:8000`
+
+3. Key Features:
+   - Upload and process PDF documents
+   - Submit website URLs for crawling and processing
+   - Chat with the system using natural language
+   - Get context-aware responses about your documents
+   - Search across multiple documents simultaneously
 
 ## Prerequisites
 
