@@ -1,49 +1,28 @@
 from typing import List, Dict, Any, Optional
 import openai
 import uuid
+import logging
 from backend.core.config import settings
 from backend.embeddings.qdrant_client import QdrantStorage
 from backend.embeddings.text_splitter import TextSplitter
 from qdrant_client import models
 from backend.embeddings.collection_manager import CollectionManager
+from backend.db.qdrant_db import QdrantDB
+
+logger = logging.getLogger(__name__)
 
 class EmbeddingsManager:
     def __init__(self):
         self.qdrant: QdrantStorage = QdrantStorage()
         self.collection_manager = CollectionManager(self.qdrant.client)
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
+        self.qdrant_db = QdrantDB(self.qdrant.client, self.qdrant.collection_name)
 
     def get_chunks_by_url(self, url: str, limit: int = 100) -> List[Dict]:
         """
         Retrieve chunks from Qdrant that match the given URL in the payload.
         """
-        try:
-            print(f"[DEBUG] Retrieving chunks for URL: {url}")
-            points, _ = self.qdrant.client.scroll(
-                collection_name=self.qdrant.collection_name,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="url",
-                            match=models.MatchValue(value=url)
-                        )
-                    ]
-                ),
-                limit=limit,
-                with_payload=True,
-                with_vectors=False
-            )
-            print(f"[DEBUG] Found {len(points)} matching chunks for URL: {url}")
-            return [
-                {
-                    "id": point.id,
-                    "payload": point.payload
-                }
-                for point in points
-            ]
-        except Exception as e:
-            print(f"[ERROR] Failed to scroll Qdrant for URL {url}: {e}")
-            return []
+        return self.qdrant_db.get_chunks_by_url(url, limit)
 
     def generate_embeddings(self, text: str) -> List[float]:
         """
@@ -54,23 +33,19 @@ class EmbeddingsManager:
             List of float values representing the embedding
         """
         try:
-            #print(f"[DEBUG] Generating embedding using model: {settings.embedding_model}")
+            logger.debug(f"Generating embedding using model: {settings.embedding_model}")
             response = self.client.embeddings.create(
                 input=text,
                 model=settings.embedding_model
             )
-            #print(f"[DEBUG] Raw OpenAI response data: {response.data}")
             embedding = response.data[0].embedding
-            #print(f"[DEBUG] Type of embedding: {type(embedding)}, first 5 elements: {embedding[:5]}")
-            #print(f"[DEBUG] Embedding as Python list: {list(embedding)}")
             prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
             total_tokens = response.usage.total_tokens if response.usage else "N/A"
-            #print(f"[DEBUG] Tokens used - prompt: {prompt_tokens}, total: {total_tokens}")
-            #print(f"[DEBUG] Embedding generated. Input tokens used: {total_tokens}")
-            #print(f"[DEBUG] Received embedding vector of length: {len(embedding)}")
+            logger.debug(f"Tokens used - prompt: {prompt_tokens}, total: {total_tokens}")
+            logger.debug(f"Received embedding vector of length: {len(embedding)}")
             return embedding
         except Exception as e:
-            print(f"Error generating embeddings: {e}")
+            logger.error(f"Error generating embeddings: {e}")
             raise
 
     def process_document(self, document: Dict) -> List[Dict]:
@@ -154,110 +129,95 @@ class EmbeddingsManager:
     def index_document(self, document: Dict, force_delete: bool = True):
         """
         Index a document by processing it and storing embeddings
+        
         Args:
             document: Dictionary containing text and metadata
             force_delete: If True, deletes existing Qdrant entries for the document URL before indexing
         """
-        # Ensure collection exists before indexing
         try:
-            self.qdrant.client.get_collection(settings.collection_name)
-        except Exception:
-            print(f"[DEBUG] Collection not found, creating it now...")
-            self.qdrant.create_collection()
+            logger.debug(f"Indexing document: {document.get('url', 'unknown')}")
+            # Ensure collection exists before indexing
+            try:
+                self.qdrant.client.get_collection(settings.collection_name)
+            except Exception:
+                logger.debug("Collection not found, creating it now...")
+                self.qdrant.create_collection()
 
-        url = document.get('url')
-        if url and force_delete:
-            print(f"[DEBUG] Force delete is enabled. Deleting existing entries for: {url}")
-            self.delete_document(url)
-        # Process document and generate embeddings  
-        #print(f"[DEBUG] Processing chunks for document: {url}")
-        processed_chunks = self.process_document(document)
-        try:
-            #print(f"[DEBUG] Inserting {len(processed_chunks)} vectors into Qdrant collection: {self.qdrant.collection_name}")
-            success = self.qdrant.add_embeddings(processed_chunks)
-            if not success:
-                raise Exception("Failed to add embeddings to Qdrant")
-            print(f"[DEBUG] Successfully added {len(processed_chunks)} embeddings to Qdrant")
+            url = document.get('url')
+            if url and force_delete:
+                logger.debug(f"Force delete is enabled. Deleting existing entries for: {url}")
+                self.delete_document(url)
+            
+            # Process document and generate embeddings
+            processed_chunks = self.process_document(document)
+            
+            try:
+                logger.debug(f"Inserting {len(processed_chunks)} vectors into Qdrant collection: {self.qdrant.collection_name}")
+                success = self.qdrant.add_embeddings(processed_chunks)
+                if not success:
+                    raise Exception("Failed to add embeddings to Qdrant")
+                logger.debug(f"Successfully added {len(processed_chunks)} embeddings to Qdrant")
+            except Exception as e:
+                logger.error(f"Error indexing embeddings to Qdrant: {e}")
+                raise
         except Exception as e:
-            print(f"Error indexing embeddings to Qdrant: {e}")
+            logger.error(f"Error indexing document: {e}")
+            raise
 
     def search_similar(self, query: str, limit: int = 5, query_filter: Optional[Any] = None) -> List[Dict]:
         """
         Search for similar content using a query
-
+        
         Args:
             query: Search query
             limit: Number of results to return
             filter: Optional Qdrant filter to narrow the search (e.g., by URL)
-
+        
         Returns:
             List of search results with scores and content
         """
-        query_embedding = self.generate_embeddings(query)
-        qdrant_filter = None
-        if query_filter:
-            qdrant_filter = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="payload.url",
-                        match=models.MatchValue(value=query_filter["url"])
-                    )
-                ]
-            )
-        
-        results = self.qdrant.search(query_embedding, limit=limit, filter=qdrant_filter)
-        
-        return [{
-            "score": result.score,
-            "payload": result.payload
-        } for result in results]
-
-    def delete_document(self, url: str):
-        """
-        Delete all embeddings associated with a document
-        Args:
-            url: URL of the document to delete
-        """
         try:
-            # Debug: log attempt to scroll
-            print(f"[DEBUG] Attempting to scroll for URL: {url}")
-            # Get all points with this URL
-            points = self.qdrant.client.scroll(
-                collection_name=self.qdrant.collection_name,
-                scroll_filter=models.Filter(
-                    must=[
+            logger.debug(f"Searching for query: {query}")
+            query_embedding = self.generate_embeddings(query)
+            qdrant_filter = None
+            if query_filter:
+                url = query_filter["url"]
+                url_lower = url.lower()
+                qdrant_filter = models.Filter(
+                    should=[
                         models.FieldCondition(
                             key="url",
                             match=models.MatchValue(value=url)
+                        ),
+                        models.FieldCondition(
+                            key="url_lower",
+                            match=models.MatchValue(value=url_lower)
                         )
                     ]
                 )
-            )
-            # Debug: log raw scroll result length
-            print(f"[DEBUG] Scroll returned {len(points[0])} points for URL: {url}")
-            # Extract IDs and delete
-            ids = [point.id for point in points[0]]  # points is a tuple (points, next_token)
-            if ids:
-                print(f"[DEBUG] Deleting {len(ids)} points for URL: {url}")
-                self.qdrant.client.delete(
-                    collection_name=self.qdrant.collection_name,
-                    points_selector=models.FilterSelector(
-                        filter=models.Filter(
-                            must=[
-                                models.FieldCondition(
-                                    key="url",
-                                    match=models.MatchValue(value=url)
-                                )
-                            ]
-                        )
-                    )
-                )
-                print(f"[DEBUG] Successfully deleted points for URL: {url}")
-            else:
-                print(f"[DEBUG] No points found to delete for URL: {url}")
+            
+            results = self.qdrant.search(query_embedding, limit=limit, filter=qdrant_filter)
+            logger.debug(f"Found {len(results)} results for query: {query}")
+            
+            return [{
+                "score": result.score,
+                "payload": result.payload
+            } for result in results]
         except Exception as e:
-            print(f"[ERROR] Failed to delete document: {e}")
+            logger.error(f"Error searching Qdrant: {e}")
             raise
+
+    def delete_document(self, url: str) -> int:
+        """
+        Delete all embeddings associated with a document
+        
+        Args:
+            url: URL of the document to delete
+            
+        Returns:
+            Number of points deleted
+        """
+        return self.qdrant_db.delete_by_url(url)
 
     def build_url_filter(self, url: str):
         return models.Filter(

@@ -35,3 +35,17 @@ class MediaWikiURLInput(BaseModel):
     max_chunks: Optional[int] = None
     skip_sections: Optional[List[str]] = None
     force_delete: Optional[bool] = True
+
+class URLInput(BaseModel):
+    urls: List[str]
+    doc_type: str = "HTML"  # 'HTML' or 'PDF'
+    force_crawl: Optional[bool] = True
+    max_chars: Optional[int] = 1000  # Limit characters to to embed for a web page (Testing)
+    force_delete: Optional[bool] = True
+
+
+# Payload update request schema
+class PayloadUpdateRequest(BaseModel):
+    url: str
+    meta_key: str
+    meta_value: str

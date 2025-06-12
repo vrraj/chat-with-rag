@@ -2,26 +2,58 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import uvicorn
-import logging
 from qdrant_client.http import models
-logger = logging.getLogger(__name__)
 from backend.core.config import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
 from backend.crawler.crawler import WebCrawler
 from backend.crawler.pdf_crawler import PDFCrawler
 from backend.extractor.extractor import ContentExtractor
-from backend.embeddings.schemas import EmbeddingRequest, SearchRequest, SearchResponse, ChatRequest, ChatResponse, MediaWikiURLInput
+from backend.embeddings.schemas import EmbeddingRequest, SearchRequest, SearchResponse, ChatRequest, ChatResponse, MediaWikiURLInput, URLInput, PayloadUpdateRequest
+from backend.db.qdrant_db import QdrantDB
 from backend.extractor.mediawiki_extractor import MediaWikiExtractor
+from backend.chat.chat_manager import ChatManager
+
+# Configure logging
+import logging.config
+
+# Configure logging to work with uvicorn
+LOGGING_CONFIG = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'default': {
+            '()': 'uvicorn.logging.DefaultFormatter',
+            'fmt': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+    'handlers': {
+        'default': {
+            'formatter': 'default',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stderr',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['default'],
+            'level': 'DEBUG',
+        },
+        'backend': {
+            'handlers': ['default'],
+            'level': 'DEBUG',
+        },
+    }
+}
+
+logging.config.dictConfig(LOGGING_CONFIG)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Website Chat Agent API")
 
 from typing import Optional
 
-class MediaWikiURLInput(BaseModel):
-    url: str
-    max_chunks: Optional[int] = None
-    skip_sections: Optional[List[str]] = None
-    force_delete: Optional[bool] = True
+
 
 @app.post("/mediawiki/url")
 async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
@@ -49,20 +81,17 @@ async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
 
 from backend.chat.chat_manager import ChatManager
 
-class URLInput(BaseModel):
-    urls: List[str]
-    doc_type: str = "HTML"  # 'HTML' or 'PDF'
-    force_crawl: Optional[bool] = True
-    max_chars: Optional[int] = 1000  # Limit characters to to embed for a web page (Testing)
-    force_delete: Optional[bool] = True
 
-class ChatMessage(BaseModel):
-    message: str
-    context: List[Dict] = []
+
+# Using ChatRequest from schemas.py instead of ChatMessage
+# class ChatMessage(BaseModel):
+#     message: str
+#     context: List[Dict] = []
 
 # Initialize managers
 embeddings_manager = EmbeddingsManager()
 chat_manager = ChatManager()
+qdrant_db = QdrantDB(embeddings_manager.qdrant.client, embeddings_manager.qdrant.collection_name)
 
 @app.post("/index")
 async def index_content(url_input: URLInput):
@@ -88,7 +117,7 @@ async def index_content(url_input: URLInput):
                         if url_input.max_chars:
                             content["max_chars"] = url_input.max_chars
                         document = content
-                        print("DEBUG: Full document to index:", document)
+                        #print("DEBUG: Full document to index:", document)
                         print("DEBUG: Document prepared for indexing:", document['url'])
                         embeddings_manager.index_document(document, force_delete=url_input.force_delete)
                     
@@ -200,8 +229,8 @@ async def delete_document(url: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug-index")
-async def debug_index():
-    """List current indexed collections and their first 10 documents"""
+def debug_index(url: Optional[str] = None):
+    """List current indexed collections and their first 10 documents, optionally filtered by URL"""
     try:
         logger.info("Starting /debug-index route")
         collections_info = embeddings_manager.qdrant.client.get_collections()
@@ -214,16 +243,31 @@ async def debug_index():
                 logger.info(f"Fetching documents from collection: {name}")
                 all_docs = []
                 next_offset = None
+                if url:
+                    url_lower = url.lower()
+                    qdrant_filter = models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="url_lower",
+                                match=models.MatchValue(value=url_lower)
+                            )
+                        ]
+                    )
+                else:
+                    qdrant_filter = None
                 while True:
                     docs, next_offset = embeddings_manager.qdrant.client.scroll(
                         collection_name=name,
                         limit=100,  # Batch size per scroll request (not total limit). Adjust for performance/memory.
                         with_payload=True,
-                        offset=next_offset
+                        offset=next_offset,
+                        scroll_filter=qdrant_filter
                     )
                     all_docs.extend(docs)
                     if next_offset is None:
                         break
+                if url and not docs:
+                    continue
                 logger.info(f"Scroll response for {name}: {len(all_docs)} docs retrieved")
                 if all_docs:
                     sorted_docs = sorted(
@@ -255,3 +299,21 @@ async def debug_index():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# Endpoint to update a specific payload field for all chunks matching the given URL.
+from fastapi import HTTPException
+
+@app.post("/update_payload")
+async def update_payload_field(update_request: PayloadUpdateRequest):
+    """
+    Update a specific payload field for all chunks matching the given URL.
+    """
+    try:
+        updated = qdrant_db.update_payload_by_url(update_request)
+        return {
+            "message": f"Updated payloads with key '{update_request.meta_key}' for URL '{update_request.url}'",
+            "updated": updated
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

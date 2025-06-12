@@ -132,6 +132,8 @@ class QdrantStorage:
                 print(f"[DEBUG] Payload for point {point['id']}: {payload}")
                 # Use the full original payload as-is to retain all custom metadata fields (e.g., section_index, title, etc.)
                 enriched_payload = payload
+                if "url" in enriched_payload:
+                    enriched_payload["url_lower"] = enriched_payload["url"].lower()
                 # Insert debug print block for URL presence
                 if not enriched_payload.get("url"):
                     print(f"[WARN] Missing URL in payload for ID: {point['id']}")
