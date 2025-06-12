@@ -1,4 +1,7 @@
+import os
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import uvicorn
@@ -51,7 +54,27 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Website Chat Agent API")
 
+# Configure static file serving
+# This allows the frontend to be served from the same server as the API
+# Static files will be served from the frontend directory
+from pathlib import Path
 
+static_dir = Path(__file__).resolve().parent.parent / "frontend" / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# Root route to serve the main index.html file
+@app.get("/")
+async def root():
+    """Serve the main HTML file at the root path"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "index.html"))
+
+# Search page route
+@app.get("/search")
+async def search_page():
+    """Serve the dedicated search interface page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "search.html"))
 
 from typing import Optional
 
@@ -282,9 +305,9 @@ def debug_index(url: Optional[str] = None):
                         all_docs,
                         key=lambda d: (
                             d.payload.get("url", ""),
-                            d.payload.get("section_index", 0),
-                            d.payload.get("subsection_index", 0),
-                            d.payload.get("chunk_index", 0)
+                            int(d.payload.get("section_index")) if d.payload.get("section_index") is not None else 0,
+                            int(d.payload.get("subsection_index")) if d.payload.get("subsection_index") is not None else -1,
+                            int(d.payload.get("chunk_index")) if d.payload.get("chunk_index") is not None else 0
                         )
                     )
                     # [DEBUG] loop after sorting

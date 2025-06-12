@@ -1,3 +1,5 @@
+import SearchSection from './src/components/SearchSection';
+
 document.addEventListener('DOMContentLoaded', () => {
     let urls = [];
     const MAX_URLS = 10;
@@ -8,6 +10,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const docTypeSelect = document.getElementById('docType');
     const addUrlBtn = document.getElementById('addUrlBtn');
     const indexBtn = document.getElementById('indexBtn');
+    const container = document.querySelector('.container');
+
+    // Add Search Section
+    const searchSection = document.createElement('div');
+    searchSection.innerHTML = SearchSection();
+    container.insertBefore(searchSection, document.querySelector('.bg-white.rounded-lg.shadow-md.p-6.mb-8'));
 
     // Event Listeners
     addUrlBtn.addEventListener('click', addUrl);

@@ -3,8 +3,37 @@ from typing import List, Dict, Optional
 import requests
 from urllib.parse import unquote, urlparse
 import tiktoken
+import logging
 
 from backend.embeddings.text_splitter import TextSplitter
+
+
+logger = logging.getLogger(__name__)
+
+
+import re
+
+def clean_mediawiki_text(text: str) -> str:
+    # Remove image/file references
+    text = re.sub(r'\[\[File:[^\]]*\]\]', '', text)
+    text = re.sub(r'\[\[Image:[^\]]*\]\]', '', text)
+    # Remove templates
+    text = re.sub(r'\{\{[^}]+\}\}', '', text)
+    # Remove categories and special links
+    text = re.sub(r'\[\[Category:[^\]]*\]\]', '', text)
+    text = re.sub(r'\[\[[^\]]*:[^\]]*\]\]', '', text)  # Interwiki links
+    # Remove HTML comments
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+    # Remove references
+    text = re.sub(r'<ref[^>]*>.*?</ref>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<ref[^/]*/>', '', text)
+    # Remove table markup
+    text = re.sub(r'\{\|.*?\|\}', '', text, flags=re.DOTALL)
+    # Remove MediaWiki magic words
+    text = re.sub(r'__\w+__', '', text)
+    # Remove occurrences like 'thumb|...' that are not inside brackets or templates
+    text = re.sub(r'thumb\|[^\n]*', '', text)
+    return text
 
 
 class MediaWikiExtractor:
@@ -17,69 +46,74 @@ class MediaWikiExtractor:
         """
         wikicode = mwparserfromhell.parse(wikitext)
         payloads = []
-        sections = wikicode.get_sections(include_lead=True, levels=[2, 3])
         section_index = 0
-        for section in sections:
-            # Get section title
-            section_title = section.filter_headings()[0].title.strip() if section.filter_headings() else "Lead"
-            # Skip sections if specified
-            if skip_sections and section_title in skip_sections:
-                continue
-            # Split into subsections (level 3)
-            subsections = section.get_sections(include_lead=True, levels=[3])
-            if len(subsections) > 1:
-                # There are subsections
-                subsection_index = 0
-                for subsection in subsections:
-                    subsection_title = subsection.filter_headings()[0].title.strip() if subsection.filter_headings() else None
-                    print(f"DEBUG: Section: {section_title}, Subsection: {subsection_title}")
-                    # Extract text (remove headings)
-                    text = subsection.strip_code().strip()
-                    if not text:
-                        continue
-                    chunks = self.splitter.split_text(text)
-                    total_chunks = len(chunks)
-                    for idx, chunk in enumerate(chunks):
-                        payloads.append({
-                            "text": chunk,
-                            "section": str(section_title),
-                            "subsection": str(subsection_title) if subsection_title else None,
-                            "chunk_index": idx,
-                            "total_chunks": total_chunks,
-                            "url": url,
-                            "document_type": "mediawiki",
-                            "source": url,
-                            "section_index": section_index,
-                            "subsection_index": subsection_index,
-                            "title": self.page_title,
-                            "description": self.page_description,
-                        })
-                    subsection_index += 1
-            else:
-                # No subsections, chunk the whole section
-                print(f"DEBUG: Section: {section_title}, No subsections")
-                text = section.strip_code().strip()
-                if not text:
-                    continue
-                chunks = self.splitter.split_text(text)
-                total_chunks = len(chunks)
-                for idx, chunk in enumerate(chunks):
-                    payloads.append({
-                        "text": chunk,
-                        "section": str(section_title),
-                        "subsection": None,
-                        "chunk_index": idx,
-                        "total_chunks": total_chunks,
-                        "url": url,
-                        "document_type": "mediawiki",
-                        "source": url,
-                        "section_index": section_index,
-                        "subsection_index": None,
-                        "title": self.page_title,
-                        "description": self.page_description,
-                    })
+
+        for top_section in wikicode.get_sections(include_lead=True, levels=[2]):
+            heading_stack = []
+            current_text = []
+            section_title = None
+            subsection_title = None
+            subsubsection_title = None
+
+            for node in top_section.nodes:
+                if isinstance(node, mwparserfromhell.nodes.Heading):
+                    level = node.level
+                    title = node.title.strip_code().strip()
+
+                    if level == 2:
+                        section_title = title
+                        subsection_title = None
+                        subsubsection_title = None
+                    elif level == 3:
+                        subsection_title = title
+                        subsubsection_title = None
+                    elif level == 4:
+                        subsubsection_title = title
+
+                    if current_text:
+                        payloads.extend(self._chunk_payload(
+                            "\n".join(current_text), url,
+                            section_title, subsection_title, subsubsection_title, section_index
+                        ))
+                        current_text = []
+                else:
+                    current_text.append(str(node))
+
+            if current_text:
+                payloads.extend(self._chunk_payload(
+                    "\n".join(current_text), url,
+                    section_title, subsection_title, subsubsection_title, section_index
+                ))
             section_index += 1
+
         return payloads
+
+    def _chunk_payload(self, text, url, section, subsection, subsubsection, section_index):
+        text = mwparserfromhell.parse(text).strip_code().strip()
+        if not text:
+            return []
+
+        text = clean_mediawiki_text(text)
+        chunks = self.splitter.split_text(text)
+        total_chunks = len(chunks)
+        if section is None:
+            section = "Lead"
+            # logger.debug(f"[DEBUG] Assigning 'Lead' to section for URL: {url}")
+        return [{
+            "text": chunk,
+            "section": section,
+            "subsection": subsection,
+            "subsubsection": subsubsection,
+            "chunk_index": idx,
+            "total_chunks": total_chunks,
+            "url": url,
+            "document_type": "mediawiki",
+            "source": url,
+            "section_index": section_index,
+            "subsection_index": None,
+            "title": self.page_title,
+            "description": self.page_description,
+        } for idx, chunk in enumerate(chunks)]
 
     def parse_from_title(self, title: str, url: Optional[str] = None, skip_sections: Optional[List[str]] = None) -> List[Dict]:
         """
