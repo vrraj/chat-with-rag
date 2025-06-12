@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional, List
-from qdrant_client.http.models import Filter, FieldCondition, MatchValue, Batch
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue, Batch, PointIdsList
 from qdrant_client import QdrantClient
 from backend.embeddings.schemas import PayloadUpdateRequest
 import logging
@@ -130,6 +130,7 @@ class QdrantDB:
             Number of points deleted
         """
         try:
+            logger.debug(f"Deleting points for URL: {url}")
             url_lower = url.lower()
             filter_by_url = Filter(
                 should=[
@@ -143,20 +144,21 @@ class QdrantDB:
                     )
                 ]
             )
-
+            logger.debug(f"Filter by URL: {filter_by_url}")
             points, _ = self.client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=filter_by_url,
                 with_payload=False
             )
-            
+            logger.debug(f"Points: {points}")
+            point_ids = [point.id for point in points]
+            logger.debug(f"Point IDs: {point_ids}")
             if not points:
                 return 0
 
-            point_ids = [point.id for point in points]
             self.client.delete(
                 collection_name=self.collection_name,
-                points=point_ids
+                points_selector=PointIdsList(points=point_ids)
             )
             
             return len(point_ids)
