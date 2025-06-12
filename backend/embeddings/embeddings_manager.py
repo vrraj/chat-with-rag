@@ -16,13 +16,11 @@ class EmbeddingsManager:
         self.qdrant: QdrantStorage = QdrantStorage()
         self.collection_manager = CollectionManager(self.qdrant.client)
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
-        self.qdrant_db = QdrantDB(self.qdrant.client, self.qdrant.collection_name)
-
-    def get_chunks_by_url(self, url: str, limit: int = 100) -> List[Dict]:
-        """
-        Retrieve chunks from Qdrant that match the given URL in the payload.
-        """
-        return self.qdrant_db.get_chunks_by_url(url, limit)
+        self.qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
 
     def generate_embeddings(self, text: str) -> List[float]:
         """

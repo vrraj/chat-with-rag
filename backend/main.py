@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Website Chat Agent API")
 
+
+
 from typing import Optional
 
 
@@ -91,7 +93,11 @@ from backend.chat.chat_manager import ChatManager
 # Initialize managers
 embeddings_manager = EmbeddingsManager()
 chat_manager = ChatManager()
-qdrant_db = QdrantDB(embeddings_manager.qdrant.client, embeddings_manager.qdrant.collection_name)
+qdrant_db = QdrantDB(
+    host=settings.qdrant_host,
+    port=settings.qdrant_port,
+    collection_name=embeddings_manager.qdrant.collection_name
+)
 
 @app.post("/index")
 async def index_content(url_input: URLInput):
@@ -150,12 +156,12 @@ async def search_content(search_request: SearchRequest):
     try:
         if not search_request.query:
             if search_request.query_filter and "url" in search_request.query_filter:
-                print(f"[DEBUG] Performing metadata-only search for URL: {search_request.query_filter['url']}, limit: {search_request.limit}")
-                results = embeddings_manager.get_chunks_by_url(
+                logger.debug(f"Performing metadata-only search for URL: {search_request.query_filter['url']}, limit: {search_request.limit}")
+                results = qdrant_db.get_chunks_by_url(
                     url=search_request.query_filter["url"],
                     limit=search_request.limit
                 )
-                print(f"[DEBUG] Search results count: {len(results)}")
+                logger.debug(f"Found {len(results)} results for metadata-only search")
                 return SearchResponse(results=results, total=len(results))
             else:
                 raise HTTPException(status_code=400, detail="URL must be provided if no query is given.")

@@ -7,9 +7,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 class QdrantDB:
-    def __init__(self, client: QdrantClient, collection_name: str):
-        self.client = client
+    def __init__(self, host: str, port: int, collection_name: str):
+        """
+        Initialize QdrantDB connection
+        
+        Args:
+            host: Qdrant host address
+            port: Qdrant port number
+            collection_name: Name of the collection to use
+        """
+        self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
+        
+        # Ensure collection exists
+        if not self.client.get_collection(collection_name=collection_name):
+            logger.warning(f"Collection {collection_name} does not exist. Creating...")
+            self.client.create_collection(
+                collection_name=collection_name,
+                vector_size=1536,  # Default for OpenAI embeddings
+                distance="Cosine"
+            )
 
     def update_payload_by_url(self, request: PayloadUpdateRequest) -> int:
         """
