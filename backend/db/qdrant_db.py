@@ -1,8 +1,10 @@
 from typing import Dict, Any, Optional, List
-from qdrant_client.http.models import Filter, FieldCondition, MatchValue, Batch, PointIdsList
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue, Batch, PointIdsList, models
 from qdrant_client import QdrantClient
 from backend.embeddings.schemas import PayloadUpdateRequest
 import logging
+import openai
+from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,7 @@ class QdrantDB:
         """
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
+        self.openai_client = openai.OpenAI(api_key=settings.openai_api_key)
         
         # Ensure collection exists
         if not self.client.get_collection(collection_name=collection_name):
@@ -42,13 +45,9 @@ class QdrantDB:
             url = request.url
             url_lower = url.lower()
 
-            # Create filter that matches either url or url_lower
+            # Create filter that matches only url_lower using must clause
             filter_by_url = Filter(
-                should=[
-                    FieldCondition(
-                        key="url",
-                        match=MatchValue(value=url)
-                    ),
+                must=[
                     FieldCondition(
                         key="url_lower",
                         match=MatchValue(value=url_lower)
@@ -91,6 +90,99 @@ class QdrantDB:
             logger.error(f"Failed to update payload for URL {url}: {e}")
             raise
 
+    def search_similar(self, query: str, limit: int = 5, query_filter: Optional[Dict] = None) -> List[Dict]:
+        """
+        Search for similar content using a query string
+        
+        Args:
+            query: Search query string
+            limit: Number of results to return
+            query_filter: Optional Qdrant filter to narrow the search (e.g., by URL)
+        
+        Returns:
+            List of search results with scores and content
+        """
+        try:
+            # Generate embedding for the query
+            logger.debug(f"Generating embedding for query: {query}")
+            query_embedding = self.openai_client.embeddings.create(
+                input=query,
+                model="text-embedding-3-small"
+            ).data[0].embedding
+            logger.debug(f"Tokens used - prompt: {len(query)}, total: {len(query)}")
+            logger.debug(f"Received embedding vector of length: {len(query_embedding)}")
+
+            # Create filter if provided
+            qdrant_filter = None
+            if query_filter:
+                url = query_filter["url"]
+                url_lower = url.lower()
+                qdrant_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="url_lower",
+                            match=models.MatchValue(value=url_lower)
+                        )
+                    ]
+                )
+            
+            # Perform the search
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                limit=limit,
+                query_filter=qdrant_filter
+            )
+            logger.debug(f"Found {len(results)} results for similarity search")
+            
+            return [{
+                "score": result.score,
+                "payload": result.payload
+            } for result in results]
+        except Exception as e:
+            logger.error(f"Error searching Qdrant: {e}")
+            raise
+        """
+        Search for similar content using a query embedding
+        
+        Args:
+            query_embedding: Embedding vector for the search query
+            limit: Number of results to return
+            query_filter: Optional Qdrant filter to narrow the search (e.g., by URL)
+        
+        Returns:
+            List of search results with scores and content
+        """
+        try:
+            qdrant_filter = None
+            if query_filter:
+                url = query_filter["url"]
+                url_lower = url.lower()
+                qdrant_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="url_lower",
+                            match=models.MatchValue(value=url_lower)
+                        )
+                    ]
+                )
+            
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                limit=limit,
+                qdrant_filter=qdrant_filter
+            )
+            logger.debug(f"Found {len(results)} results for similarity search")
+            
+            return [{
+                "score": result.score,
+                "payload": result.payload
+            } for result in results]
+        except Exception as e:
+            logger.error(f"Error searching Qdrant: {e}")
+            raise
+
     def get_chunks_by_url(self, url: str, limit: int = 100) -> List[Dict]:
         """
         Retrieve chunks from Qdrant that match the given URL in the payload.
@@ -105,11 +197,7 @@ class QdrantDB:
         try:
             url_lower = url.lower()
             filter_by_url = Filter(
-                should=[
-                    FieldCondition(
-                        key="url",
-                        match=MatchValue(value=url)
-                    ),
+                must=[
                     FieldCondition(
                         key="url_lower",
                         match=MatchValue(value=url_lower)
@@ -150,11 +238,7 @@ class QdrantDB:
             logger.debug(f"Deleting points for URL: {url}")
             url_lower = url.lower()
             filter_by_url = Filter(
-                should=[
-                    FieldCondition(
-                        key="url",
-                        match=MatchValue(value=url)
-                    ),
+                must=[
                     FieldCondition(
                         key="url_lower",
                         match=MatchValue(value=url_lower)

@@ -167,19 +167,21 @@ async def search_content(search_request: SearchRequest):
                 raise HTTPException(status_code=400, detail="URL must be provided if no query is given.")
         else:
             qdrant_filter = None
-            if search_request.query_filter and "url" in search_request.query_filter:
-                qdrant_filter = {
-                    "must": [
-                        {
-                            "key": "url",
-                            "match": {
-                                "value": search_request.query_filter["url"]
-                            }
-                        }
-                    ]
-                }
+            if search_request.query_filter:
+                filter_conditions = []
+                for key, value in search_request.query_filter.items():
+                    qdrant_key = "url_lower" if key == "url" else key
+                    match_value = value.lower() if isinstance(value, str) else value
+                    filter_conditions.append(
+                        models.FieldCondition(
+                            key=qdrant_key,
+                            match=models.MatchValue(value=match_value)
+                        )
+                    )
+                qdrant_filter = models.Filter(must=filter_conditions) if filter_conditions else None
             print(f"[DEBUG] Performing vector search with query: {search_request.query}, limit: {search_request.limit}, filter: {qdrant_filter}")
-            results = embeddings_manager.search_similar(
+            # Use QdrantDB directly for the search with query string
+            results = qdrant_db.search_similar(
                 query=search_request.query,
                 limit=search_request.limit,
                 query_filter=qdrant_filter
