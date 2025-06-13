@@ -162,7 +162,7 @@ class EmbeddingsManager:
             logger.error(f"Error indexing document: {e}")
             raise
 
-    def search_similar(self, query: str, limit: int = 5, query_filter: Optional[Any] = None) -> List[Dict]:
+    def remove_search_similar(self, query: str, limit: int = 5, query_filter: Optional[Any] = None) -> List[Dict]:
         """
         Search for similar content using a query
         

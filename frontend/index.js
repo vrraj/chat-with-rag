@@ -1,4 +1,5 @@
 import SearchSection from './src/components/SearchSection';
+import ChatSection from './src/components/ChatSection';
 
 document.addEventListener('DOMContentLoaded', () => {
     let urls = [];
@@ -16,6 +17,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchSection = document.createElement('div');
     searchSection.innerHTML = SearchSection();
     container.insertBefore(searchSection, document.querySelector('.bg-white.rounded-lg.shadow-md.p-6.mb-8'));
+
+    // Add Chat Section
+    const chatSection = document.createElement('div');
+    chatSection.innerHTML = ChatSection();
+    container.insertBefore(chatSection, document.querySelector('.bg-white.rounded-lg.shadow-md.p-6.mb-8'));
 
     // Event Listeners
     addUrlBtn.addEventListener('click', addUrl);

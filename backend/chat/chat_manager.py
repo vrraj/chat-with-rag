@@ -2,11 +2,17 @@ from typing import List, Dict, Any
 import openai
 from backend.core.config import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
+from backend.db.qdrant_db import QdrantDB
 from backend.chat.web_search import WebSearchClient
 
 class ChatManager:
     def __init__(self):
         self.embeddings_manager = EmbeddingsManager()
+        self.qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
         self.web_search = WebSearchClient()
         self.chat_history = []
         self.max_tokens = settings.max_history_tokens
@@ -22,8 +28,8 @@ class ChatManager:
             Chat response with sources
         """
         try:
-            # Get relevant context from embeddings
-            search_context = await self.embeddings_manager.search_similar(message, limit=5)
+            # Get relevant context from QdrantDB
+            search_context = await self.qdrant_db.search_similar(message, limit=5)
             
             # Get web context if enabled
             web_context = []
@@ -47,21 +53,25 @@ class ChatManager:
                 ])
                 messages.insert(1, {"role": "system", "content": f"Context:\n{context_summary}"})
 
-            # Generate response
+            # Generate non-streaming response
             response = await openai.ChatCompletion.acreate(
                 model=settings.CHAT_MODEL,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1000
+                max_tokens=1000,
+                stream=False
             )
 
-            # Update chat history
-            self.chat_history.append({"role": "user", "content": message})
-            self.chat_history.append({"role": "assistant", "content": response.choices[0].message.content})
+            # Get the complete response
+            complete_response = response.choices[0].message.content
             
-            # Return response with sources
+            # Update chat history with complete message
+            self.chat_history.append({"role": "user", "content": message})
+            self.chat_history.append({"role": "assistant", "content": complete_response})
+
+            # Return complete response with sources
             return {
-                "response": response.choices[0].message.content,
+                "response": complete_response,
                 "sources": combined_context
             }
 
@@ -87,8 +97,8 @@ class ChatManager:
             return "".join([msg["content"] for msg in history[-3:]])  # Fallback to last 3 messages
 
     def _get_context(self, query: str, limit: int = 5) -> List[Dict]:
-        """Get relevant context from embeddings"""
-        return self.embeddings_manager.search_similar(query, limit=limit)
+        """Get relevant context from QdrantDB"""
+        return self.qdrant_db.search_similar(query, limit=limit)
 
     def _get_web_context(self, query: str, existing_context: List[Dict]) -> List[Dict]:
         """Get additional context from web search"""

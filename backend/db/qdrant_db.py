@@ -27,7 +27,7 @@ class QdrantDB:
             logger.warning(f"Collection {collection_name} does not exist. Creating...")
             self.client.create_collection(
                 collection_name=collection_name,
-                vector_size=1536,  # Default for OpenAI embeddings
+                vector_size=settings.vector_size,  # Default for OpenAI embeddings
                 distance="Cosine"
             )
 
@@ -107,7 +107,7 @@ class QdrantDB:
             logger.debug(f"Generating embedding for query: {query}")
             query_embedding = self.openai_client.embeddings.create(
                 input=query,
-                model="text-embedding-3-small"
+                model=settings.embedding_model
             ).data[0].embedding
             logger.debug(f"Tokens used - prompt: {len(query)}, total: {len(query)}")
             logger.debug(f"Received embedding vector of length: {len(query_embedding)}")

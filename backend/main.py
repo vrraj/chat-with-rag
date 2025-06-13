@@ -85,6 +85,11 @@ async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
     """
+    global embeddings_manager
+    if embeddings_manager is None:
+        logger.info("Initializing embeddings manager")
+        embeddings_manager = EmbeddingsManager()
+        logger.info("Embeddings manager initialized")
     try:
         extractor = MediaWikiExtractor()
         url = mediawiki_input.url
@@ -105,26 +110,131 @@ async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 from backend.chat.chat_manager import ChatManager
+from fastapi import Depends, HTTPException
+from backend.core.config import Settings
+import uuid
+import time
 
+# Initialize managers as None; instantiate lazily in routes
+embeddings_manager = None
+chat_manager = None
+qdrant_db = None
 
+# Chat session management
+class ChatSessionManager:
+    def __init__(self):
+        self.sessions = {}
+        self.settings = Settings()
 
-# Using ChatRequest from schemas.py instead of ChatMessage
-# class ChatMessage(BaseModel):
-#     message: str
-#     context: List[Dict] = []
+    def create_session(self) -> str:
+        """Create a new chat session"""
+        session_id = str(uuid.uuid4())
+        self.sessions[session_id] = {
+            "messages": [],
+            "context": [],
+            "last_access": time.time()
+        }
+        return session_id
 
-# Initialize managers
-embeddings_manager = EmbeddingsManager()
-chat_manager = ChatManager()
-qdrant_db = QdrantDB(
-    host=settings.qdrant_host,
-    port=settings.qdrant_port,
-    collection_name=embeddings_manager.qdrant.collection_name
-)
+    def get_session(self, session_id: str) -> dict:
+        """Get a chat session by ID"""
+        if session_id not in self.sessions:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        return self.sessions[session_id]
+
+    def update_session(self, session_id: str, message: dict) -> None:
+        """Update chat session with new message"""
+        if session_id not in self.sessions:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        
+        # Add new message to session
+        self.sessions[session_id]["messages"].append(message)
+        self.sessions[session_id]["last_access"] = time.time()
+
+    def get_context(self, session_id: str) -> list:
+        """Get relevant context for chat session"""
+        session = self.get_session(session_id)
+        messages = session["messages"]
+        
+        # Get recent messages within token limit
+        total_tokens = 0
+        context = []
+        
+        # Start from most recent message and work backwards
+        for msg in reversed(messages):
+            msg_tokens = len(msg["content"].split())
+            if total_tokens + msg_tokens <= self.settings.max_history_tokens:
+                context.append(msg)
+                total_tokens += msg_tokens
+            else:
+                break
+        
+        return list(reversed(context))
+
+chat_session_manager = ChatSessionManager()
+
+@app.post("/chat/session")
+async def create_chat_session():
+    """Create a new chat session"""
+    session_id = chat_session_manager.create_session()
+    return {"session_id": session_id}
+
+@app.post("/chat/{session_id}")
+async def chat_endpoint(session_id: str, chat_request: ChatRequest):
+    """Process a chat message with context"""
+    try:
+        # Get session context
+        session = chat_session_manager.get_session(session_id)
+        
+        # Get relevant context from chat history
+        context = chat_session_manager.get_context(session_id)
+        
+        # Process chat message with context
+        response = await chat_manager.chat(
+            message=chat_request.message,
+            context=context,
+            use_web_search=chat_request.use_web_search
+        )
+        
+        # Update session with new message and response
+        chat_session_manager.update_session(session_id, {
+            "role": "user",
+            "content": chat_request.message,
+            "sources": []
+        })
+        chat_session_manager.update_session(session_id, {
+            "role": "assistant",
+            "content": response["response"],
+            "sources": response["sources"]
+        })
+        
+        return ChatResponse(
+            response=response["response"],
+            sources=response["sources"]
+        )
+    except Exception as e:
+        logger.error(f"Error processing chat: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat/{session_id}/history")
+async def get_chat_history(session_id: str):
+    """Get chat history for session"""
+    try:
+        session = chat_session_manager.get_session(session_id)
+        return {
+            "messages": session["messages"],
+            "context": session["context"]
+        }
+    except Exception as e:
+        logger.error(f"Error getting chat history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index")
 async def index_content(url_input: URLInput):
     """Index content from URLs (HTML or PDF)"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
     try:
         #print("DEBUG: Entered index_content route")
         #print("Received input:", url_input.dict())  # Debugging line
@@ -176,6 +286,13 @@ async def index_content(url_input: URLInput):
 @app.post("/search")
 async def search_content(search_request: SearchRequest):
     """Search indexed content"""
+    global qdrant_db
+    if qdrant_db is None:
+        qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
     try:
         if not search_request.query:
             if search_request.query_filter and "url" in search_request.query_filter:
@@ -217,6 +334,9 @@ async def search_content(search_request: SearchRequest):
 @app.post("/chat")
 async def chat_with_content(chat_request: ChatRequest):
     """Chat with the indexed content"""
+    global chat_manager
+    if chat_manager is None:
+        chat_manager = ChatManager()
     try:
         response = await chat_manager.chat(
             chat_request.message,
@@ -233,6 +353,9 @@ async def chat_with_content(chat_request: ChatRequest):
 @app.post("/embed")
 async def generate_embedding(embedding_request: EmbeddingRequest):
     """Generate embedding for a specific document"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
     try:
         document = {
             'url': embedding_request.url,
@@ -253,6 +376,9 @@ async def generate_embedding(embedding_request: EmbeddingRequest):
 @app.delete("/delete/{url}")
 async def delete_document(url: str):
     """Delete embeddings for a specific document"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
     try:
         embeddings_manager.delete_document(url)
         return {"message": "Document deleted successfully"}
@@ -262,6 +388,9 @@ async def delete_document(url: str):
 @app.get("/debug-index")
 def debug_index(url: Optional[str] = None):
     """List current indexed collections and their first 10 documents, optionally filtered by URL"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
     try:
         logger.info("Starting /debug-index route")
         collections_info = embeddings_manager.qdrant.client.get_collections()
@@ -340,6 +469,13 @@ async def update_payload_field(update_request: PayloadUpdateRequest):
     """
     Update a specific payload field for all chunks matching the given URL.
     """
+    global qdrant_db
+    if qdrant_db is None:
+        qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
     try:
         updated = qdrant_db.update_payload_by_url(update_request)
         return {

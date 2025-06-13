@@ -56,12 +56,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Send chat message
+    // Send chat message with streaming support
     async function sendMessage(message) {
         showLoading(true);
         
         try {
-            const response = await fetch('http://localhost:8000/chat', {
+            const response = await fetch('http://localhost:8000/chat_with_content', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -73,7 +73,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 })
             });
 
-            const data = await response.json();
+            // Create message container
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant-message ml-auto';
+            chatContainer.appendChild(messageDiv);
+            
+            // Create text node for streaming content
+            const textNode = document.createTextNode('');
+            messageDiv.appendChild(textNode);
+
+            // Handle streaming response
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                const chunk = decoder.decode(value, { stream: true });
+                textNode.appendData(chunk);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+
+            // Get full response with sources
+            const fullResponse = await fetch('http://localhost:8000/chat_with_content_full', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message,
+                    context: currentContext,
+                    use_web_search: webSearchToggle.checked
+                })
+            });
+            const data = await fullResponse.json();
             
             // Update chat history
             chatHistory.push({
