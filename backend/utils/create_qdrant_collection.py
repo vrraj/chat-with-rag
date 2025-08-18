@@ -10,7 +10,7 @@ def create_collection():
     client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
     collection_name = settings.collection_name
     vector_size = settings.vector_size  # Make sure this is defined in config.py
-    print(f"[INFO] Collection attributes from config.py'{collection_name}' with vector size {vector_size}")
+    print(f"[INFO] Collection attributes from config.py: '{collection_name}' with vector size {vector_size}")
     try:
         # Check if collection exists
         client.get_collection(collection_name=collection_name)
