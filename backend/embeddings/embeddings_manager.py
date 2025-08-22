@@ -16,11 +16,14 @@ class EmbeddingsManager:
         self.qdrant: QdrantStorage = QdrantStorage()
         self.collection_manager = CollectionManager(self.qdrant.client)
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
+        # Initialize QdrantDB without the callback first
         self.qdrant_db = QdrantDB(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
             collection_name=settings.collection_name
         )
+        # Now set the callback after the method is defined
+        self.qdrant_db.generate_embeddings = self.generate_embeddings
 
     def generate_embeddings(self, text: str) -> List[float]:
         """
@@ -100,23 +103,45 @@ class EmbeddingsManager:
                 chunk_id = str(uuid.uuid4())
                 print(f"[DEBUG] Embedding chunk ID: {chunk_id}")
                 embedding = self.generate_embeddings(chunk_text)
+                payload = {
+                    "text": chunk_text,
+                    "chunk_index": idx,
+                    "total_chunks": total_chunks,
+                    "url": document.get("url", ""),
+                    "document_type": doc_type,
+                    "source": document.get("url", ""),
+                    "title": document.get("title", ""),
+                    "description": document.get("description", ""),
+                }
+
+                # Prefer provided headings; default section to "Lead" if nothing present
+                section = document.get("section") or document.get("section_title") or None
+                if section is None:
+                    section = "Lead"
+                payload["section"] = section
+
+                subsection = document.get("subsection") or document.get("subsection_title")
+                if subsection:
+                    payload["subsection"] = subsection
+                else:
+                    payload["subsection"] = None
+
+                section_index = document.get("section_index")
+                if section_index is not None:
+                    payload["section_index"] = section_index
+                else:
+                    payload["section_index"] = None
+
+                subsection_index = document.get("subsection_index")
+                if subsection_index is not None:
+                    payload["subsection_index"] = subsection_index
+                else:
+                    payload["subsection_index"] = None
+
                 processed_chunks.append({
                     "id": chunk_id,
                     "vector": embedding,
-                    "payload": {
-                        "text": chunk_text,
-                        "section": None,
-                        "subsection": None,
-                        "chunk_index": idx,
-                        "total_chunks": total_chunks,
-                        "url": document.get("url", ""),
-                        "document_type": document.get("document_type", "HTML"),
-                        "source": document.get("url", ""),
-                        "section_index": None,
-                        "subsection_index": None,
-                        "title": document.get("title", ""),
-                        "description": document.get("description", ""),
-                    }
+                    "payload": payload,
                 })
             except Exception as e:
                 print(f"Error processing chunk {chunk_id}: {e}")

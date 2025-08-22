@@ -21,6 +21,10 @@ wheels/
 .installed.cfg
 *.egg
 
+# Qdrant local storage and backups
+qdrant_storage/
+backups/
+
 # Virtual Environment
 venv/
 ENV/
@@ -34,6 +38,7 @@ env/
 
 # Logs
 *.log
+logs/
 
 # Environment variables
 .env
@@ -50,3 +55,20 @@ local_settings.py
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Coverage outputs
+.coverage
+htmlcov/
+
+# Python/CI tooling
+.tox/
+.nox/
+
+# Frontend dependencies and builds
+node_modules/
