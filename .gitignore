@@ -24,6 +24,7 @@ wheels/
 # Qdrant local storage and backups
 qdrant_storage/
 backups/
+qdrant_commands
 
 # Virtual Environment
 venv/
