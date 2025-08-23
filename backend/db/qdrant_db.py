@@ -7,6 +7,7 @@ import logging
 import openai
 from backend.core.config import settings
 from openai import OpenAI
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -146,13 +147,14 @@ class QdrantDB:
             raise
             
     def search_similar(
-        self, 
-        query: str, 
-        limit: int = 5, 
+        self,
+        query: str,
+        limit: int = 5,
         score_threshold: float = 0.35,
-        filter_condition: Optional[Filter] = None,
+        query_filter: Optional[Dict] = None,
         with_vectors: bool = False,
-        with_payload: bool = True
+        with_payload: bool = True,
+        exact: Optional[bool] = True,
     ) -> List[Dict[str, Any]]:
         """
         Search for similar vectors in the collection
@@ -161,9 +163,10 @@ class QdrantDB:
             query: Query string to search for
             limit: Maximum number of results to return
             score_threshold: Minimum similarity score (0-1)
-            filter_condition: Optional filter condition
+            query_filter: Optional plain dict filter (e.g., {"url": "..."}); will be converted to Qdrant Filter.
             with_vectors: Whether to include vectors in the response
             with_payload: Whether to include payload in the response
+            exact: If True (default), use exact search; if False, allow approximate (HNSW) search.
             
         Returns:
             List of search results with scores and payloads
@@ -171,17 +174,27 @@ class QdrantDB:
         try:
             # Generate embeddings for the query
             query_vector = self.generate_embeddings(query)
-            logger.debug(f"Generated embedding vector of length: {len(query_vector)}")
-            
+            logger.debug(f"In search Generated embedding vector of length: {len(query_vector)}")
+
+            # Build/accept a Qdrant filter
+            if isinstance(query_filter, models.Filter):
+                q_filter = query_filter
+            else:
+                q_filter = self._build_filter(query_filter)
+
+            # Build search params (apply 'exact' if provided)
+            search_params = models.SearchParams(exact=exact) if exact is not None else None
+
             # Perform the search
             search_results = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
                 limit=limit,
                 score_threshold=score_threshold,
-                query_filter=filter_condition,
+                query_filter=q_filter,
                 with_vectors=with_vectors,
-                with_payload=with_payload
+                with_payload=with_payload,
+                search_params=search_params,
             )
             
             # Format the results
@@ -200,25 +213,6 @@ class QdrantDB:
             
         except Exception as e:
             logger.error(f"Error in search_similar: {str(e)}")
-            raise
-
-            # Set defaults for optional parameters
-            score_threshold = score_threshold if score_threshold is not None else 0.35
-            exact = exact if exact is not None else True
-            with_payload = with_payload if with_payload is not None else True
-            limit = limit if limit is not None else 8
-
-            # Delegate to the vector-based search
-            return self.search_similar_by_embedding(
-                query_embedding=query_embedding,
-                limit=limit,
-                query_filter=query_filter,
-                score_threshold=score_threshold,
-                exact=exact,
-                with_payload=with_payload,
-            )
-        except Exception as e:
-            logger.error(f"Error searching Qdrant: {e}")
             raise
 
     def search_similar_by_embedding(
