@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import uvicorn
@@ -38,6 +38,11 @@ LOGGING_CONFIG = {
         },
     },
     'loggers': {
+        'trafilatura': {
+            'level': 'WARNING',
+            'handlers': ['default'],
+            'propagate': False
+        },
         '': {
             'handlers': ['default'],
             'level': 'DEBUG',
@@ -45,6 +50,7 @@ LOGGING_CONFIG = {
         'backend': {
             'handlers': ['default'],
             'level': 'DEBUG',
+            'propagate': False,
         },
     }
 }
@@ -52,7 +58,23 @@ LOGGING_CONFIG = {
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Website Chat Agent API")
+# --- Swagger/OpenAPI tags & UI ordering ---
+tags_metadata = [
+    {"name": "1. UI Pages", "description": "Frontend pages served by FastAPI (HTML)."},
+    {"name": "2. Ingest", "description": "Bring content in: MediaWiki, URLs, PDFs; embed documents; delete by URL."},
+    {"name": "3. Search & Chat", "description": "Vector search and conversational endpoints over indexed content."},
+    {"name": "4. Index Admin", "description": "Index maintenance utilities (payload updates, etc.)."},
+    {"name": "5. Debug", "description": "Developer diagnostics and inspection utilities."},
+]
+
+app = FastAPI(
+    title="Website Chat Agent API",
+    openapi_tags=tags_metadata,
+    swagger_ui_parameters={
+        "tagsSorter": "alpha",
+        "operationsSorter": "alpha",
+    },
+)
 
 # Configure static file serving
 # This allows the frontend to be served from the same server as the API
@@ -63,24 +85,33 @@ static_dir = Path(__file__).resolve().parent.parent / "frontend" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Root route to serve the main index.html file
-@app.get("/")
+@app.get(
+    "/",
+    tags=["1. UI Pages"],
+    summary="1. Home (index.html)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Home Page</body></html>"}}}}
+)
 async def root():
     """Serve the main HTML file at the root path"""
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "index.html"))
 
 # Search page route
-@app.get("/search")
+@app.get(
+    "/search",
+    tags=["1. UI Pages"],
+    summary="2. Search page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Search Page</body></html>"}}}}
+)
 async def search_page():
     """Serve the dedicated search interface page"""
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "search.html"))
 
 from typing import Optional
-
-
-
-@app.post("/mediawiki/url")
+@app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
@@ -173,13 +204,13 @@ class ChatSessionManager:
 
 chat_session_manager = ChatSessionManager()
 
-@app.post("/chat/session")
+@app.post("/chat/session", tags=["3. Search & Chat"], summary="1. Create chat session")
 async def create_chat_session():
     """Create a new chat session"""
     session_id = chat_session_manager.create_session()
     return {"session_id": session_id}
 
-@app.post("/chat/{session_id}")
+@app.post("/chat/{session_id}", tags=["3. Search & Chat"], summary="2. Chat (session)")
 async def chat_endpoint(session_id: str, chat_request: ChatRequest):
     """Process a chat message with context"""
     try:
@@ -216,7 +247,7 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest):
         logger.error(f"Error processing chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/chat/{session_id}/history")
+@app.get("/chat/{session_id}/history", tags=["3. Search & Chat"], summary="3. Get chat history")
 async def get_chat_history(session_id: str):
     """Get chat history for session"""
     try:
@@ -229,7 +260,7 @@ async def get_chat_history(session_id: str):
         logger.error(f"Error getting chat history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/index")
+@app.post("/index", tags=["2. Ingest"], summary="2. Index URLs / PDFs")
 async def index_content(url_input: URLInput):
     """Index content from URLs (HTML or PDF)"""
     global embeddings_manager
@@ -283,7 +314,7 @@ async def index_content(url_input: URLInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/search")
+@app.post("/search", tags=["3. Search & Chat"], summary="4. Vector search")
 async def search_content(search_request: SearchRequest):
     """Search indexed content"""
     global qdrant_db
@@ -296,15 +327,15 @@ async def search_content(search_request: SearchRequest):
     try:
         if not search_request.query:
             if search_request.query_filter and "url" in search_request.query_filter:
-                logger.debug(f"Performing metadata-only search for URL: {search_request.query_filter['url']}, limit: {search_request.limit}")
+                #logger.debug(f"Performing metadata-only search for URL: {search_request.query_filter['url']}, limit: {search_request.limit}")
                 results = qdrant_db.get_chunks_by_url(
                     url=search_request.query_filter["url"],
                     limit=search_request.limit
                 )
-                logger.debug(f"Found {len(results)} results for metadata-only search")
+                #logger.debug(f"Found {len(results)} results for metadata-only search")
                 return SearchResponse(results=results, total=len(results))
             else:
-                raise HTTPException(status_code=400, detail="URL must be provided if no query is given.")
+                raise HTTPException(status_code=400, detail="URL must be provided in query_filter if no query is given.")
         else:
             qdrant_filter = None
             if search_request.query_filter:
@@ -319,19 +350,29 @@ async def search_content(search_request: SearchRequest):
                         )
                     )
                 qdrant_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+            
             print(f"[DEBUG] Performing vector search with query: {search_request.query}, limit: {search_request.limit}, filter: {qdrant_filter}")
+            
+            # Extract optional parameters (direct attribute access)
+            score_threshold = search_request.score_threshold
+            exact = search_request.exact
+            with_payload = search_request.with_payload
+            
             # Use QdrantDB directly for the search with query string
             results = qdrant_db.search_similar(
                 query=search_request.query,
                 limit=search_request.limit,
-                query_filter=qdrant_filter
+                query_filter=qdrant_filter,
+                score_threshold=score_threshold,
+                exact=exact,
+                with_payload=with_payload
             )
             print(f"[DEBUG] Search results count: {len(results)}")
             return SearchResponse(results=results, total=len(results))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat")
+@app.post("/chat", tags=["3. Search & Chat"], summary="5. Chat (stateless)")
 async def chat_with_content(chat_request: ChatRequest):
     """Chat with the indexed content"""
     global chat_manager
@@ -350,7 +391,7 @@ async def chat_with_content(chat_request: ChatRequest):
         print(f"Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/embed")
+@app.post("/embed", tags=["2. Ingest"], summary="3. Embed single document")
 async def generate_embedding(embedding_request: EmbeddingRequest):
     """Generate embedding for a specific document"""
     global embeddings_manager
@@ -373,7 +414,7 @@ async def generate_embedding(embedding_request: EmbeddingRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/delete/{url}")
+@app.delete("/delete/{url}", tags=["2. Ingest"], summary="4. Delete by URL")
 async def delete_document(url: str):
     """Delete embeddings for a specific document"""
     global embeddings_manager
@@ -385,7 +426,7 @@ async def delete_document(url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/debug-index")
+@app.get("/debug-index", tags=["5. Debug"], summary="1. Inspect Qdrant collections")
 def debug_index(url: Optional[str] = None):
     """List current indexed collections and their first 10 documents, optionally filtered by URL"""
     global embeddings_manager
@@ -464,7 +505,7 @@ if __name__ == "__main__":
 # Endpoint to update a specific payload field for all chunks matching the given URL.
 from fastapi import HTTPException
 
-@app.post("/update_payload")
+@app.post("/update_payload", tags=["4. Index Admin"], summary="1. Bulk update payload by URL")
 async def update_payload_field(update_request: PayloadUpdateRequest):
     """
     Update a specific payload field for all chunks matching the given URL.
