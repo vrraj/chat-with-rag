@@ -14,8 +14,11 @@ class EmbeddingRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    limit: int = 5
-    query_filter: Optional[Dict] = None
+    limit: Optional[int] = 8
+    query_filter: Optional[Dict] = None  # For flexible filtering (e.g., {"url": "example.com"})
+    score_threshold: Optional[float] = 0.35  # Default threshold for Cosine similarity is 0.35
+    exact: Optional[bool] = False
+    with_payload: Optional[bool] = True
 
 class SearchResponse(BaseModel):
     results: List[Dict]
@@ -33,7 +36,11 @@ class ChatResponse(BaseModel):
 class MediaWikiURLInput(BaseModel):
     url: str
     max_chunks: Optional[int] = None
-    skip_sections: Optional[List[str]] = None
+    skip_sections: Optional[List[str]] = Field(
+        default=["References", "External Links", "Further reading", "Notes"],
+        example=["References", "External Links", "Further reading", "Notes"],
+        description="List of section titles to skip when parsing the wiki page"
+    )
     force_delete: Optional[bool] = True
 
 class URLInput(BaseModel):
