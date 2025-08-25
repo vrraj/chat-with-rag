@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     default_chunk_size: int = 500
     default_chunk_overlap: int = 100
 
+    # Wikipedia / MediaWiki API configuration
+    wiki_api_url: str = "https://en.wikipedia.org/w/api.php"
+    wiki_user_agent: str = "WebsiteChatAgent/0.1 (contact: set-in-settings)"
+    wiki_timeout_secs: int = 15
+    wiki_max_retries: int = 5
+
 
     model_config = {
         "env_file": ".env",

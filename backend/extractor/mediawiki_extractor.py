@@ -6,16 +6,16 @@ from requests import Response
 from urllib.parse import unquote, urlparse
 import tiktoken
 import logging
-
+from backend.core.config import settings
 from backend.embeddings.text_splitter import TextSplitter
 
 
 logger = logging.getLogger(__name__)
 
-WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
-WIKI_UA = "WebsiteChatAgent/0.1 (contact: you@example.com)"
-DEFAULT_TIMEOUT = 15
-MAX_RETRIES = 5
+WIKI_API_URL = settings.wiki_api_url
+WIKI_UA = settings.wiki_user_agent
+DEFAULT_TIMEOUT = int(settings.wiki_timeout_secs)
+MAX_RETRIES = int(settings.wiki_max_retries)
 
 import re
 
@@ -41,15 +41,15 @@ def clean_mediawiki_text(text: str) -> str:
     text = re.sub(r'thumb\|[^\n]*', '', text)
     return text
 
-def _wiki_get(params: Dict) -> Response:
+def _wiki_get(params: Dict, api_url: str, ua: str) -> Response:
     """Resilient GET to Wikipedia Action API with UA + backoff."""
     backoff = 0.5
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             r = requests.get(
-                WIKI_API_URL,
+                api_url,
                 params=params,
-                headers={"User-Agent": WIKI_UA},
+                headers={"User-Agent": ua},
                 timeout=DEFAULT_TIMEOUT,
             )
             # Retry on common throttle/forbidden statuses
@@ -71,8 +71,21 @@ def _wiki_get(params: Dict) -> Response:
     raise RuntimeError("Unreachable: _wiki_get loop")
 
 class MediaWikiExtractor:
-    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100):
-        self.splitter = TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, use_manual_splitter=True)
+    def __init__(
+        self,
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
+        api_url: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ):
+        # Per-instance API settings (fall back to global settings defaults)
+        self.api_url = api_url or WIKI_API_URL
+        self.user_agent = user_agent or WIKI_UA
+        self.splitter = TextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            use_manual_splitter=True,
+        )
 
     def parse(self, wikitext: str, url: str, skip_sections: Optional[List[str]] = None) -> List[Dict]:
         """
@@ -171,7 +184,7 @@ class MediaWikiExtractor:
             "titles": title,
             "formatversion": "2",
         }
-        response = _wiki_get(params)
+        response = _wiki_get(params, self.api_url, self.user_agent)
         data = response.json()
         pages = data.get("query", {}).get("pages", [])
         if not pages or "missing" in pages[0]:

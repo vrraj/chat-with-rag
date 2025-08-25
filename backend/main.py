@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
@@ -112,9 +112,14 @@ async def search_page():
 
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
-async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
+async def index_mediawiki_url(
+    mediawiki_input: MediaWikiURLInput,
+    api_url: Optional[str] = Query(None, description="Override MediaWiki API endpoint (defaults to settings)"),
+    ua: Optional[str] = Query(None, description="Override User-Agent for MediaWiki requests"),
+):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
+    You can override the target MediaWiki API with `api_url` and the User-Agent with `ua` per request.
     """
     global embeddings_manager
     if embeddings_manager is None:
@@ -122,7 +127,7 @@ async def index_mediawiki_url(mediawiki_input: MediaWikiURLInput):
         embeddings_manager = EmbeddingsManager()
         logger.info("Embeddings manager initialized")
     try:
-        extractor = MediaWikiExtractor()
+        extractor = MediaWikiExtractor(api_url=api_url, user_agent=ua)
         url = mediawiki_input.url
         max_chunks = mediawiki_input.max_chunks
         skip_sections = mediawiki_input.skip_sections
