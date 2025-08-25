@@ -1,6 +1,8 @@
 import mwparserfromhell
 from typing import List, Dict, Optional
 import requests
+import time
+from requests import Response
 from urllib.parse import unquote, urlparse
 import tiktoken
 import logging
@@ -10,6 +12,10 @@ from backend.embeddings.text_splitter import TextSplitter
 
 logger = logging.getLogger(__name__)
 
+WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
+WIKI_UA = "WebsiteChatAgent/0.1 (contact: you@example.com)"
+DEFAULT_TIMEOUT = 15
+MAX_RETRIES = 5
 
 import re
 
@@ -35,6 +41,34 @@ def clean_mediawiki_text(text: str) -> str:
     text = re.sub(r'thumb\|[^\n]*', '', text)
     return text
 
+def _wiki_get(params: Dict) -> Response:
+    """Resilient GET to Wikipedia Action API with UA + backoff."""
+    backoff = 0.5
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = requests.get(
+                WIKI_API_URL,
+                params=params,
+                headers={"User-Agent": WIKI_UA},
+                timeout=DEFAULT_TIMEOUT,
+            )
+            # Retry on common throttle/forbidden statuses
+            if r.status_code in (429, 403, 502, 503, 504):
+                logger.warning(
+                    f"Wiki API status {r.status_code}; attempt {attempt}/{MAX_RETRIES}. Backing off {backoff:.1f}s"
+                )
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            r.raise_for_status()
+            return r
+        except requests.RequestException as e:
+            if attempt == MAX_RETRIES:
+                logger.error(f"Wiki API request failed after {MAX_RETRIES} attempts: {e}")
+                raise
+            time.sleep(backoff)
+            backoff *= 2
+    raise RuntimeError("Unreachable: _wiki_get loop")
 
 class MediaWikiExtractor:
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100):
@@ -62,6 +96,14 @@ class MediaWikiExtractor:
 
                     if level == 2:
                         section_title = title
+                        if skip_sections and any(section_title.lower() == s.lower() for s in skip_sections):
+                            # Flush any pending text as previous section, then mark to skip until next level 2
+                            heading_stack = []
+                            current_text = []
+                            section_title = None
+                            subsection_title = None
+                            subsubsection_title = None
+                            continue
                         subsection_title = None
                         subsubsection_title = None
                     elif level == 3:
@@ -99,6 +141,8 @@ class MediaWikiExtractor:
         if section is None:
             section = "Lead"
             # logger.debug(f"[DEBUG] Assigning 'Lead' to section for URL: {url}")
+        title = getattr(self, 'page_title', None)
+        description = getattr(self, 'page_description', "")
         return [{
             "text": chunk,
             "section": section,
@@ -111,31 +155,29 @@ class MediaWikiExtractor:
             "source": url,
             "section_index": section_index,
             "subsection_index": None,
-            "title": self.page_title,
-            "description": self.page_description,
+            "title": title,
+            "description": description,
         } for idx, chunk in enumerate(chunks)]
 
     def parse_from_title(self, title: str, url: Optional[str] = None, skip_sections: Optional[List[str]] = None) -> List[Dict]:
         """
         Fetch wikitext from Wikipedia API given a page title, then parse it.
         """
-        api_url = "https://en.wikipedia.org/w/api.php"
         params = {
             "action": "query",
             "format": "json",
-            "prop": "revisions",
+            "prop": "revisions|description",
             "rvprop": "content",
             "titles": title,
-            "formatversion": "2"
+            "formatversion": "2",
         }
-        response = requests.get(api_url, params=params, timeout=10)
-        response.raise_for_status()
+        response = _wiki_get(params)
         data = response.json()
         pages = data.get("query", {}).get("pages", [])
         if not pages or "missing" in pages[0]:
             raise ValueError(f"Page titled '{title}' not found.")
         self.page_title = title
-        self.page_description = pages[0].get("description", "")
+        self.page_description = pages[0].get("description") or ""
         wikitext = pages[0].get("revisions", [{}])[0].get("content", "")
         if url is None:
             url = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
