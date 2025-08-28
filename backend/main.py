@@ -124,6 +124,19 @@ async def debug_index_page():
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "debug-index.html"))
 
+# Chat page route (HTML)
+@app.get(
+    "/chat.html",
+    tags=["1. UI Pages"],
+    summary="4. Chat page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Chat Page</body></html>"}}}}
+)
+async def chat_page():
+    """Serve the standalone chat page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "chat.html"))
+
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(
@@ -162,12 +175,18 @@ async def index_mediawiki_url(
         print(f"DEBUG: Indexing {len(chunks)} chunks")
         if estimate:
             return {"message": "Estimate only", "chunks_planned": len(chunks)}
-        embeddings_manager.index_chunks(
+        result = embeddings_manager.index_chunks(
             chunks,
             force_delete=mediawiki_input.force_delete,
             max_chunks=max_chunks
         )
-        return {"message": "MediaWiki content indexed successfully", "chunks_indexed": len(chunks)}
+        return {
+            "message": "MediaWiki content indexed successfully",
+            "chunks_indexed": len(chunks),
+            "vectors_indexed": result.get("vectors_indexed", 0),
+            "tokens_used": result.get("tokens_used", 0),
+            "url": url,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -201,12 +220,18 @@ async def index_pdf(
             chunks = chunks[:max_chunks]
         if estimate:
             return {"message": "Estimate only", "chunks_planned": len(chunks)}
-        embeddings_manager.index_chunks(
+        result = embeddings_manager.index_chunks(
             chunks,
             force_delete=force_delete,
             max_chunks=max_chunks,
         )
-        return {"message": "PDF content indexed successfully", "chunks_indexed": len(chunks), "source": source}
+        return {
+            "message": "PDF content indexed successfully",
+            "chunks_indexed": len(chunks),
+            "vectors_indexed": result.get("vectors_indexed", 0),
+            "tokens_used": result.get("tokens_used", 0),
+            "source": source,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -343,6 +368,7 @@ async def index_content(url_input: URLInput, estimate: Optional[bool] = Query(Fa
         #print("Received input:", url_input.dict())  # Debugging line
         # Process each URL
         planned_chunks_total = 0
+        tokens_total = 0
         for url in url_input.urls:
             if url_input.doc_type == "HTML":
                 crawler = WebCrawler(
@@ -376,11 +402,13 @@ async def index_content(url_input: URLInput, estimate: Optional[bool] = Query(Fa
                             planned_chunks_total += planned
                         else:
                             print("DEBUG: Document prepared for indexing:", document['url'])
-                            embeddings_manager.index_document(
+                            result = embeddings_manager.index_document(
                                 document,
                                 force_delete=url_input.force_delete,
                                 max_chunks=user_max_chunks
                             )
+                            planned_chunks_total += result.get("vectors_indexed", 0)
+                            tokens_total += result.get("tokens_used", 0)
                 
             elif url_input.doc_type == "PDF":
                 pdf_crawler = PDFCrawler()
@@ -414,14 +442,16 @@ async def index_content(url_input: URLInput, estimate: Optional[bool] = Query(Fa
                             planned = min(len(chunks), effective_cap)
                             planned_chunks_total += planned
                         else:
-                            embeddings_manager.index_document(
+                            result = embeddings_manager.index_document(
                                 document,
                                 force_delete=url_input.force_delete,
                                 max_chunks=user_max_chunks
                             )
+                            planned_chunks_total += result.get("vectors_indexed", 0)
+                            tokens_total += result.get("tokens_used", 0)
         if estimate:
             return {"message": "Estimate only", "chunks_planned": planned_chunks_total}
-        return {"message": "Content indexed successfully"}
+        return {"message": "Content indexed successfully", "vectors_indexed": planned_chunks_total, "tokens_used": tokens_total}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

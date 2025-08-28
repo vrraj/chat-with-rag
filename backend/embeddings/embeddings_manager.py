@@ -25,6 +25,8 @@ class EmbeddingsManager:
         )
         # Now set the callback after the method is defined
         self.qdrant_db.generate_embeddings = self.generate_embeddings
+        # Track tokens used during a single indexing operation
+        self._tokens_used: int = 0
 
     def generate_embeddings(self, text: str) -> List[float]:
         """
@@ -48,7 +50,11 @@ class EmbeddingsManager:
                 )
                 embedding = response.data[0].embedding
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
-                total_tokens = response.usage.total_tokens if response.usage else "N/A"
+                total_tokens = response.usage.total_tokens if response.usage else 0
+                try:
+                    self._tokens_used += int(total_tokens or 0)
+                except Exception:
+                    pass
                 logger.debug(f"Tokens used - prompt: {prompt_tokens}, total: {total_tokens}")
                 logger.debug(f"Received embedding vector of length: {len(embedding)}")
                 return embedding
@@ -178,7 +184,7 @@ class EmbeddingsManager:
 
         return processed_chunks
 
-    def index_document(self, document: Dict, force_delete: bool = True, max_chunks: Optional[int] = None):
+    def index_document(self, document: Dict, force_delete: bool = True, max_chunks: Optional[int] = None) -> Dict[str, int]:
         """
         Index a document by processing it and storing embeddings
         
@@ -200,6 +206,8 @@ class EmbeddingsManager:
                 logger.debug(f"Force delete is enabled. Deleting existing entries for: {url}")
                 self.delete_document(url)
             
+            # Reset token counter and process document
+            self._tokens_used = 0
             # Process document and generate embeddings
             processed_chunks = self.process_document(document, max_chunks=max_chunks)
             
@@ -209,6 +217,7 @@ class EmbeddingsManager:
                 if not success:
                     raise Exception("Failed to add embeddings to Qdrant")
                 logger.debug(f"Successfully added {len(processed_chunks)} embeddings to Qdrant")
+                return {"vectors_indexed": len(processed_chunks), "tokens_used": int(self._tokens_used)}
             except Exception as e:
                 logger.error(f"Error indexing embeddings to Qdrant: {e}")
                 raise
@@ -281,7 +290,7 @@ class EmbeddingsManager:
             ]
         )
 
-    def index_chunks(self, chunks: List[Dict], force_delete: bool = True, max_chunks: Optional[int] = None):
+    def index_chunks(self, chunks: List[Dict], force_delete: bool = True, max_chunks: Optional[int] = None) -> Dict[str, int]:
         """
         Index pre-chunked data into Qdrant. Generates embeddings for each chunk and wraps in Qdrant format.
         Args:
@@ -313,7 +322,8 @@ class EmbeddingsManager:
             logger.warning(f"Capping pre-chunked inputs from {len(chunks)} to {effective_cap}")
             chunks = chunks[:effective_cap]
 
-        # Generate embeddings and wrap chunks
+        # Reset token counter; generate embeddings and wrap chunks
+        self._tokens_used = 0
         points = []
         failures = 0
         started_at = time.time()
@@ -354,3 +364,4 @@ class EmbeddingsManager:
         if not success:
             raise Exception("Failed to add embeddings to Qdrant")
         #print(f"[DEBUG] Successfully added {len(points)} pre-chunked embeddings to Qdrant")
+        return {"vectors_indexed": len(points), "tokens_used": int(self._tokens_used)}

@@ -80,6 +80,7 @@
                 </label>
                 <button id="pdfIndexBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Index PDF</button>
             </div>
+            <div id="pdfProgress" class="text-sm text-gray-600 mt-2"></div>
         </div>
 
         <!-- MediaWiki Index Section -->
@@ -121,6 +122,37 @@
                 </label>
                 <button id="mwIndexBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Index MediaWiki</button>
             </div>
+            <div id="mwProgress" class="text-sm text-gray-600 mt-2"></div>
+        </div>
+
+        <!-- HTML Index Section (single URL) -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Index HTML Page</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-700">Page URL</label>
+                    <input type="text" id="htmlUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://example.com/page">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Max chunks</label>
+                    <input type="number" id="htmlMaxChunks" value="0" min="0" class="mt-1 w-28 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    <p class="text-xs text-gray-500 mt-1">0 = no user limit</p>
+                </div>
+                <div class="flex items-end">
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" id="htmlEstimateToggle" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        <span class="ml-2 text-sm text-gray-700">Estimate only (no indexing)</span>
+                    </label>
+                </div>
+            </div>
+            <div class="flex items-center justify-between mt-4">
+                <label class="inline-flex items-center">
+                    <input type="checkbox" id="htmlForceDelete" checked class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2 text-sm text-gray-700">Force delete existing</span>
+                </label>
+                <button id="htmlIndexBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Index HTML</button>
+            </div>
+            <div id="htmlProgress" class="text-sm text-gray-600 mt-2"></div>
         </div>
 
         <!-- Shortcuts Section -->
@@ -129,30 +161,8 @@
             <div class="flex gap-4">
                 <button id="openSearchBtn" class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700">Open Search</button>
                 <button id="openDebugBtn" class="px-4 py-2 rounded-md text-white bg-yellow-600 hover:bg-yellow-700">Open Debug Index</button>
+                <a href="/chat.html" target="_blank" class="px-4 py-2 rounded-md text-white bg-blue-600 hover:bg-blue-700">Open Chat</a>
             </div>
-        </div>
-
-        <!-- Chat Section -->
-        <div class="bg-white rounded-lg shadow-md p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-2xl font-semibold">Chat</h2>
-                <label class="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" id="webSearchToggle" class="sr-only peer">
-                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                    <span class="ml-3 text-sm font-medium text-gray-900">Enable Web Search</span>
-                </label>
-            </div>
-            
-            <div id="chatContainer" class="h-[400px] overflow-y-auto mb-4 p-4 border rounded-lg">
-                <!-- Chat messages will be inserted here -->
-            </div>
-            
-            <form id="chatForm" class="flex space-x-4">
-                <input type="text" id="messageInput" placeholder="Type your message..." class="flex-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
-                <button type="submit" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">
-                    Send
-                </button>
-            </form>
         </div>
     </div>
 

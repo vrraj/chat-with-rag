@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const pdfEstimateToggle = document.getElementById('pdfEstimateToggle');
     const pdfForceDelete = document.getElementById('pdfForceDelete');
     const pdfIndexBtn = document.getElementById('pdfIndexBtn');
+    const pdfProgress = document.getElementById('pdfProgress');
 
     // Chat state
     let chatHistory = [];
@@ -213,8 +214,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await resp.json();
             if (estimate) {
                 alert(`PDF estimate: ${data.chunks_planned ?? 0} chunk(s).`);
+                if (pdfProgress) pdfProgress.textContent = `Estimated chunks: ${data.chunks_planned ?? 0}`;
             } else {
                 alert(`PDF indexed successfully${data.source ? ` from ${data.source}` : ''}.`);
+                if (pdfProgress) pdfProgress.textContent = `Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0}`;
             }
             if (pdfFileInput) pdfFileInput.value = '';
             if (pdfUrlInput) pdfUrlInput.value = '';
@@ -236,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 mwIndexBtn.disabled = true;
                 mwIndexBtn.textContent = 'Indexing...';
             }
+            const prog = (t) => { const el = document.getElementById('mwProgress'); if (el) el.textContent = t; };
             const url = (mwUrlInput?.value || '').trim();
             if (!url) { alert('Enter a MediaWiki URL'); return; }
             const maxChunks = parseInt(mwMaxChunksInput?.value || '0', 10) || 0;
@@ -250,7 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (apiUrl) qs.set('api_url', apiUrl);
             if (ua) qs.set('ua', ua);
             if (estimate) qs.set('estimate', 'true');
-
+            prog('Reading document...');
             const resp = await fetch(`http://localhost:8000/mediawiki/url${qs.toString() ? '?' + qs.toString() : ''}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -263,8 +267,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await resp.json();
             if (estimate) {
                 alert(`MediaWiki estimate: ${data.chunks_planned ?? 0} chunk(s).`);
+                prog(`Estimated chunks: ${data.chunks_planned ?? 0}`);
             } else {
                 alert(`MediaWiki indexed successfully. Chunks: ${data.chunks_indexed ?? 'n/a'}`);
+                prog(`Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0}`);
             }
         } catch (err) {
             alert(err.message || String(err));
@@ -278,4 +284,57 @@ document.addEventListener('DOMContentLoaded', () => {
     mwIndexBtn && mwIndexBtn.addEventListener('click', indexMediaWiki);
     openSearchBtn && openSearchBtn.addEventListener('click', () => window.open('/search', '_blank'));
     openDebugBtn && openDebugBtn.addEventListener('click', () => window.open('/debug_index', '_blank'));
+    // HTML indexing (single URL)
+    const htmlUrlInput = document.getElementById('htmlUrl');
+    const htmlMaxChunksInput = document.getElementById('htmlMaxChunks');
+    const htmlEstimateToggle = document.getElementById('htmlEstimateToggle');
+    const htmlForceDelete = document.getElementById('htmlForceDelete');
+    const htmlIndexBtn = document.getElementById('htmlIndexBtn');
+    const htmlProgress = document.getElementById('htmlProgress');
+
+    async function indexHtml() {
+        try {
+            htmlIndexBtn && (htmlIndexBtn.disabled = true, htmlIndexBtn.textContent = 'Indexing...');
+            if (htmlProgress) htmlProgress.textContent = 'Reading document...';
+            const url = (htmlUrlInput?.value || '').trim();
+            if (!url) { alert('Enter a page URL'); return; }
+            const maxChunks = parseInt(htmlMaxChunksInput?.value || '0', 10) || 0;
+            const force_delete = !!(htmlForceDelete && htmlForceDelete.checked);
+            const estimate = !!(htmlEstimateToggle && htmlEstimateToggle.checked);
+            if (htmlProgress) htmlProgress.textContent = estimate ? 'Chunking document...' : 'Embedding document...';
+            const resp = await fetch(`/index?estimate=${estimate}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ urls: [url], doc_type: 'HTML', max_chunks: maxChunks, force_delete })
+            });
+            if (!resp.ok) {
+                const t = await resp.text();
+                throw new Error(t || 'Failed to index HTML');
+            }
+            const data = await resp.json();
+            if (estimate) {
+                alert(`HTML estimate: ${data.chunks_planned ?? 0} chunk(s).`);
+                if (htmlProgress) htmlProgress.textContent = `Estimated chunks: ${data.chunks_planned ?? 0}`;
+            } else {
+                alert('HTML indexed successfully.');
+                if (htmlProgress) htmlProgress.textContent = `Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0}`;
+            }
+        } catch (err) {
+            alert(err.message || String(err));
+        } finally {
+            htmlIndexBtn && (htmlIndexBtn.disabled = false, htmlIndexBtn.textContent = 'Index HTML');
+        }
+    }
+    htmlIndexBtn && htmlIndexBtn.addEventListener('click', indexHtml);
+
+    // Enhance PDF progress
+    if (pdfIndexBtn) {
+        const origIndexPdf = indexPdf;
+        indexPdf = async function() {
+            try {
+                if (pdfProgress) pdfProgress.textContent = 'Reading document...';
+            } catch {}
+            await origIndexPdf();
+        };
+    }
 });
