@@ -82,6 +82,56 @@
             </div>
         </div>
 
+        <!-- MediaWiki Index Section -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Index MediaWiki Page (e.g., Wikipedia)</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">MediaWiki URL</label>
+                    <input type="text" id="mwUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://en.wikipedia.org/wiki/OpenAI">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Max chunks</label>
+                    <input type="number" id="mwMaxChunks" value="0" min="0" class="mt-1 w-28 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    <p class="text-xs text-gray-500 mt-1">0 = no user limit</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Skip sections (comma-separated)</label>
+                    <input type="text" id="mwSkipSections" value="References, External Links, Further reading, Notes" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">API URL (optional)</label>
+                    <input type="text" id="mwApiUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://en.wikipedia.org/w/api.php">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">User-Agent (optional)</label>
+                    <input type="text" id="mwUA" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="WebsiteChatAgent/0.1 (contact@example.com)">
+                </div>
+                <div class="flex items-end">
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" id="mwEstimateToggle" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        <span class="ml-2 text-sm text-gray-700">Estimate only (no indexing)</span>
+                    </label>
+                </div>
+            </div>
+            <div class="flex items-center justify-between mt-4">
+                <label class="inline-flex items-center">
+                    <input type="checkbox" id="mwForceDelete" checked class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2 text-sm text-gray-700">Force delete existing</span>
+                </label>
+                <button id="mwIndexBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Index MediaWiki</button>
+            </div>
+        </div>
+
+        <!-- Shortcuts Section -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Quick Links</h2>
+            <div class="flex gap-4">
+                <button id="openSearchBtn" class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700">Open Search</button>
+                <button id="openDebugBtn" class="px-4 py-2 rounded-md text-white bg-yellow-600 hover:bg-yellow-700">Open Debug Index</button>
+            </div>
+        </div>
+
         <!-- Chat Section -->
         <div class="bg-white rounded-lg shadow-md p-6">
             <div class="flex justify-between items-center mb-4">

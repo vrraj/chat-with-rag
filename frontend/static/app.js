@@ -228,4 +228,54 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     pdfIndexBtn && pdfIndexBtn.addEventListener('click', indexPdf);
+
+    // MediaWiki indexing handlers (if UI is present)
+    async function indexMediaWiki() {
+        try {
+            if (mwIndexBtn) {
+                mwIndexBtn.disabled = true;
+                mwIndexBtn.textContent = 'Indexing...';
+            }
+            const url = (mwUrlInput?.value || '').trim();
+            if (!url) { alert('Enter a MediaWiki URL'); return; }
+            const maxChunks = parseInt(mwMaxChunksInput?.value || '0', 10) || 0;
+            const skipRaw = (mwSkipSectionsInput?.value || '').trim();
+            const skipSections = skipRaw ? skipRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
+            const apiUrl = (mwApiUrlInput?.value || '').trim();
+            const ua = (mwUAInput?.value || '').trim();
+            const estimate = !!(mwEstimateToggle && mwEstimateToggle.checked);
+            const force_delete = !!(mwForceDelete && mwForceDelete.checked);
+
+            const qs = new URLSearchParams();
+            if (apiUrl) qs.set('api_url', apiUrl);
+            if (ua) qs.set('ua', ua);
+            if (estimate) qs.set('estimate', 'true');
+
+            const resp = await fetch(`http://localhost:8000/mediawiki/url${qs.toString() ? '?' + qs.toString() : ''}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, max_chunks: maxChunks, skip_sections: skipSections, force_delete }),
+            });
+            if (!resp.ok) {
+                const t = await resp.text();
+                throw new Error(t || 'Failed to index MediaWiki');
+            }
+            const data = await resp.json();
+            if (estimate) {
+                alert(`MediaWiki estimate: ${data.chunks_planned ?? 0} chunk(s).`);
+            } else {
+                alert(`MediaWiki indexed successfully. Chunks: ${data.chunks_indexed ?? 'n/a'}`);
+            }
+        } catch (err) {
+            alert(err.message || String(err));
+        } finally {
+            if (mwIndexBtn) {
+                mwIndexBtn.disabled = false;
+                mwIndexBtn.textContent = 'Index MediaWiki';
+            }
+        }
+    }
+    mwIndexBtn && mwIndexBtn.addEventListener('click', indexMediaWiki);
+    openSearchBtn && openSearchBtn.addEventListener('click', () => window.open('/search', '_blank'));
+    openDebugBtn && openDebugBtn.addEventListener('click', () => window.open('/debug_index', '_blank'));
 });

@@ -111,6 +111,19 @@ async def search_page():
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "search.html"))
 
+# Debug index HTML page (separate from API JSON at /debug-index)
+@app.get(
+    "/debug_index",
+    tags=["1. UI Pages"],
+    summary="3. Debug Index (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Debug Index</body></html>"}}}}
+)
+async def debug_index_page():
+    """Serve the debug-index HTML page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "debug-index.html"))
+
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(
