@@ -11,6 +11,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const docTypeSelect = document.getElementById('docType');
     const addUrlBtn = document.getElementById('addUrlBtn');
     const indexBtn = document.getElementById('indexBtn');
+    const maxChunksInput = document.getElementById('maxChunksInput');
+    const estimateToggle = document.getElementById('estimateToggle');
+    // PDF UI elements
+    const pdfUrlInput = document.getElementById('pdfUrl');
+    const pdfFileInput = document.getElementById('pdfFile');
+    const pdfMaxChunksInput = document.getElementById('pdfMaxChunks');
+    const pdfEstimateToggle = document.getElementById('pdfEstimateToggle');
+    const pdfForceDelete = document.getElementById('pdfForceDelete');
+    const pdfIndexBtn = document.getElementById('pdfIndexBtn');
     const container = document.querySelector('.container');
 
     // Add Search Section
@@ -26,6 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Event Listeners
     addUrlBtn.addEventListener('click', addUrl);
     indexBtn.addEventListener('click', indexContent);
+    if (pdfIndexBtn) pdfIndexBtn.addEventListener('click', indexPdf);
 
     // URL Management
     function addUrl() {
@@ -96,14 +106,16 @@ document.addEventListener('DOMContentLoaded', () => {
             indexBtn.disabled = true;
             indexBtn.textContent = 'Indexing...';
 
-            const response = await fetch('http://localhost:8000/index', {
+            const estimate = !!(estimateToggle && estimateToggle.checked);
+            const response = await fetch(`http://localhost:8000/index?estimate=${estimate}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
                     urls: urls.map(urlObj => urlObj.url),
-                    types: urls.map(urlObj => urlObj.type)
+                    types: urls.map(urlObj => urlObj.type),
+                    max_chunks: parseInt(maxChunksInput?.value || '0', 10) || 0
                 }),
             });
 
@@ -111,7 +123,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error('Failed to index content');
             }
 
-            alert('Content indexed successfully!');
+            const data = await response.json();
+            if (estimate) {
+                alert(`Estimate: ${data.chunks_planned ?? 0} chunk(s) would be indexed.`);
+            } else {
+                alert('Content indexed successfully!');
+            }
             urls = [];
             updateUrlList();
         } catch (error) {
@@ -119,6 +136,51 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             indexBtn.disabled = false;
             indexBtn.textContent = 'Index Content';
+        }
+    }
+
+    // Index structured PDF via /pdf (URL or Upload)
+    async function indexPdf() {
+        try {
+            pdfIndexBtn.disabled = true;
+            pdfIndexBtn.textContent = 'Indexing...';
+
+            const fd = new FormData();
+            const pdfUrl = (pdfUrlInput?.value || '').trim();
+            const file = pdfFileInput?.files?.[0];
+            if (!file && !pdfUrl) {
+                alert('Provide either a PDF URL or upload a file.');
+                return;
+            }
+            if (file) fd.append('file', file);
+            if (pdfUrl) fd.append('url', pdfUrl);
+            const maxChunksVal = parseInt(pdfMaxChunksInput?.value || '0', 10) || 0;
+            fd.append('max_chunks', String(maxChunksVal));
+            fd.append('force_delete', String(!!(pdfForceDelete && pdfForceDelete.checked)));
+
+            const estimate = !!(pdfEstimateToggle && pdfEstimateToggle.checked);
+            const resp = await fetch(`http://localhost:8000/pdf?estimate=${estimate}`, {
+                method: 'POST',
+                body: fd,
+            });
+            if (!resp.ok) {
+                const t = await resp.text();
+                throw new Error(t || 'Failed to index PDF');
+            }
+            const data = await resp.json();
+            if (estimate) {
+                alert(`PDF estimate: ${data.chunks_planned ?? 0} chunk(s).`);
+            } else {
+                alert(`PDF indexed successfully${data.source ? ` from ${data.source}` : ''}.`);
+            }
+            // Reset inputs
+            if (pdfFileInput) pdfFileInput.value = '';
+            if (pdfUrlInput) pdfUrlInput.value = '';
+        } catch (err) {
+            alert(err.message || String(err));
+        } finally {
+            pdfIndexBtn.disabled = false;
+            pdfIndexBtn.textContent = 'Index PDF';
         }
     }
 });

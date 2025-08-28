@@ -47,8 +47,11 @@ class URLInput(BaseModel):
     urls: List[str]
     doc_type: str = "HTML"  # 'HTML' or 'PDF'
     force_crawl: Optional[bool] = True
-    max_chars: Optional[int] = 1000  # Limit characters to to embed for a web page (Testing)
+    max_chunks: Optional[int] = 0  # 0 or less means no user limit; hard cap still applies
     force_delete: Optional[bool] = True
+
+
+## Consolidated PDF schema handled via /pdf endpoint with form fields; URL-only schema removed
 
 
 # Payload update request schema

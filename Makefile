@@ -89,4 +89,14 @@ qdrant-migrate-from-volume:
 kill-uvicorn:
 	@echo "Killing any running uvicorn processes..."
 	@pkill -f "uvicorn" || echo "No uvicorn process found"
+# -----------------------Docker commands to start the docker desktop 
+start-docker:
+	open -a Docker
+	@echo " Starting Docker Desktop..."
+	@while ! docker info > /dev/null 2>&1; do \
+		echo "⏳ Waiting for Docker to start..."; \
+		sleep 2; \
+	done
+	@echo " Docker is ready!"
+
 

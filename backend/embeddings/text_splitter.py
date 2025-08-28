@@ -22,6 +22,12 @@ class TextSplitter:
                              Langchain dependencies.
     """
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100, use_manual_splitter: bool = False):
+        # Ensure progress in manual splitting: overlap must be < chunk_size
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        if chunk_overlap >= chunk_size:
+            # Adjust to a safe value to avoid non-advancing windows
+            chunk_overlap = max(0, chunk_size - 1)
         self.chunk_size: int = chunk_size
         self.chunk_overlap: int = chunk_overlap
         self.use_manual_splitter: bool = use_manual_splitter

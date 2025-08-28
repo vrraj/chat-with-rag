@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 import openai
 import uuid
 import logging
+import time
 from backend.core.config import settings
 from backend.embeddings.qdrant_client import QdrantStorage
 from backend.embeddings.text_splitter import TextSplitter
@@ -33,23 +34,38 @@ class EmbeddingsManager:
         Returns:
             List of float values representing the embedding
         """
-        try:
-            logger.debug(f"Generating embedding using model: {settings.embedding_model}")
-            response = self.client.embeddings.create(
-                input=text,
-                model=settings.embedding_model
-            )
-            embedding = response.data[0].embedding
-            prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
-            total_tokens = response.usage.total_tokens if response.usage else "N/A"
-            logger.debug(f"Tokens used - prompt: {prompt_tokens}, total: {total_tokens}")
-            logger.debug(f"Received embedding vector of length: {len(embedding)}")
-            return embedding
-        except Exception as e:
-            logger.error(f"Error generating embeddings: {e}")
-            raise
+        attempt = 0
+        backoff = max(0.0, float(settings.embeddings_initial_backoff_secs))
+        last_err = None
+        while attempt < int(settings.embeddings_max_retries):
+            try:
+                if settings.embeddings_call_delay_secs:
+                    time.sleep(float(settings.embeddings_call_delay_secs))
+                logger.debug(f"Generating embedding using model: {settings.embedding_model}")
+                response = self.client.embeddings.create(
+                    input=text,
+                    model=settings.embedding_model
+                )
+                embedding = response.data[0].embedding
+                prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
+                total_tokens = response.usage.total_tokens if response.usage else "N/A"
+                logger.debug(f"Tokens used - prompt: {prompt_tokens}, total: {total_tokens}")
+                logger.debug(f"Received embedding vector of length: {len(embedding)}")
+                return embedding
+            except Exception as e:
+                last_err = e
+                attempt += 1
+                logger.warning(f"Embedding call failed (attempt {attempt}/{settings.embeddings_max_retries}): {e}")
+                if attempt >= int(settings.embeddings_max_retries):
+                    break
+                # Exponential backoff
+                sleep_for = max(0.0, backoff)
+                time.sleep(sleep_for)
+                backoff *= 2
+        logger.error(f"Error generating embeddings after retries: {last_err}")
+        raise last_err
 
-    def process_document(self, document: Dict) -> List[Dict]:
+    def process_document(self, document: Dict, max_chunks: Optional[int] = None) -> List[Dict]:
         """
         Process a document by splitting it into chunks and generating embeddings
         Args:
@@ -57,16 +73,7 @@ class EmbeddingsManager:
         Returns:
             List of processed chunks with embeddings
         """
-        max_chars = document.get("max_chars", None)
-        print(f"[DEBUG] max_chars received from document: {max_chars}")
         text = document.get("text", "")
-        if max_chars is not None:
-            print(f"[DEBUG] Limiting input text to {max_chars} characters (original length: {len(text)})")
-            truncated_text = text[:max_chars]
-            print(f"[DEBUG] Final text length after truncation: {len(truncated_text)}")
-        else:
-            print(f"[DEBUG] No max_chars limit specified (original length: {len(text)})")
-            truncated_text = text
 
         doc_type = document.get("doc_type", "HTML")
         if doc_type == "HTML":
@@ -93,11 +100,25 @@ class EmbeddingsManager:
         print(f"[DEBUG] Using chunk size: {text_splitter.chunk_size}")
         print(f"[DEBUG] Using chunk overlap: {text_splitter.chunk_overlap}")
         # Only pass the raw text to split_text
-        chunks = text_splitter.split_text(truncated_text)
+        chunks = text_splitter.split_text(text)
+        # Safety cap to prevent runaway processing; respect user-provided max if supplied
+        effective_cap = int(settings.max_chunks_per_doc)  # Hard limit set in config.py
+        if max_chunks is not None:
+            try:
+                user_cap = int(max_chunks)
+                if user_cap > 0:
+                    effective_cap = min(effective_cap, user_cap)
+            except Exception:
+                pass
+        if len(chunks) > effective_cap:
+            logger.warning(f"Capping chunks from {len(chunks)} to {effective_cap}")
+            chunks = chunks[:effective_cap]
         #print(f"[DEBUG] Number of chunks generated: {len(chunks)}")
         # Attach MediaWiki-style metadata manually
         processed_chunks = []
         total_chunks = len(chunks)
+        failures = 0
+        started_at = time.time()
         for idx, chunk_text in enumerate(chunks):
             try:
                 chunk_id = str(uuid.uuid4())
@@ -144,12 +165,20 @@ class EmbeddingsManager:
                     "payload": payload,
                 })
             except Exception as e:
+                failures += 1
                 print(f"Error processing chunk {chunk_id}: {e}")
-                continue
+                # Abort on too many consecutive failures
+                if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
+                    logger.error("Aborting document processing due to excessive embedding failures")
+                    break
+            # Time budget guard
+            if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                logger.error("Aborting document processing due to time limit exceeded")
+                break
 
         return processed_chunks
 
-    def index_document(self, document: Dict, force_delete: bool = True):
+    def index_document(self, document: Dict, force_delete: bool = True, max_chunks: Optional[int] = None):
         """
         Index a document by processing it and storing embeddings
         
@@ -172,7 +201,7 @@ class EmbeddingsManager:
                 self.delete_document(url)
             
             # Process document and generate embeddings
-            processed_chunks = self.process_document(document)
+            processed_chunks = self.process_document(document, max_chunks=max_chunks)
             
             try:
                 logger.debug(f"Inserting {len(processed_chunks)} vectors into Qdrant collection: {self.qdrant.collection_name}")
@@ -252,7 +281,7 @@ class EmbeddingsManager:
             ]
         )
 
-    def index_chunks(self, chunks: List[Dict], force_delete: bool = True):
+    def index_chunks(self, chunks: List[Dict], force_delete: bool = True, max_chunks: Optional[int] = None):
         """
         Index pre-chunked data into Qdrant. Generates embeddings for each chunk and wraps in Qdrant format.
         Args:
@@ -271,21 +300,45 @@ class EmbeddingsManager:
             print(f"[DEBUG] Collection not found, creating it now...")
             self.qdrant.create_collection()
 
+        # Apply safety cap here as well; respect user-provided max if supplied
+        effective_cap = int(settings.max_chunks_per_doc)
+        if max_chunks is not None:
+            try:
+                user_cap = int(max_chunks)
+                if user_cap > 0:
+                    effective_cap = min(effective_cap, user_cap)
+            except Exception:
+                pass
+        if len(chunks) > effective_cap:
+            logger.warning(f"Capping pre-chunked inputs from {len(chunks)} to {effective_cap}")
+            chunks = chunks[:effective_cap]
+
         # Generate embeddings and wrap chunks
         points = []
+        failures = 0
+        started_at = time.time()
         for i, chunk in enumerate(chunks):
             text = chunk.get("text", "")
             if not text:
                 print(f"[WARNING] Skipping empty chunk at index {i}")
                 continue
-
-            embedding = self.generate_embeddings(text)
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{chunk.get('url', '')}-{i}"))
-            points.append({
-                "id": point_id,
-                "vector": embedding,
-                "payload": chunk
-            })
+            try:
+                embedding = self.generate_embeddings(text)
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{chunk.get('url', '')}-{i}"))
+                points.append({
+                    "id": point_id,
+                    "vector": embedding,
+                    "payload": chunk
+                })
+            except Exception as e:
+                failures += 1
+                logger.error(f"Failed to embed chunk {i}: {e}")
+                if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
+                    logger.error("Aborting chunk indexing due to excessive embedding failures")
+                    break
+            if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                logger.error("Aborting chunk indexing due to time limit exceeded")
+                break
 
         if force_delete:
             url_set = {point["payload"].get("url") for point in points}

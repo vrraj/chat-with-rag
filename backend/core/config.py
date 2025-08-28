@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     wiki_timeout_secs: int = 15
     wiki_max_retries: int = 5
 
+    # Embedding safety limits
+    max_chunks_per_doc: int = 500  # Hard cap to prevent runaway embedding loops
+    embeddings_max_retries: int = 5  # Retry attempts per embedding call
+    embeddings_initial_backoff_secs: float = 1.0  # Initial backoff for retries
+    embeddings_max_consecutive_failures_per_doc: int = 20  # Abort document after too many failures
+    embeddings_total_time_limit_secs: int = 300  # Abort document if processing exceeds this time
+    embeddings_call_delay_secs: float = 0.0  # Optional pacing between embedding calls
+
 
     model_config = {
         "env_file": ".env",

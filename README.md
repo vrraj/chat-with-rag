@@ -42,6 +42,56 @@ python run.py
 - OpenAI API Key
 - Qdrant vector database
 
+### API: Index content
+
+- MediaWiki: `POST /mediawiki/url`
+  - Body: `{ "url": "https://en.wikipedia.org/wiki/...", "max_chunks": 0, "force_delete": true }`
+  - Notes: `max_chunks > 0` limits chunks to that number; `0` or omitted means no user limit. A hard cap (`MAX_CHUNKS_PER_DOC`) is always enforced.
+  - Optional: `?estimate=true` query param to return planned chunk count without indexing.
+
+- Generic URLs/PDFs: `POST /index`
+  - Body: `{ "urls": ["https://..."], "doc_type": "HTML" | "PDF", "max_chunks": 0, "force_delete": true, "force_crawl": true }`
+  - Behavior: standardize on chunk caps; character-based limits are removed.
+  - Optional: `?estimate=true` query param to return planned chunk count without indexing.
+
+- Structured PDF (keep sections/headings like MediaWiki):
+  - Single endpoint: `POST /pdf` as multipart form with fields:
+    - `file` (UploadFile, optional) or `url` (string, optional)
+    - `max_chunks` (int, default 0), `force_delete` (bool, default true)
+    - Optional query: `?estimate=true` to return planned chunk count only
+
+Examples:
+```bash
+curl -X POST http://localhost:8000/mediawiki/url \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://en.wikipedia.org/wiki/OpenAI","max_chunks":50,"force_delete":true}'
+
+curl -X POST http://localhost:8000/index \
+  -H 'Content-Type: application/json' \
+  -d '{"urls":["https://openai.com"],"doc_type":"HTML","max_chunks":100,"force_delete":true}'
+
+# Estimate only examples
+curl -X POST 'http://localhost:8000/mediawiki/url?estimate=true' \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://en.wikipedia.org/wiki/OpenAI","max_chunks":0}'
+
+curl -X POST 'http://localhost:8000/index?estimate=true' \
+  -H 'Content-Type: application/json' \
+  -d '{"urls":["https://openai.com"],"doc_type":"HTML","max_chunks":0}'
+
+# Structured PDF examples
+# Upload a local PDF
+curl -X POST 'http://localhost:8000/pdf?estimate=false' \
+  -F 'file=@/path/to/file.pdf' \
+  -F 'max_chunks=100' \
+  -F 'force_delete=true'
+
+# Use a PDF URL, estimate only
+curl -X POST 'http://localhost:8000/pdf?estimate=true' \
+  -F 'url=https://example.com/file.pdf' \
+  -F 'max_chunks=0'
+```
+
 ## Setup
 
 1. Clone the repository:
@@ -69,6 +119,14 @@ EMBEDDING_MODEL=text-embedding-3-small
 CHAT_MODEL=gpt-4.1-mini-2025-04-14
 MAX_HISTORY_TOKENS=4000
 COLLECTION_NAME=website_collection
+
+# Embedding safety limits (prevent runaway loops)
+MAX_CHUNKS_PER_DOC=500
+EMBEDDINGS_MAX_RETRIES=5
+EMBEDDINGS_INITIAL_BACKOFF_SECS=1.0
+EMBEDDINGS_MAX_CONSECUTIVE_FAILURES_PER_DOC=20
+EMBEDDINGS_TOTAL_TIME_LIMIT_SECS=300
+EMBEDDINGS_CALL_DELAY_SECS=0.0
 ```
 
 4. Run the development server:

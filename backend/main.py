@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
@@ -14,6 +14,7 @@ from backend.extractor.extractor import ContentExtractor
 from backend.embeddings.schemas import EmbeddingRequest, SearchRequest, SearchResponse, ChatRequest, ChatResponse, MediaWikiURLInput, URLInput, PayloadUpdateRequest
 from backend.db.qdrant_db import QdrantDB
 from backend.extractor.mediawiki_extractor import MediaWikiExtractor
+from backend.extractor.pdf_extractor import PDFExtractor
 from backend.chat.chat_manager import ChatManager
 
 # Configure logging
@@ -116,6 +117,7 @@ async def index_mediawiki_url(
     mediawiki_input: MediaWikiURLInput,
     api_url: Optional[str] = Query(None, description="Override MediaWiki API endpoint (defaults to settings)"),
     ua: Optional[str] = Query(None, description="Override User-Agent for MediaWiki requests"),
+    estimate: Optional[bool] = Query(False, description="If true, return planned chunk count without indexing"),
 ):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
@@ -127,7 +129,12 @@ async def index_mediawiki_url(
         embeddings_manager = EmbeddingsManager()
         logger.info("Embeddings manager initialized")
     try:
-        extractor = MediaWikiExtractor(api_url=api_url, user_agent=ua)
+        extractor = MediaWikiExtractor(
+            chunk_size=settings.html_chunk_size,
+            chunk_overlap=settings.html_chunk_overlap,
+            api_url=api_url,
+            user_agent=ua,
+        )
         url = mediawiki_input.url
         max_chunks = mediawiki_input.max_chunks
         skip_sections = mediawiki_input.skip_sections
@@ -136,14 +143,61 @@ async def index_mediawiki_url(
         chunks = extractor.parse_from_url(url, skip_sections=skip_sections)
         print(f"DEBUG: Parsed {len(chunks)} chunks from url")
         print(f"DEBUG: Total chunks returned by extractor: {len(chunks)}")
-        # Limit the number of chunks indexed if max_chunks is set
-        if max_chunks is not None:
+        # Limit the number of chunks indexed if max_chunks is a positive value
+        if max_chunks is not None and max_chunks > 0:
             chunks = chunks[:max_chunks]
         print(f"DEBUG: Indexing {len(chunks)} chunks")
-        embeddings_manager.index_chunks(chunks, force_delete=mediawiki_input.force_delete)
+        if estimate:
+            return {"message": "Estimate only", "chunks_planned": len(chunks)}
+        embeddings_manager.index_chunks(
+            chunks,
+            force_delete=mediawiki_input.force_delete,
+            max_chunks=max_chunks
+        )
         return {"message": "MediaWiki content indexed successfully", "chunks_indexed": len(chunks)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pdf", tags=["2. Ingest"], summary="1c. Index PDF (upload or URL)")
+async def index_pdf(
+    file: Optional[UploadFile] = File(None, description="PDF file to upload"),
+    url: Optional[str] = Form(None, description="PDF URL if not uploading a file"),
+    max_chunks: Optional[int] = Form(0, description="0 = no user limit"),
+    force_delete: Optional[bool] = Form(True),
+    estimate: Optional[bool] = Query(False, description="If true, return planned chunk count without indexing"),
+):
+    """Index a PDF either by uploaded file or by URL. Mirrors /pdf/url behavior and metadata payload."""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    if not file and not url:
+        raise HTTPException(status_code=400, detail="Provide either a PDF file or a URL")
+    try:
+        extractor = PDFExtractor(
+            chunk_size=settings.html_chunk_size,
+            chunk_overlap=settings.html_chunk_overlap,
+        )
+        if file:
+            data = await file.read()
+            source = f"uploaded://{file.filename}"
+            chunks = extractor.parse_from_bytes(data, source)
+        else:
+            chunks = extractor.parse_from_url(url)
+            source = url
+        if max_chunks is not None and max_chunks > 0:
+            chunks = chunks[:max_chunks]
+        if estimate:
+            return {"message": "Estimate only", "chunks_planned": len(chunks)}
+        embeddings_manager.index_chunks(
+            chunks,
+            force_delete=force_delete,
+            max_chunks=max_chunks,
+        )
+        return {"message": "PDF content indexed successfully", "chunks_indexed": len(chunks), "source": source}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+## Consolidated structured PDF indexing handled by /pdf endpoint below
 
 from backend.chat.chat_manager import ChatManager
 from fastapi import Depends, HTTPException
@@ -266,7 +320,7 @@ async def get_chat_history(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index", tags=["2. Ingest"], summary="2. Index URLs / PDFs")
-async def index_content(url_input: URLInput):
+async def index_content(url_input: URLInput, estimate: Optional[bool] = Query(False, description="If true, return planned chunk count without indexing")):
     """Index content from URLs (HTML or PDF)"""
     global embeddings_manager
     if embeddings_manager is None:
@@ -275,6 +329,7 @@ async def index_content(url_input: URLInput):
         #print("DEBUG: Entered index_content route")
         #print("Received input:", url_input.dict())  # Debugging line
         # Process each URL
+        planned_chunks_total = 0
         for url in url_input.urls:
             if url_input.doc_type == "HTML":
                 crawler = WebCrawler(
@@ -289,13 +344,31 @@ async def index_content(url_input: URLInput):
                     print("Raw page content length:", len(page['content']))
                     content = ContentExtractor.extract_content(page['content'], url=page['url'])
                     if content:
-                        if url_input.max_chars:
-                            content["max_chars"] = url_input.max_chars
+                        # Standardize on chunk-based limiting for /index (no max_chars support)
+                        user_max_chunks = url_input.max_chunks if (url_input.max_chunks and url_input.max_chunks > 0) else None
                         document = content
-                        #print("DEBUG: Full document to index:", document)
-                        print("DEBUG: Document prepared for indexing:", document['url'])
-                        embeddings_manager.index_document(document, force_delete=url_input.force_delete)
-                    
+                        # If estimate mode, compute chunk count only
+                        if estimate:
+                            from backend.embeddings.text_splitter import TextSplitter
+                            splitter = TextSplitter(
+                                chunk_size=settings.html_chunk_size,
+                                chunk_overlap=settings.html_chunk_overlap,
+                                use_manual_splitter=False,
+                            )
+                            chunks = splitter.split_text(document.get('text', '') or '')
+                            effective_cap = int(settings.max_chunks_per_doc)
+                            if user_max_chunks is not None:
+                                effective_cap = min(effective_cap, int(user_max_chunks))
+                            planned = min(len(chunks), effective_cap)
+                            planned_chunks_total += planned
+                        else:
+                            print("DEBUG: Document prepared for indexing:", document['url'])
+                            embeddings_manager.index_document(
+                                document,
+                                force_delete=url_input.force_delete,
+                                max_chunks=user_max_chunks
+                            )
+                
             elif url_input.doc_type == "PDF":
                 pdf_crawler = PDFCrawler()
                 pdf_data = pdf_crawler.crawl(url)
@@ -310,10 +383,31 @@ async def index_content(url_input: URLInput):
                             'title': pdf_data['title'],
                             'page_number': section['page_number']
                         }
-                        if url_input.max_chars:
-                            document["max_chars"] = url_input.max_chars
-                        embeddings_manager.index_document(document, force_delete=url_input.force_delete)
-        
+                        # Standardize on chunk-based limiting for /index (no max_chars support)
+                        user_max_chunks = url_input.max_chunks if (url_input.max_chunks and url_input.max_chunks > 0) else None
+                        if estimate:
+                            from backend.embeddings.text_splitter import TextSplitter
+                            # Use PDF chunk settings for PDFs
+                            chunk_size = settings.pdf_chunk_size or len(document['text'])
+                            splitter = TextSplitter(
+                                chunk_size=chunk_size,
+                                chunk_overlap=settings.pdf_chunk_overlap,
+                                use_manual_splitter=False,
+                            )
+                            chunks = splitter.split_text(document.get('text', '') or '')
+                            effective_cap = int(settings.max_chunks_per_doc)
+                            if user_max_chunks is not None:
+                                effective_cap = min(effective_cap, int(user_max_chunks))
+                            planned = min(len(chunks), effective_cap)
+                            planned_chunks_total += planned
+                        else:
+                            embeddings_manager.index_document(
+                                document,
+                                force_delete=url_input.force_delete,
+                                max_chunks=user_max_chunks
+                            )
+        if estimate:
+            return {"message": "Estimate only", "chunks_planned": planned_chunks_total}
         return {"message": "Content indexed successfully"}
         
     except Exception as e:

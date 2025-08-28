@@ -1,10 +1,8 @@
 services:
   qdrant:
-    image: ghcr.io/qdrant/qdrant:1.5.1
+    image: qdrant/qdrant:v1.14.1  # pin version for safety
     ports:
       - "6333:6333"
     volumes:
-      - qdrant_data:/qdrant/storage
-
-volumes:
-  qdrant_data:
+      # Bind mount so data is on your host and easy to back up
+      - ./qdrant_storage:/qdrant/storage

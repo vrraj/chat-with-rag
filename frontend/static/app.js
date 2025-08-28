@@ -4,6 +4,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatForm = document.getElementById('chatForm');
     const urlForm = document.getElementById('urlForm');
     const webSearchToggle = document.getElementById('webSearchToggle');
+    // PDF elements (optional; only present on index.html we ship)
+    const pdfUrlInput = document.getElementById('pdfUrl');
+    const pdfFileInput = document.getElementById('pdfFile');
+    const pdfMaxChunksInput = document.getElementById('pdfMaxChunks');
+    const pdfEstimateToggle = document.getElementById('pdfEstimateToggle');
+    const pdfForceDelete = document.getElementById('pdfForceDelete');
+    const pdfIndexBtn = document.getElementById('pdfIndexBtn');
 
     // Chat state
     let chatHistory = [];
@@ -132,7 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Handle chat form submission
-    chatForm.addEventListener('submit', async (e) => {
+    chatForm && chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const message = messageInput.value.trim();
         if (!message) return;
@@ -150,7 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Handle URL form submission
-    urlForm.addEventListener('submit', async (e) => {
+    urlForm && urlForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = document.getElementById('websiteUrl').value;
         const depth = parseInt(document.getElementById('depth').value);
@@ -174,4 +181,51 @@ document.addEventListener('DOMContentLoaded', () => {
             addMessage('Error indexing website. Please try again.', false);
         }
     });
+
+    // Simple PDF indexing handler if PDF UI is present
+    async function indexPdf() {
+        try {
+            if (pdfIndexBtn) {
+                pdfIndexBtn.disabled = true;
+                pdfIndexBtn.textContent = 'Indexing...';
+            }
+            const fd = new FormData();
+            const url = (pdfUrlInput?.value || '').trim();
+            const file = pdfFileInput?.files?.[0];
+            if (!file && !url) {
+                alert('Provide either a PDF URL or upload a file.');
+                return;
+            }
+            if (file) fd.append('file', file);
+            if (url) fd.append('url', url);
+            const maxChunksVal = parseInt(pdfMaxChunksInput?.value || '0', 10) || 0;
+            fd.append('max_chunks', String(maxChunksVal));
+            fd.append('force_delete', String(!!(pdfForceDelete && pdfForceDelete.checked)));
+            const estimate = !!(pdfEstimateToggle && pdfEstimateToggle.checked);
+            const resp = await fetch(`http://localhost:8000/pdf?estimate=${estimate}`, {
+                method: 'POST',
+                body: fd,
+            });
+            if (!resp.ok) {
+                const t = await resp.text();
+                throw new Error(t || 'Failed to index PDF');
+            }
+            const data = await resp.json();
+            if (estimate) {
+                alert(`PDF estimate: ${data.chunks_planned ?? 0} chunk(s).`);
+            } else {
+                alert(`PDF indexed successfully${data.source ? ` from ${data.source}` : ''}.`);
+            }
+            if (pdfFileInput) pdfFileInput.value = '';
+            if (pdfUrlInput) pdfUrlInput.value = '';
+        } catch (err) {
+            alert(err.message || String(err));
+        } finally {
+            if (pdfIndexBtn) {
+                pdfIndexBtn.disabled = false;
+                pdfIndexBtn.textContent = 'Index PDF';
+            }
+        }
+    }
+    pdfIndexBtn && pdfIndexBtn.addEventListener('click', indexPdf);
 });
