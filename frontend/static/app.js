@@ -232,7 +232,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (pdfProgress) pdfProgress.textContent = `Estimated chunks: ${data.chunks_planned ?? 0}`;
             } else {
                 alert(`PDF indexed successfully${data.source ? ` from ${data.source}` : ''}.`);
-                if (pdfProgress) pdfProgress.textContent = `Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0}`;
+                if (pdfProgress) {
+                    const cost = (data.embedding_cost ?? 0);
+                    pdfProgress.textContent = `Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0} | Cost: $${Number(cost).toFixed(6)}`;
+                }
             }
             if (pdfFileInput) pdfFileInput.value = '';
             if (pdfUrlInput) pdfUrlInput.value = '';
@@ -285,7 +288,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 prog(`Estimated chunks: ${data.chunks_planned ?? 0}`);
             } else {
                 alert(`MediaWiki indexed successfully. Chunks: ${data.chunks_indexed ?? 'n/a'}`);
-                prog(`Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0}`);
+                const cost = (data.embedding_cost ?? 0);
+                prog(`Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0} | Cost: $${Number(cost).toFixed(6)}`);
             }
         } catch (err) {
             alert(err.message || String(err));
@@ -332,7 +336,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (htmlProgress) htmlProgress.textContent = `Estimated chunks: ${data.chunks_planned ?? 0}`;
             } else {
                 alert('HTML indexed successfully.');
-                if (htmlProgress) htmlProgress.textContent = `Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0}`;
+                if (htmlProgress) {
+                    const cost = (data.embedding_cost ?? 0);
+                    htmlProgress.textContent = `Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0} | Cost: $${Number(cost).toFixed(6)}`;
+                }
             }
         } catch (err) {
             alert(err.message || String(err));

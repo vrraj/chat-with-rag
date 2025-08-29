@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # collection_name: str = "docs_v3_large"  # collection name for large embedding model
 
     embedding_model: str = "text-embedding-3-small"  # use for faster, lower-cost embeddings
+    # Cost configuration (USD per 1,000,000 tokens)
+    embedding_cost_per_MM_tokens: float = 0.01
+    inference_cost_per_MM_tokens: float = 0.01
     vector_size: int = 1536  # use with text-embedding-3-small
     collection_name: str = "website_collection"  # collection name for small embedding model
 
@@ -37,6 +40,13 @@ class Settings(BaseSettings):
     embeddings_max_consecutive_failures_per_doc: int = 20  # Abort document after too many failures
     embeddings_total_time_limit_secs: int = 300  # Abort document if processing exceeds this time
     embeddings_call_delay_secs: float = 0.0  # Optional pacing between embedding calls
+
+    # Indexing safeguards
+    # When True, ingestion routes will first check whether a document
+    # is already present in Qdrant (by matching `url_lower`). If found,
+    # they will return a confirmation-required response instead of
+    # re-indexing immediately.
+    check_document_indexed: bool = True
 
 
     model_config = {

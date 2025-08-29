@@ -144,6 +144,7 @@ async def index_mediawiki_url(
     api_url: Optional[str] = Query(None, description="Override MediaWiki API endpoint (defaults to settings)"),
     ua: Optional[str] = Query(None, description="Override User-Agent for MediaWiki requests"),
     estimate: Optional[bool] = Query(False, description="If true, return planned chunk count without indexing"),
+    confirm_reindex: Optional[bool] = Query(False, description="Confirm re-indexing if the URL already exists in Qdrant"),
 ):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
@@ -151,40 +152,77 @@ async def index_mediawiki_url(
     """
     global embeddings_manager
     if embeddings_manager is None:
-        logger.info("Initializing embeddings manager")
+        logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
         embeddings_manager = EmbeddingsManager()
-        logger.info("Embeddings manager initialized")
+        logger.info("TRACE MW: Embeddings manager initialized")
     try:
+        logger.info("TRACE MW: Before MediaWikiExtractor init")
         extractor = MediaWikiExtractor(
             chunk_size=settings.html_chunk_size,
             chunk_overlap=settings.html_chunk_overlap,
             api_url=api_url,
             user_agent=ua,
         )
+        logger.info("TRACE MW: MediaWikiExtractor init done")
         url = mediawiki_input.url
         max_chunks = mediawiki_input.max_chunks
         skip_sections = mediawiki_input.skip_sections
-        print(f"DEBUG: Received MediaWiki URL: {url}")
+        logger.info(f"TRACE MW: Read URL: {url}")
+        # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
+        if bool(settings.check_document_indexed):
+            global qdrant_db
+            if qdrant_db is None:
+                qdrant_db = QdrantDB(
+                    host=settings.qdrant_host,
+                    port=settings.qdrant_port,
+                    collection_name=settings.collection_name,
+                )
+            try:
+                existing_count = qdrant_db.count_points_by_url(url)
+                logger.info(f"TRACE MW: Existing vectors found for URL: {existing_count}")
+            except Exception as e:
+                # If counting fails, proceed without blocking indexing
+                existing_count = 0
+                logger.warning(f"Failed checking existing index for {url}: {e}")
+            if existing_count > 0 and not estimate and not bool(confirm_reindex):
+                logger.info("TRACE MW: Confirmation required to reindex; aborting until confirmed")
+                return {
+                    "message": "URL already indexed; confirmation required to re-index",
+                    "url": url,
+                    "already_indexed": True,
+                    "vectors_found": int(existing_count),
+                    "confirmation_required": True,
+                    "hint": "Resubmit with confirm_reindex=true to proceed",
+                }
+            elif existing_count > 0 and bool(confirm_reindex):
+                logger.info("TRACE MW: confirm_reindex=true; proceeding with reindex")
         # Use extractor.parse_from_url directly, passing skip_sections
+        logger.info(f"TRACE MW: Extraction started for URL: {url}")
         chunks = extractor.parse_from_url(url, skip_sections=skip_sections)
-        print(f"DEBUG: Parsed {len(chunks)} chunks from url")
-        print(f"DEBUG: Total chunks returned by extractor: {len(chunks)}")
+        logger.info(f"TRACE MW: Extraction done. Number of chunks created: {len(chunks)}")
         # Limit the number of chunks indexed if max_chunks is a positive value
         if max_chunks is not None and max_chunks > 0:
             chunks = chunks[:max_chunks]
-        print(f"DEBUG: Indexing {len(chunks)} chunks")
+        logger.info(f"TRACE MW: Chunks after capping (if any): {len(chunks)}")
         if estimate:
+            logger.info(f"TRACE MW: Estimate only; planned chunks: {len(chunks)}")
             return {"message": "Estimate only", "chunks_planned": len(chunks)}
+        logger.info(f"TRACE MW: Sending {len(chunks)} chunks for embedding")
         result = embeddings_manager.index_chunks(
             chunks,
             force_delete=mediawiki_input.force_delete,
             max_chunks=max_chunks
         )
+        logger.info(
+            f"TRACE MW: Embedding finished. vectors_indexed={result.get('vectors_indexed', 0)}, tokens_used={result.get('tokens_used', 0)}"
+        )
+        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
         return {
             "message": "MediaWiki content indexed successfully",
             "chunks_indexed": len(chunks),
             "vectors_indexed": result.get("vectors_indexed", 0),
             "tokens_used": result.get("tokens_used", 0),
+            "embedding_cost": round(embedding_cost, 8),
             "url": url,
         }
     except Exception as e:
@@ -225,11 +263,13 @@ async def index_pdf(
             force_delete=force_delete,
             max_chunks=max_chunks,
         )
+        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
         return {
             "message": "PDF content indexed successfully",
             "chunks_indexed": len(chunks),
             "vectors_indexed": result.get("vectors_indexed", 0),
             "tokens_used": result.get("tokens_used", 0),
+            "embedding_cost": round(embedding_cost, 8),
             "source": source,
         }
     except Exception as e:
@@ -451,7 +491,13 @@ async def index_content(url_input: URLInput, estimate: Optional[bool] = Query(Fa
                             tokens_total += result.get("tokens_used", 0)
         if estimate:
             return {"message": "Estimate only", "chunks_planned": planned_chunks_total}
-        return {"message": "Content indexed successfully", "vectors_indexed": planned_chunks_total, "tokens_used": tokens_total}
+        embedding_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        return {
+            "message": "Content indexed successfully",
+            "vectors_indexed": planned_chunks_total,
+            "tokens_used": tokens_total,
+            "embedding_cost": round(embedding_cost, 8)
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
