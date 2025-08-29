@@ -13,6 +13,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const pdfIndexBtn = document.getElementById('pdfIndexBtn');
     const pdfProgress = document.getElementById('pdfProgress');
 
+    // MediaWiki elements (for Index MediaWiki section)
+    const mwUrlInput = document.getElementById('mwUrl');
+    const mwMaxChunksInput = document.getElementById('mwMaxChunks');
+    const mwSkipSectionsInput = document.getElementById('mwSkipSections');
+    const mwApiUrlInput = document.getElementById('mwApiUrl');
+    const mwUAInput = document.getElementById('mwUA');
+    const mwEstimateToggle = document.getElementById('mwEstimateToggle');
+    const mwForceDelete = document.getElementById('mwForceDelete');
+    const mwIndexBtn = document.getElementById('mwIndexBtn');
+    const mwProgress = document.getElementById('mwProgress');
+
+    // Quick link buttons
+    const openSearchBtn = document.getElementById('openSearchBtn');
+    const openDebugBtn = document.getElementById('openDebugBtn');
+
     // Chat state
     let chatHistory = [];
     let currentContext = [];
