@@ -1,4 +1,6 @@
 from typing import List, Dict, Any
+import json
+from openai import OpenAI
 import openai
 from backend.core.config import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
@@ -55,11 +57,11 @@ class ChatManager:
 
             # Generate non-streaming response
             response = await openai.ChatCompletion.acreate(
-                model=settings.CHAT_MODEL,
+                model=settings.inference_model,
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1000,
-                stream=False
+                stream=True
             )
 
             # Get the complete response
@@ -83,7 +85,7 @@ class ChatManager:
         """Summarize chat history to keep context manageable"""
         try:
             response = openai.ChatCompletion.create(
-                model=settings.CHAT_MODEL,
+                model=settings.inference_model,
                 messages=[
                     {"role": "system", "content": "Summarize the following conversation in a few sentences:"},
                     {"role": "user", "content": "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])}
@@ -150,7 +152,7 @@ class ChatManager:
             
             # Get response from GPT
             response = openai.ChatCompletion.create(
-                model=settings.CHAT_MODEL,
+                model=settings.inference_model,
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1000
@@ -171,3 +173,146 @@ class ChatManager:
         except Exception as e:
             print(f"Error in chat: {e}")
             return {"response": "I'm sorry, I encountered an error while processing your request.", "sources": []}
+
+
+def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Thin handler: fetch candidates from Qdrant only.
+
+    Expects payload with keys: message, params.top_k, params.score_threshold.
+    Returns a summary and basic metrics without rerank or LLM.
+    """
+    message: str = (payload or {}).get("message") or ""
+    params: Dict[str, Any] = (payload or {}).get("params") or {}
+    top_k: int = params.get("top_k") or settings.top_k
+    score_threshold: float = (
+        params.get("score_threshold") if params.get("score_threshold") is not None else settings.score_threshold
+    )
+
+    if not message:
+        return {"answer": "fetched 0 candidates", "metrics": {"vectors_retrieved": 0}}
+
+    db = QdrantDB(
+        host=settings.qdrant_host,
+        port=settings.qdrant_port,
+        collection_name=settings.collection_name,
+    )
+
+    results = db.search_similar(
+        query=message,
+        limit=int(top_k) if top_k is not None else settings.top_k,
+        score_threshold=float(score_threshold) if score_threshold is not None else settings.score_threshold,
+        with_vectors=False,
+        with_payload=True,
+        exact=True,
+    )
+    n = len(results) if results is not None else 0
+
+    # Optional rerank using configured model; keep top few (small prompt)
+    kept = min(3, n)
+    metrics: Dict[str, Any] = {"vectors_retrieved": n}
+    reranked = results
+    if n > 1:
+        try:
+            # Prepare compact candidate list for ranking
+            cand_text = [
+                (res.get("payload") or {}).get("text")
+                or (res.get("payload") or {}).get("snippet")
+                or (res.get("payload") or {}).get("content")
+                or ""
+                for res in results
+            ]
+            prompt = {
+                "role": "user",
+                "content": (
+                    "Rerank candidates by relevance to the query.\n"
+                    "Return ONLY a JSON array of indices (0-based) in descending relevance.\n\n"
+                    f"Query: {message}\n\nCandidates:\n"
+                    + "\n".join([f"[{i}] {t[:500]}" for i, t in enumerate(cand_text)])
+                ),
+            }
+            resp = openai.ChatCompletion.create(
+                model=settings.re_ranker_model,
+                messages=[
+                    {"role": "system", "content": "You are a precise reranker. Output JSON only."},
+                    prompt,
+                ],
+                temperature=0,
+                max_tokens=64,
+            )
+            content = resp.choices[0].message.content.strip()
+            try:
+                order = json.loads(content)
+            except Exception:
+                # Try to extract JSON if wrapped in text
+                start = content.find("[")
+                end = content.rfind("]")
+                order = json.loads(content[start : end + 1]) if start != -1 and end != -1 else list(range(n))
+
+            # Build reranked list and keep top few
+            order = [i for i in order if isinstance(i, int) and 0 <= i < n]
+            reranked = [results[i] for i in order] or results
+            reranked = reranked[:kept]
+
+            # Metrics from usage if available
+            usage = getattr(resp, "usage", None) or (resp.get("usage") if isinstance(resp, dict) else None)
+            if usage:
+                prompt_toks = int(usage.get("prompt_tokens", 0) or 0)
+                completion_toks = int(usage.get("completion_tokens", 0) or 0)
+                total = int(usage.get("total_tokens", prompt_toks + completion_toks) or (prompt_toks + completion_toks))
+                metrics["rerank_tokens"] = total
+                cost = (
+                    prompt_toks * float(settings.re_ranker_cost_per_MM_tokens_input)
+                    + completion_toks * float(settings.re_ranker_cost_per_MM_tokens_output)
+                ) / 1_000_000.0
+                metrics["rerank_cost"] = round(float(cost), 8)
+        except Exception:
+            reranked = results[:kept]
+
+    # Build compact prompt from top reranked chunks and user message
+    try:
+        ctx_bits: List[str] = []
+        for item in (reranked or [])[:kept]:
+            payload = item.get("payload") or {}
+            title = payload.get("title") or payload.get("metadata", {}).get("title") or ""
+            text = payload.get("text") or payload.get("snippet") or payload.get("content") or ""
+            snippet = text.strip().replace("\n", " ")[:200]
+            bit = f"{title} {snippet}".strip()
+            ctx_bits.append(bit)
+        context_inline = " | ".join([b for b in ctx_bits if b])
+
+        compact_prompt = (
+            f"Answer concisely using context if relevant. "
+            f"Context: {context_inline} "
+            f"Question: {message}"
+        ).strip()
+
+        client = OpenAI(api_key=settings.openai_api_key)
+        resp = client.responses.create(
+            model=settings.inference_model,
+            input=compact_prompt,
+            max_output_tokens=int(getattr(settings, "max_output_tokens", 300)),
+        )
+        # Collect usage/cost metrics if provided by API
+        usage = getattr(resp, "usage", None) or (resp.get("usage") if isinstance(resp, dict) else None)
+        if usage:
+            p_tok = int(usage.get("prompt_tokens", 0) or 0)
+            c_tok = int(usage.get("completion_tokens", 0) or 0)
+            t_tok = int(usage.get("total_tokens", p_tok + c_tok) or (p_tok + c_tok))
+            metrics["prompt_tokens"] = p_tok
+            metrics["completion_tokens"] = c_tok
+            metrics["total_tokens"] = t_tok
+            p_cost = (p_tok * float(settings.inference_cost_per_MM_tokens_input)) / 1_000_000.0
+            c_cost = (c_tok * float(settings.inference_cost_per_MM_tokens_output)) / 1_000_000.0
+            metrics["prompt_cost"] = round(float(p_cost), 8)
+            metrics["completion_cost"] = round(float(c_cost), 8)
+            metrics["total_cost"] = round(float(p_cost + c_cost), 8)
+        answer = (
+            getattr(resp, "output_text", None)
+            or (resp.output[0].content[0].text if getattr(resp, "output", None) else None)
+            or (getattr(resp, "choices", [])[0].message.content if getattr(resp, "choices", None) else None)
+            or ""
+        )
+    except Exception:
+        answer = ""
+
+    return {"answer": answer or f"fetched {n} candidates", "metrics": metrics}
