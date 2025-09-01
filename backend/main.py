@@ -567,14 +567,14 @@ async def chat_with_content(chat_request: ChatRequest):
     if chat_manager is None:
         chat_manager = ChatManager()
     try:
-        response = await chat_manager.chat(
-            chat_request.message,
-            chat_request.context,
-            chat_request.use_web_search
-        )
-        if response is None:
-            raise HTTPException(status_code=500, detail="Chat response is None")
-        return ChatResponse(**response)
+        # Thin handler: delegate to handle_chat(payload) and return as-is
+        handler = getattr(chat_manager, "handle_chat", None)
+        if handler is None:
+            # Fallback: import module-level handler if not bound to instance
+            from backend.chat import chat_manager as cm_module
+            handler = getattr(cm_module, "handle_chat")
+        result = handler(chat_request.dict())
+        return result
     except Exception as e:
         print(f"Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))

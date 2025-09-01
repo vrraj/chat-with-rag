@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-6">Chat</h1>
+    <div id="chatLog" class="bg-white rounded-lg shadow-md p-4 h-96 overflow-y-auto mb-4 text-sm"></div>
+    <div class="flex gap-2">
+      <input id="chatInput" type="text" placeholder="Ask a question..." class="flex-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" />
+      <button id="chatSend" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Send</button>
+    </div>
+  </div>
+  <script>
+    const log = document.getElementById('chatLog');
+    const input = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('chatSend');
+    function addLine(role, text) {
+      const div = document.createElement('div');
+      div.className = role === 'user' ? 'text-gray-900' : 'text-gray-700';
+      div.innerHTML = `<span class="font-semibold">${role === 'user' ? 'You' : 'Assistant'}:</span> ${text}`;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+    async function send() {
+      const q = input.value.trim();
+      if (!q) return;
+      addLine('user', q);
+      input.value = '';
+      try {
+        const resp = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: q, context: [], use_web_search: false })
+        });
+        const data = await resp.json();
+        addLine('assistant', data.response || '(no response)');
+      } catch (e) {
+        addLine('assistant', 'Error: ' + e);
+      }
+    }
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  </script>
+</body>
+</html>
+

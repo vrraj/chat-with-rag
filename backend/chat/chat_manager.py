@@ -1,11 +1,79 @@
 from typing import List, Dict, Any
 import json
 from openai import OpenAI
-import openai
 from backend.core.config import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
 from backend.db.qdrant_db import QdrantDB
 from backend.chat.web_search import WebSearchClient
+
+# Single OpenAI client for this module
+client = OpenAI(api_key=settings.openai_api_key)
+
+
+def _extract_text_from_responses(resp) -> str:
+    """Return response text from Responses API object.
+
+    Prefers `resp.output_text`. If absent, concatenates any `.text` parts
+    from `resp.output[...].content[...]` entries. Falls back to empty string.
+    """
+    # Prefer direct output_text if available
+    text = getattr(resp, "output_text", None)
+    if isinstance(text, str) and text:
+        return text
+
+    # Try to read from output -> content -> text
+    output = getattr(resp, "output", None)
+    if output is None and isinstance(resp, dict):
+        output = resp.get("output")
+
+    parts: List[str] = []
+    if output and isinstance(output, list):
+        for item in output:
+            content = getattr(item, "content", None)
+            if content is None and isinstance(item, dict):
+                content = item.get("content")
+            if not content or not isinstance(content, list):
+                continue
+            for c in content:
+                txt = getattr(c, "text", None)
+                if txt is None and isinstance(c, dict):
+                    txt = c.get("text")
+                if isinstance(txt, str) and txt:
+                    parts.append(txt)
+
+    return "".join(parts) if parts else ""
+
+
+def _extract_usage_from_responses(resp) -> Dict[str, int] | None:
+    """Extract usage fields (prompt, completion, total tokens) if present.
+
+    Returns a dict with keys: prompt_tokens, completion_tokens, total_tokens;
+    otherwise None if usage is unavailable.
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if usage is None:
+        return None
+
+    def _get(u, name):
+        return getattr(u, name, None) if not isinstance(u, dict) else u.get(name)
+
+    p = _get(usage, "prompt_tokens")
+    c = _get(usage, "completion_tokens")
+    t = _get(usage, "total_tokens")
+
+    if p is None and c is None and t is None:
+        return None
+
+    result: Dict[str, int] = {}
+    if p is not None:
+        result["prompt_tokens"] = int(p)
+    if c is not None:
+        result["completion_tokens"] = int(c)
+    if t is not None:
+        result["total_tokens"] = int(t)
+    return result
 
 class ChatManager:
     def __init__(self):
@@ -19,81 +87,22 @@ class ChatManager:
         self.chat_history = []
         self.max_tokens = settings.max_history_tokens
 
-    async def chat(self, message: str, context: List[Dict], use_web_search: bool = False) -> Dict:
-        """
-        Process a chat message and generate a response
-        Args:
-            message: User's message
-            context: Additional context to consider
-            use_web_search: Whether to use web search for additional context
-        Returns:
-            Chat response with sources
-        """
-        try:
-            # Get relevant context from QdrantDB
-            search_context = await self.qdrant_db.search_similar(message, limit=5)
-            
-            # Get web context if enabled
-            web_context = []
-            if use_web_search:
-                web_context = await self.web_search.get_additional_context(message, search_context)
-
-            # Combine all contexts
-            combined_context = search_context + web_context
-
-            # Prepare messages for chat model
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant. Use the provided context to answer questions."},
-                {"role": "user", "content": message}
-            ]
-
-            # Add context to messages
-            if combined_context:
-                context_summary = "\n".join([
-                    f"{item.get('title', '')}: {item.get('snippet', '')}"
-                    for item in combined_context[:3]  # Limit to top 3 for brevity
-                ])
-                messages.insert(1, {"role": "system", "content": f"Context:\n{context_summary}"})
-
-            # Generate non-streaming response
-            response = await openai.ChatCompletion.acreate(
-                model=settings.inference_model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=1000,
-                stream=True
-            )
-
-            # Get the complete response
-            complete_response = response.choices[0].message.content
-            
-            # Update chat history with complete message
-            self.chat_history.append({"role": "user", "content": message})
-            self.chat_history.append({"role": "assistant", "content": complete_response})
-
-            # Return complete response with sources
-            return {
-                "response": complete_response,
-                "sources": combined_context
-            }
-
-        except Exception as e:
-            print(f"Error in chat: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+    
 
     def _summarize_history(self, history: List[Dict]) -> str:
         """Summarize chat history to keep context manageable"""
         try:
-            response = openai.ChatCompletion.create(
-                model=settings.inference_model,
-                messages=[
-                    {"role": "system", "content": "Summarize the following conversation in a few sentences:"},
-                    {"role": "user", "content": "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])}
-                ],
-                temperature=0.7,
-                max_tokens=100
+            prompt = (
+                "Summarize the following conversation in a few sentences:\n\n"
+                + "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
             )
-            return response.choices[0].message.content
+            resp = client.responses.create(
+                model=settings.inference_model,
+                input=prompt,
+                max_output_tokens=100,
+                temperature=0.7,
+            )
+            return _extract_text_from_responses(resp)
         except Exception as e:
             print(f"Error summarizing history: {e}")
             return "".join([msg["content"] for msg in history[-3:]])  # Fallback to last 3 messages
@@ -151,11 +160,11 @@ class ChatManager:
             messages.append({"role": "user", "content": message})
             
             # Get response from GPT
-            response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model=settings.inference_model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1000
+                max_tokens=1000,
             )
             
             # Update chat history
@@ -189,7 +198,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if not message:
-        return {"answer": "fetched 0 candidates", "metrics": {"vectors_retrieved": 0}}
+        return {"answer": "", "metrics": {"vectors_retrieved": 0}}
 
     db = QdrantDB(
         host=settings.qdrant_host,
@@ -210,6 +219,9 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Optional rerank using configured model; keep top few (small prompt)
     kept = min(3, n)
     metrics: Dict[str, Any] = {"vectors_retrieved": n}
+    # Initialize rerank metrics
+    metrics["rerank_tokens"] = 0
+    metrics["rerank_cost"] = 0.0
     reranked = results
     if n > 1:
         try:
@@ -221,25 +233,19 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
                 or ""
                 for res in results
             ]
-            prompt = {
-                "role": "user",
-                "content": (
-                    "Rerank candidates by relevance to the query.\n"
-                    "Return ONLY a JSON array of indices (0-based) in descending relevance.\n\n"
-                    f"Query: {message}\n\nCandidates:\n"
-                    + "\n".join([f"[{i}] {t[:500]}" for i, t in enumerate(cand_text)])
-                ),
-            }
-            resp = openai.ChatCompletion.create(
-                model=settings.re_ranker_model,
-                messages=[
-                    {"role": "system", "content": "You are a precise reranker. Output JSON only."},
-                    prompt,
-                ],
-                temperature=0,
-                max_tokens=64,
+            prompt_text = (
+                "Rerank candidates by relevance to the query.\n"
+                "Return ONLY a JSON array of indices (0-based) in descending relevance.\n\n"
+                f"Query: {message}\n\nCandidates:\n"
+                + "\n".join([f"[{i}] {t[:500]}" for i, t in enumerate(cand_text)])
             )
-            content = resp.choices[0].message.content.strip()
+            resp = client.responses.create(
+                model=settings.re_ranker_model,
+                input=prompt_text,
+                max_output_tokens=64,
+                temperature=0,
+            )
+            content = _extract_text_from_responses(resp).strip()
             try:
                 order = json.loads(content)
             except Exception:
@@ -254,7 +260,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
             reranked = reranked[:kept]
 
             # Metrics from usage if available
-            usage = getattr(resp, "usage", None) or (resp.get("usage") if isinstance(resp, dict) else None)
+            usage = _extract_usage_from_responses(resp)
             if usage:
                 prompt_toks = int(usage.get("prompt_tokens", 0) or 0)
                 completion_toks = int(usage.get("completion_tokens", 0) or 0)
@@ -278,6 +284,8 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
             snippet = text.strip().replace("\n", " ")[:200]
             bit = f"{title} {snippet}".strip()
             ctx_bits.append(bit)
+        # Store kept texts as context list for the next step
+        context = ctx_bits[:]
         context_inline = " | ".join([b for b in ctx_bits if b])
 
         compact_prompt = (
@@ -286,14 +294,13 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
             f"Question: {message}"
         ).strip()
 
-        client = OpenAI(api_key=settings.openai_api_key)
         resp = client.responses.create(
             model=settings.inference_model,
             input=compact_prompt,
             max_output_tokens=int(getattr(settings, "max_output_tokens", 300)),
         )
-        # Collect usage/cost metrics if provided by API
-        usage = getattr(resp, "usage", None) or (resp.get("usage") if isinstance(resp, dict) else None)
+        # Collect usage/cost metrics via helper
+        usage = _extract_usage_from_responses(resp)
         if usage:
             p_tok = int(usage.get("prompt_tokens", 0) or 0)
             c_tok = int(usage.get("completion_tokens", 0) or 0)
@@ -306,13 +313,10 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
             metrics["prompt_cost"] = round(float(p_cost), 8)
             metrics["completion_cost"] = round(float(c_cost), 8)
             metrics["total_cost"] = round(float(p_cost + c_cost), 8)
-        answer = (
-            getattr(resp, "output_text", None)
-            or (resp.output[0].content[0].text if getattr(resp, "output", None) else None)
-            or (getattr(resp, "choices", [])[0].message.content if getattr(resp, "choices", None) else None)
-            or ""
-        )
+
+        # Extract answer text using helper only
+        answer = _extract_text_from_responses(resp) or ""
     except Exception:
         answer = ""
 
-    return {"answer": answer or f"fetched {n} candidates", "metrics": metrics}
+    return {"answer": answer, "metrics": metrics}

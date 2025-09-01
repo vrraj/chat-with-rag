@@ -149,8 +149,8 @@ class QdrantDB:
     def search_similar(
         self,
         query: str,
-        limit: int = 5,
-        score_threshold: float = 0.35,
+        limit: int = settings.top_k,
+        score_threshold: float = settings.score_threshold,
         query_filter: Optional[Dict] = None,
         with_vectors: bool = False,
         with_payload: bool = True,
@@ -218,9 +218,9 @@ class QdrantDB:
     def search_similar_by_embedding(
         self,
         query_embedding: List[float],
-        limit: Optional[int] = 8,
+        limit: Optional[int] = settings.top_k,
         query_filter: Optional[Dict] = None,
-        score_threshold: Optional[float] = None,
+        score_threshold: Optional[float] = settings.score_threshold,
         with_payload: Optional[bool] = None,
         exact: Optional[bool] = None,
     ) -> List[Dict]:
@@ -366,4 +366,43 @@ class QdrantDB:
             return total
         except Exception as e:
             logger.error(f"Failed to delete points for URL {url}: {e}")
+            raise
+
+    def count_points_by_url(self, url: str) -> int:
+        """
+        Count points in the collection that match the given URL by `url_lower` payload.
+
+        Args:
+            url: URL to match (case-insensitive; compared against `url_lower`).
+
+        Returns:
+            Total number of points/vectors found for the URL.
+        """
+        try:
+            url_lower = url.lower()
+            filter_by_url = Filter(
+                must=[
+                    FieldCondition(
+                        key="url_lower",
+                        match=MatchValue(value=url_lower)
+                    )
+                ]
+            )
+            offset = None
+            total = 0
+            while True:
+                points, offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=filter_by_url,
+                    with_payload=False,
+                    with_vectors=False,
+                    limit=1000,
+                    offset=offset,
+                )
+                total += len(points)
+                if not points or offset is None:
+                    break
+            return total
+        except Exception as e:
+            logger.error(f"Failed to count points for URL {url}: {e}")
             raise

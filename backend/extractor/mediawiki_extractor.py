@@ -49,7 +49,12 @@ def _wiki_get(params: Dict, api_url: str, ua: str) -> Response:
             r = requests.get(
                 api_url,
                 params=params,
-                headers={"User-Agent": ua},
+                headers={
+                    "User-Agent": ua,
+                    # Request uncompressed response to avoid rare client-side
+                    # decompression issues (e.g., truncated gzip streams).
+                    "Accept-Encoding": "identity",
+                },
                 timeout=DEFAULT_TIMEOUT,
             )
             # Retry on common throttle/forbidden statuses

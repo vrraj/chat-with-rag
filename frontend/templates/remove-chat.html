@@ -4,8 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG Chat • UI Shell</title>
-    <!-- Use local static assets; no external CDNs -->
-    <link rel="stylesheet" href="static/chat.css" />
+    <link rel="stylesheet" href="/static/chat.css" />
   </head>
   <body>
     <!-- App layout: sidebar (controls), main (metrics + history + input) -->
@@ -44,10 +43,6 @@
             <label for="frequency_penalty">Frequency Penalty</label>
             <input id="frequency_penalty" type="number" min="-2" max="2" step="0.1" value="0.0" />
           </div>
-          <div class="field-group">
-            <button id="clear_chat_btn" type="button" title="Clear chat"
-              onclick="(function(){ var el=document.getElementById('chat_history'); if(el){ el.innerHTML=''; } })()">Clear chat</button>
-          </div>
           <!-- Note: Controls are inert in this phase (no backend). -->
         </form>
       </aside>
@@ -62,8 +57,6 @@
           <div class="metric"><span class="metric-label">Prompt Cost</span><span id="prompt_cost" class="metric-value">—</span></div>
           <div class="metric"><span class="metric-label">Completion Cost</span><span id="completion_cost" class="metric-value">—</span></div>
           <div class="metric"><span class="metric-label">Total Cost</span><span id="total_cost" class="metric-value">—</span></div>
-          <div class="metric"><span class="metric-label">Rerank Tokens</span><span id="rerank_tokens" class="metric-value">—</span></div>
-          <div class="metric"><span class="metric-label">Rerank Cost</span><span id="rerank_cost" class="metric-value">—</span></div>
         </section>
 
         <!-- Scrollable chat history -->
@@ -77,6 +70,7 @@
       </main>
     </div>
 
-    <script src="static/chat.js"></script>
+    <script src="/static/chat.js"></script>
   </body>
   </html>
+

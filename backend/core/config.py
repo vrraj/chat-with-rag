@@ -3,21 +3,36 @@ from typing import List, Optional
 
 class Settings(BaseSettings):
     openai_api_key: str
+    openai_api_base: str = "https://api.openai.com/v1" # for future use
+    # Vector Search Configuration
     qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    qdrant_port: int = 6333 # 
+    vector_size: int = 1536  # use with text-embedding-3-small
+    collection_name: str = "website_collection"  # collection name for small embedding model
+    top_k: int = 5
+    score_threshold: float = 0.35
 
     # embedding_model: str = "text-embedding-3-large"  # use for higher-quality embeddings
     # vector_size: int = 3072  # use with text-embedding-3-large
     # collection_name: str = "docs_v3_large"  # collection name for large embedding model
 
+    # Embedding configuration
     embedding_model: str = "text-embedding-3-small"  # use for faster, lower-cost embeddings
     # Cost configuration (USD per 1,000,000 tokens)
     embedding_cost_per_MM_tokens: float = 0.01
-    inference_cost_per_MM_tokens: float = 0.01
-    vector_size: int = 1536  # use with text-embedding-3-small
-    collection_name: str = "website_collection"  # collection name for small embedding model
+    # Re-ranker configuration
+    re_ranker_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
+    # Cost configuration (USD per 1,000,000 tokens)
+    re_ranker_cost_per_MM_tokens_input: float = 0.15
+    re_ranker_cost_per_MM_tokens_output: float = 0.60
+    # Inference Model COnfigurations
+    inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
+    # Cost configuration (USD per 1,000,000 tokens)
+    inference_cost_per_MM_tokens_input: float = 0.15
+    inference_cost_per_MM_tokens_output: float = 0.60
+    max_output_tokens: int = 300
+    
 
-    chat_model: str = "gpt-4.o-mini"
     max_history_tokens: int = 4000
     html_chunk_size: int = 500
     html_chunk_overlap: int = 100
