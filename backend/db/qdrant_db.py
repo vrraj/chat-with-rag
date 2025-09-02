@@ -171,34 +171,48 @@ class QdrantDB:
         Returns:
             List of search results with scores and payloads
         """
+        print(f"\n[QDRANT] Starting search for query: {query}")
+        print(f"[QDRANT] Collection: {self.collection_name}, limit: {limit}, score_threshold: {score_threshold}, exact: {exact}")
+        
         try:
-            # Generate embeddings for the query
-            query_vector = self.generate_embeddings(query)
-            logger.debug(f"In search Generated embedding vector of length: {len(query_vector)}")
-
-            # Build/accept a Qdrant filter
-            if isinstance(query_filter, models.Filter):
-                q_filter = query_filter
-            else:
-                q_filter = self._build_filter(query_filter)
-
-            # Build search params (apply 'exact' if provided)
+            # Generate embedding for the query
+            print("[QDRANT] Generating embeddings...")
+            query_embedding = self.generate_embeddings(query)
+            print(f"[QDRANT] Generated embedding vector of length: {len(query_embedding) if query_embedding else 0}")
+            
+            # Convert simple dict to Qdrant Filter if provided
+            print(f"[QDRANT] Building filter from: {query_filter}")
+            qdrant_filter = self._build_filter(query_filter)
+            
+            # Prepare search parameters
             search_params = models.SearchParams(exact=exact) if exact is not None else None
-
+            print(f"[QDRANT] Search params: exact={exact}")
+            
             # Perform the search
+            print("[QDRANT] Executing search...")
             search_results = self.client.search(
                 collection_name=self.collection_name,
-                query_vector=query_vector,
+                query_vector=query_embedding,
+                query_filter=qdrant_filter,
                 limit=limit,
                 score_threshold=score_threshold,
-                query_filter=q_filter,
                 with_vectors=with_vectors,
                 with_payload=with_payload,
-                search_params=search_params,
+                search_params=search_params
             )
+            
+            print(f"[QDRANT] Search returned {len(search_results)} results")
             
             # Format the results
             results = []
+            for i, hit in enumerate(search_results[:3]):  # Log first 3 results for debugging
+                print(f"[QDRANT] Result {i+1} - Score: {hit.score:.4f}, ID: {hit.id}")
+                if hasattr(hit, 'payload') and hit.payload:
+                    print(f"[QDRANT]   Payload keys: {list(hit.payload.keys())}")
+                    if 'text' in hit.payload:
+                        text_preview = str(hit.payload.get('text', ''))[:100] + '...' if hit.payload.get('text') else 'None'
+                        print(f"[QDRANT]   Text preview: {text_preview}")
+            
             for hit in search_results:
                 result = {
                     'id': hit.id,
@@ -209,10 +223,15 @@ class QdrantDB:
                     result['vector'] = hit.vector
                 results.append(result)
                 
+            print(f"[QDRANT] Returning {len(results)} total results")
             return results
             
         except Exception as e:
-            logger.error(f"Error in search_similar: {str(e)}")
+            error_msg = f"Error in search_similar: {str(e)}"
+            logger.error(error_msg)
+            print(f"[QDRANT ERROR] {error_msg}")
+            import traceback
+            print(f"[QDRANT ERROR] Traceback: {traceback.format_exc()}")
             raise
 
     def search_similar_by_embedding(

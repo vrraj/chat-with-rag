@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
@@ -67,6 +68,9 @@ tags_metadata = [
     {"name": "4. Index Admin", "description": "Index maintenance utilities (payload updates, etc.)."},
     {"name": "5. Debug", "description": "Developer diagnostics and inspection utilities."},
 ]
+
+# Load environment variables from .env file if it exists
+load_dotenv()
 
 app = FastAPI(
     title="Website Chat Agent API",
