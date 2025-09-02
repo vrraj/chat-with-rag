@@ -26,11 +26,12 @@ class Settings(BaseSettings):
     re_ranker_cost_per_MM_tokens_input: float = 0.15
     re_ranker_cost_per_MM_tokens_output: float = 0.60
     # Inference Model COnfigurations
+    #inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
     inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
     # Cost configuration (USD per 1,000,000 tokens)
     inference_cost_per_MM_tokens_input: float = 0.15
     inference_cost_per_MM_tokens_output: float = 0.60
-    max_output_tokens: int = 300
+    max_output_tokens: int = 500
     
 
     max_history_tokens: int = 4000
