@@ -45,13 +45,30 @@ LOGGING_CONFIG = {
             'handlers': ['default'],
             'propagate': False
         },
+        # Root logger: reduce noise from libraries
         '': {
             'handlers': ['default'],
-            'level': 'DEBUG',
+            'level': 'INFO',
         },
         'backend': {
             'handlers': ['default'],
             'level': 'DEBUG',
+            'propagate': False,
+        },
+        # Silence verbose third-party DEBUG logs
+        'openai': {
+            'handlers': ['default'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'httpx': {
+            'handlers': ['default'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'httpcore': {
+            'handlers': ['default'],
+            'level': 'WARNING',
             'propagate': False,
         },
     }
@@ -365,7 +382,8 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest):
         response = await chat_manager.chat(
             message=chat_request.message,
             context=context,
-            use_web_search=chat_request.use_web_search
+            use_web_search=chat_request.use_web_search,
+            params=(chat_request.params or {})
         )
         
         # Update session with new message and response
@@ -577,7 +595,7 @@ async def chat_with_content(chat_request: ChatRequest):
             # Fallback: import module-level handler if not bound to instance
             from backend.chat import chat_manager as cm_module
             handler = getattr(cm_module, "handle_chat")
-        result = handler(chat_request.dict())
+        result = handler(chat_request.model_dump())
         return result
     except Exception as e:
         print(f"Error in chat endpoint: {e}")

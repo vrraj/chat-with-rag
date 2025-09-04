@@ -181,4 +181,19 @@
 
   // First render: ensure input has proper height.
   autoResize();
+
+  // Wire up Clear Chat: clear history and metrics, retain params.
+  const clearBtn = qs('#clear_chat_btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      // Clear chat bubbles (history is derived from DOM)
+      chatHistory.innerHTML = '';
+      // Reset metrics display to placeholders
+      updateMetrics({});
+      // Clear message input and resize
+      input.value = '';
+      autoResize();
+      input.focus();
+    });
+  }
 })();
