@@ -89,7 +89,7 @@ class MediaWikiExtractor:
         self.splitter = TextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            use_manual_splitter=True,
+            use_manual_splitter=True
         )
 
     def parse(self, wikitext: str, url: str, skip_sections: Optional[List[str]] = None) -> List[Dict]:
@@ -132,13 +132,14 @@ class MediaWikiExtractor:
 
                     if current_text:
                         payloads.extend(self._chunk_payload(
-                            "\n".join(current_text), url,
+                            " ".join(current_text), url,
                             section_title, subsection_title, subsubsection_title, section_index
                         ))
                         current_text = []
+                        print(f"[mediawiki] Flush: {current_text}")
                 else:
                     current_text.append(str(node))
-
+            print(f"[mediawiki] Current Text: {current_text}")
             if current_text:
                 payloads.extend(self._chunk_payload(
                     "\n".join(current_text), url,
