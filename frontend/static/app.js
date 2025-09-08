@@ -198,29 +198,48 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Simple PDF indexing handler if PDF UI is present
+    // PDF indexing handler
     async function indexPdf() {
         try {
             if (pdfIndexBtn) {
                 pdfIndexBtn.disabled = true;
                 pdfIndexBtn.textContent = 'Indexing...';
             }
-            const fd = new FormData();
+            
             const url = (pdfUrlInput?.value || '').trim();
             const file = pdfFileInput?.files?.[0];
+            const maxChunks = parseInt(pdfMaxChunksInput?.value || '0', 10) || 0;
+            const forceDelete = !!(pdfForceDelete && pdfForceDelete.checked);
+            const estimate = !!(pdfEstimateToggle && pdfEstimateToggle.checked);
+
             if (!file && !url) {
                 alert('Provide either a PDF URL or upload a file.');
                 return;
             }
-            if (file) fd.append('file', file);
-            if (url) fd.append('url', url);
-            const maxChunksVal = parseInt(pdfMaxChunksInput?.value || '0', 10) || 0;
-            fd.append('max_chunks', String(maxChunksVal));
-            fd.append('force_delete', String(!!(pdfForceDelete && pdfForceDelete.checked)));
-            const estimate = !!(pdfEstimateToggle && pdfEstimateToggle.checked);
-            const resp = await fetch(`http://localhost:8000/pdf?estimate=${estimate}`, {
+
+            // For file uploads, read as base64
+            let fileBase64;
+            if (file) {
+                fileBase64 = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = error => reject(error);
+                    reader.readAsDataURL(file);
+                });
+            }
+
+            const requestBody = {
+                url: url || undefined,
+                file: fileBase64,
+                max_chunks: maxChunks,
+                force_delete: forceDelete,
+                estimate: estimate
+            };
+
+            const resp = await fetch('http://localhost:8000/pdf', {
                 method: 'POST',
-                body: fd,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
             });
             if (!resp.ok) {
                 const t = await resp.text();
@@ -266,17 +285,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const apiUrl = (mwApiUrlInput?.value || '').trim();
             const ua = (mwUAInput?.value || '').trim();
             const estimate = !!(mwEstimateToggle && mwEstimateToggle.checked);
-            const force_delete = !!(mwForceDelete && mwForceDelete.checked);
+            const forceDelete = !!(mwForceDelete && mwForceDelete.checked);
 
-            const qs = new URLSearchParams();
-            if (apiUrl) qs.set('api_url', apiUrl);
-            if (ua) qs.set('ua', ua);
-            if (estimate) qs.set('estimate', 'true');
             prog('Reading document...');
-            const resp = await fetch(`http://localhost:8000/mediawiki/url${qs.toString() ? '?' + qs.toString() : ''}`, {
+            const requestBody = {
+                url,
+                max_chunks: maxChunks,
+                skip_sections: skipSections,
+                force_delete: forceDelete,
+                api_url: apiUrl || undefined,
+                user_agent: ua || undefined,
+                estimate: estimate || undefined
+            };
+            const resp = await fetch('http://localhost:8000/mediawiki/url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, max_chunks: maxChunks, skip_sections: skipSections, force_delete }),
+                body: JSON.stringify(requestBody),
             });
             if (!resp.ok) {
                 const t = await resp.text();
@@ -318,13 +342,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const url = (htmlUrlInput?.value || '').trim();
             if (!url) { alert('Enter a page URL'); return; }
             const maxChunks = parseInt(htmlMaxChunksInput?.value || '0', 10) || 0;
-            const force_delete = !!(htmlForceDelete && htmlForceDelete.checked);
+            const forceDelete = !!(htmlForceDelete && htmlForceDelete.checked);
             const estimate = !!(htmlEstimateToggle && htmlEstimateToggle.checked);
             if (htmlProgress) htmlProgress.textContent = estimate ? 'Chunking document...' : 'Embedding document...';
             const resp = await fetch(`/index?estimate=${estimate}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ urls: [url], doc_type: 'HTML', max_chunks: maxChunks, force_delete })
+                body: JSON.stringify({ urls: [url], doc_type: 'HTML', max_chunks: maxChunks, force_delete: forceDelete })
             });
             if (!resp.ok) {
                 const t = await resp.text();

@@ -12,7 +12,7 @@ from backend.embeddings.embeddings_manager import EmbeddingsManager
 from backend.crawler.crawler import WebCrawler
 from backend.crawler.pdf_crawler import PDFCrawler
 from backend.extractor.extractor import ContentExtractor
-from backend.embeddings.schemas import EmbeddingRequest, SearchRequest, SearchResponse, ChatRequest, ChatResponse, MediaWikiURLInput, URLInput, PayloadUpdateRequest
+from backend.embeddings.schemas import EmbeddingRequest, SearchRequest, SearchResponse, ChatRequest, ChatResponse, MediaWikiURLInput, PDFInput, URLInput, PayloadUpdateRequest
 from backend.db.qdrant_db import QdrantDB
 from backend.extractor.mediawiki_extractor import MediaWikiExtractor
 from backend.extractor.pdf_extractor import PDFExtractor
@@ -161,11 +161,7 @@ async def chat_page():
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(
-    mediawiki_input: MediaWikiURLInput,
-    api_url: Optional[str] = Query(None, description="Override MediaWiki API endpoint (defaults to settings)"),
-    ua: Optional[str] = Query(None, description="Override User-Agent for MediaWiki requests"),
-    estimate: Optional[bool] = Query(False, description="If true, return planned chunk count without indexing"),
-    confirm_reindex: Optional[bool] = Query(False, description="Confirm re-indexing if the URL already exists in Qdrant"),
+    mediawiki_input: MediaWikiURLInput
 ):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
@@ -173,22 +169,24 @@ async def index_mediawiki_url(
     """
     global embeddings_manager
     if embeddings_manager is None:
-        logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
+        #logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
         embeddings_manager = EmbeddingsManager()
-        logger.info("TRACE MW: Embeddings manager initialized")
+        #logger.info("TRACE MW: Embeddings manager initialized")
     try:
-        logger.info("TRACE MW: Before MediaWikiExtractor init")
+        #logger.info("TRACE MW: Before MediaWikiExtractor init")
         extractor = MediaWikiExtractor(
             chunk_size=settings.html_chunk_size,
             chunk_overlap=settings.html_chunk_overlap,
-            api_url=api_url,
-            user_agent=ua,
+            api_url=mediawiki_input.api_url,
+            user_agent=mediawiki_input.user_agent,
         )
-        logger.info("TRACE MW: MediaWikiExtractor init done")
+        #logger.info("TRACE MW: MediaWikiExtractor init done")
         url = mediawiki_input.url
         max_chunks = mediawiki_input.max_chunks
         skip_sections = mediawiki_input.skip_sections
-        logger.info(f"TRACE MW: Read URL: {url}")
+        force_delete = mediawiki_input.force_delete
+        estimate = mediawiki_input.estimate
+        #logger.info(f"TRACE MW: Read URL: {url}")
         # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
         if bool(settings.check_document_indexed):
             global qdrant_db
@@ -201,11 +199,12 @@ async def index_mediawiki_url(
             try:
                 existing_count = qdrant_db.count_points_by_url(url)
                 logger.info(f"TRACE MW: Existing vectors found for URL: {existing_count}")
+                logger.info(f"TRACE MW: Confirm Reindex: {force_delete}")
             except Exception as e:
                 # If counting fails, proceed without blocking indexing
                 existing_count = 0
                 logger.warning(f"Failed checking existing index for {url}: {e}")
-            if existing_count > 0 and not estimate and not bool(confirm_reindex):
+            if existing_count > 0 and not estimate and not bool(force_delete):
                 logger.info("TRACE MW: Confirmation required to reindex; aborting until confirmed")
                 return {
                     "message": "URL already indexed; confirmation required to re-index",
@@ -213,25 +212,25 @@ async def index_mediawiki_url(
                     "already_indexed": True,
                     "vectors_found": int(existing_count),
                     "confirmation_required": True,
-                    "hint": "Resubmit with confirm_reindex=true to proceed",
+                    "hint": "Resubmit with force_delete=true to proceed",
                 }
-            elif existing_count > 0 and bool(confirm_reindex):
-                logger.info("TRACE MW: confirm_reindex=true; proceeding with reindex")
+            elif existing_count > 0 and bool(force_delete):
+                logger.info("TRACE MW: force_delete=true; proceeding with reindex")
         # Use extractor.parse_from_url directly, passing skip_sections
-        logger.info(f"TRACE MW: Extraction started for URL: {url}")
+        #logger.info(f"TRACE MW: Extraction started for URL: {url}")
         chunks = extractor.parse_from_url(url, skip_sections=skip_sections)
-        logger.info(f"TRACE MW: Extraction done. Number of chunks created: {len(chunks)}")
+        #logger.info(f"TRACE MW: Extraction done. Number of chunks created: {len(chunks)}")
         # Limit the number of chunks indexed if max_chunks is a positive value
         if max_chunks is not None and max_chunks > 0:
             chunks = chunks[:max_chunks]
-        logger.info(f"TRACE MW: Chunks after capping (if any): {len(chunks)}")
+        #logger.info(f"TRACE MW: Chunks after capping (if any): {len(chunks)}")
         if estimate:
             logger.info(f"TRACE MW: Estimate only; planned chunks: {len(chunks)}")
             return {"message": "Estimate only", "chunks_planned": len(chunks)}
-        logger.info(f"TRACE MW: Sending {len(chunks)} chunks for embedding")
+        #logger.info(f"TRACE MW: Sending {len(chunks)} chunks for embedding")
         result = embeddings_manager.index_chunks(
             chunks,
-            force_delete=mediawiki_input.force_delete,
+            force_delete=  force_delete,
             max_chunks=max_chunks
         )
         logger.info(
@@ -251,39 +250,48 @@ async def index_mediawiki_url(
 
 @app.post("/pdf", tags=["2. Ingest"], summary="1c. Index PDF (upload or URL)")
 async def index_pdf(
-    file: Optional[UploadFile] = File(None, description="PDF file to upload"),
-    url: Optional[str] = Form(None, description="PDF URL if not uploading a file"),
-    max_chunks: Optional[int] = Form(0, description="0 = no user limit"),
-    force_delete: Optional[bool] = Form(True),
-    estimate: Optional[bool] = Query(False, description="If true, return planned chunk count without indexing"),
+    pdf_input: PDFInput
 ):
-    """Index a PDF either by uploaded file or by URL. Mirrors /pdf/url behavior and metadata payload."""
+    """Index a PDF either by uploaded file or by URL."""
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
-    if not file and not url:
+    
+    if not pdf_input.file and not pdf_input.url:
         raise HTTPException(status_code=400, detail="Provide either a PDF file or a URL")
+    
     try:
         extractor = PDFExtractor(
             chunk_size=settings.html_chunk_size,
             chunk_overlap=settings.html_chunk_overlap,
         )
-        if file:
-            data = await file.read()
-            source = f"uploaded://{file.filename}"
-            chunks = extractor.parse_from_bytes(data, source)
+        
+        if pdf_input.file:
+            # Handle base64 encoded file
+            import base64
+            try:
+                file_data = base64.b64decode(pdf_input.file)
+                source = "uploaded://file.pdf"
+                chunks = extractor.parse_from_bytes(file_data, source)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid file data: {str(e)}")
         else:
-            chunks = extractor.parse_from_url(url)
-            source = url
-        if max_chunks is not None and max_chunks > 0:
-            chunks = chunks[:max_chunks]
-        if estimate:
+            # Handle URL
+            chunks = extractor.parse_from_url(pdf_input.url)
+            source = pdf_input.url
+            
+        if pdf_input.max_chunks is not None and pdf_input.max_chunks > 0:
+            chunks = chunks[:pdf_input.max_chunks]
+            
+        if pdf_input.estimate:
             return {"message": "Estimate only", "chunks_planned": len(chunks)}
+            
         result = embeddings_manager.index_chunks(
             chunks,
-            force_delete=force_delete,
-            max_chunks=max_chunks,
+            force_delete=pdf_input.force_delete,
+            max_chunks=pdf_input.max_chunks,
         )
+        
         embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
         return {
             "message": "PDF content indexed successfully",
@@ -561,7 +569,7 @@ async def search_content(search_request: SearchRequest):
                     )
                 qdrant_filter = models.Filter(must=filter_conditions) if filter_conditions else None
             
-            print(f"[DEBUG] Performing vector search with query: {search_request.query}, limit: {search_request.limit}, filter: {qdrant_filter}")
+            print(f"[Main -DEBUG] Performing vector search with query: {search_request.query}, limit: {search_request.limit}, filter: {qdrant_filter}")
             
             # Extract optional parameters (direct attribute access)
             score_threshold = search_request.score_threshold

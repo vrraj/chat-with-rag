@@ -171,25 +171,25 @@ class QdrantDB:
         Returns:
             List of search results with scores and payloads
         """
-        print(f"\n[QDRANT] Starting search for query: {query}")
-        print(f"[QDRANT] Collection: {self.collection_name}, limit: {limit}, score_threshold: {score_threshold}, exact: {exact}")
+        #print(f"\n[QDRANT] Starting search for query: {query}")
+        #print(f"[QDRANT] Collection: {self.collection_name}, limit: {limit}, score_threshold: {score_threshold}, exact: {exact}")
         
         try:
             # Generate embedding for the query
-            print("[QDRANT] Generating embeddings...")
+            print("[Chat Manager] Generating embeddings for the Query: ", query)
             query_embedding = self.generate_embeddings(query)
-            print(f"[QDRANT] Generated embedding vector of length: {len(query_embedding) if query_embedding else 0}")
+            #print(f"[QDRANT] Generated embedding vector of length: {len(query_embedding) if query_embedding else 0}")
             
             # Convert simple dict to Qdrant Filter if provided
-            print(f"[QDRANT] Building filter from: {query_filter}")
+            #print(f"[QDRANT] Building filter from: {query_filter}")
             qdrant_filter = self._build_filter(query_filter)
             
             # Prepare search parameters
             search_params = models.SearchParams(exact=exact) if exact is not None else None
-            print(f"[QDRANT] Search params: exact={exact}")
+            #print(f"[QDRANT] Search params: exact={exact}")
             
             # Perform the search
-            print("[QDRANT] Executing search...")
+            #print("[QDRANT] Executing search...")
             search_results = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_embedding,
@@ -205,12 +205,12 @@ class QdrantDB:
             
             # Format the results
             results = []
-            for i, hit in enumerate(search_results[:3]):  # Log first 3 results for debugging
+            for i, hit in enumerate(search_results[:5]):  # Log first 5 results for debugging
                 print(f"[QDRANT] Result {i+1} - Score: {hit.score:.4f}, ID: {hit.id}")
                 if hasattr(hit, 'payload') and hit.payload:
-                    print(f"[QDRANT]   Payload keys: {list(hit.payload.keys())}")
+                    #print(f"[QDRANT]   Payload keys: {list(hit.payload.keys())}")
                     if 'text' in hit.payload:
-                        text_preview = str(hit.payload.get('text', ''))[:100] + '...' if hit.payload.get('text') else 'None'
+                        text_preview = str(hit.payload.get('text', ''))[:30] + '...' if hit.payload.get('text') else 'None'
                         print(f"[QDRANT]   Text preview: {text_preview}")
             
             for hit in search_results:
@@ -223,7 +223,7 @@ class QdrantDB:
                     result['vector'] = hit.vector
                 results.append(result)
                 
-            print(f"[QDRANT] Returning {len(results)} total results")
+            #print(f"[QDRANT] Returning {len(results)} total results")
             return results
             
         except Exception as e:

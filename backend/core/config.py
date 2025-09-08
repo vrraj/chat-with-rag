@@ -25,16 +25,37 @@ class Settings(BaseSettings):
     # Cost configuration (USD per 1,000,000 tokens)
     re_ranker_cost_per_MM_tokens_input: float = 0.15
     re_ranker_cost_per_MM_tokens_output: float = 0.60
-    # Inference Model COnfigurations
+    re_ranker_max_output_tokens: int = 128
+    re_ranker_input_rows: int = 5
+    re_ranker_temperature: float = 0.5
+
+    # Summarizer model configuration
+    summarize_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
+    # Cost configuration (USD per 1,000,000 tokens)
+    summarize_cost_per_MM_tokens_input: float = 0.15
+    summarize_cost_per_MM_tokens_output: float = 0.60
+    summarize_max_output_tokens: int = 500
+    summarizer_temperature: float = 0.5
+    # Inference Model Configurations
     #inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
     inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
+    # Inference decoding parameters
+    inference_temperature: float = 0.5
+    inference_top_p: float = 1.0
+    inference_presence_penalty: float = 0.0
+    inference_frequency_penalty: float = 0.0
     # Cost configuration (USD per 1,000,000 tokens)
     inference_cost_per_MM_tokens_input: float = 0.15
     inference_cost_per_MM_tokens_output: float = 0.60
-    max_output_tokens: int = 500
-    
+    max_inference_output_tokens: int = 500
+    inference_reasoning_effort: str = "low"
+    inference_reasoning_model: bool = False
 
     max_history_tokens: int = 4000
+    # Number of recent turns (user+assistant pairs) to include when summarizing chat history
+    chat_history_window_turns: int = 5
+
+    # Chunking configuration
     html_chunk_size: int = 500
     html_chunk_overlap: int = 100
     pdf_chunk_size: Optional[int] = 500  # Will be determined by section length
@@ -42,6 +63,7 @@ class Settings(BaseSettings):
     max_urls: int = 10
     default_chunk_size: int = 500
     default_chunk_overlap: int = 100
+    reranker_chunk_size: int = 500
 
     # Wikipedia / MediaWiki API configuration
     wiki_api_url: str = "https://en.wikipedia.org/w/api.php"

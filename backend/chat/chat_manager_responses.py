@@ -46,18 +46,26 @@ class ChatManagerResponses:
             context_block = "\n".join(line(it) for it in combined[:5])
 
             # 4) Responses API call (tools can be added later via tools=[...])
-            resp = await self.client.responses.create(
-                model=settings.CHAT_MODEL,  # e.g., "gpt-5" / "gpt-4.1"
-                input=[
+            kwargs = {
+                "model": getattr(settings, "inference_model", getattr(settings, "CHAT_MODEL", "gpt-4o-mini")),
+                "input": [
                     {"role": "system", "content": (
                         "You are a helpful assistant. Use the provided context to answer concisely and cite sources."
                     )},
                     {"role": "system", "content": f"Context:\n{context_block}"},
                     {"role": "user", "content": message},
                 ],
-                temperature=0.7,
-                max_output_tokens=1000,
-            )
+                "temperature": getattr(settings, "inference_temperature", 0.7),
+                "max_output_tokens": getattr(settings, "max_inference_output_tokens", 1000),
+            }
+            if getattr(settings, "inference_top_p", None) is not None:
+                kwargs["top_p"] = settings.inference_top_p
+            if getattr(settings, "inference_presence_penalty", None) is not None:
+                kwargs["presence_penalty"] = settings.inference_presence_penalty
+            if getattr(settings, "inference_frequency_penalty", None) is not None:
+                kwargs["frequency_penalty"] = settings.inference_frequency_penalty
+
+            resp = await self.client.responses.create(**kwargs)
 
             # 5) Extract text across common SDK shapes
             answer = (
