@@ -1,0 +1,27 @@
+.search-result {
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.search-result .metadata {
+    color: #6b7280;
+    font-size: 0.875rem;
+    margin-bottom: 0.5rem;
+}
+
+.search-result .chunk-content {
+    color: #1f2937;
+    line-height: 1.5;
+}
+
+.search-result .url {
+    color: #3b82f6;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.search-result .url:hover {
+    opacity: 0.8;
+}

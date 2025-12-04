@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Batch Process Documents</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    .file-upload {
+      border: 2px dashed #cbd5e0;
+      transition: all 0.3s ease;
+    }
+    .file-upload:hover {
+      border-color: #9f7aea;
+    }
+    .file-upload.dragover {
+      border-color: #6b46c1;
+      background-color: #f5f3ff;
+    }
+    
+    /* Grid Layout */
+    .grid-cols-1 {
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+    }
+    
+    @media (min-width: 1024px) {
+      .lg\:grid-cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    
+    /* Modal Styles */
+    #jsonPreviewModal {
+      backdrop-filter: blur(4px);
+    }
+    
+    /* Smooth transitions */
+    .transition-all {
+      transition-property: all;
+      transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+      transition-duration: 150ms;
+    }
+    
+    /* Ensure modal content is scrollable */
+    .max-h-\[90vh\] {
+      max-height: 90vh;
+    }
+    
+    .max-h-\[60vh\] {
+      max-height: 60vh;
+    }
+  </style>
+</head>
+<body class="bg-gray-100">
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-2">Batch Upload and Generate Embeddings</h1>
+    <p class="text-gray-600 mb-1">Embed PDF, MediaWiki and HTML documents</p>
+    <p class="text-sm text-gray-500 mb-6">Documents will be uploaded to: <span id="collectionName" class="font-semibold">Loading...</span> collection</p>
+    
+    <!-- Grid Container for both sections -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <!-- New Generate JSON Section -->
+      <div class="bg-white rounded-lg shadow-md p-6">
+        <h2 class="text-xl font-semibold mb-4">Generate JSON for PDF Batch Upload</h2>
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">PDF Folder Path</label>
+            <div class="flex rounded-md shadow-sm">
+              <input type="text" id="pdfFolderPath" 
+                    class="flex-1 min-w-0 block w-full px-3 py-2 rounded-md border border-gray-300 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
+                    placeholder="./data/pdf-files-for-upload">
+            </div>
+            <p class="mt-1 text-xs text-gray-500">Enter the relative path to your PDF folder e.g. ./data/pdf-files-for-upload</p>
+          </div>
+          
+          <div class="grid grid-cols-2 gap-4">
+            <div class="flex items-center">
+              <input type="checkbox" id="forceDelete" class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded">
+              <label for="forceDelete" class="ml-2 block text-sm text-gray-700">Force Delete</label>
+            </div>
+            <div class="flex items-center">
+              <input type="checkbox" id="estimateOnly" checked class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded">
+              <label for="estimateOnly" class="ml-2 block text-sm text-gray-700">Estimate Only</label>
+            </div>
+          </div>
+          <div class="w-full">
+            <label for="skipSections" class="block text-sm font-medium text-gray-700 mb-1">Skip Sections (comma-separated)</label>
+            <input type="text" id="skipSections" value="References, External links, See also, Further reading" 
+              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+          </div>
+          <button id="generateJsonBtn" 
+                  class="mt-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+            Generate JSON
+          </button>
+        </div>
+      </div>
+
+      <!-- Existing Upload Section (now in a grid column) -->
+      <div class="bg-white rounded-lg shadow-md p-6">
+        <h2 class="text-xl font-semibold mb-4">Upload Batch Configuration</h2>
+        <div class="file-upload rounded-lg p-4 text-center" style="min-height: 120px;" id="dropZone">
+          <input type="file" id="batchFile" accept=".json" class="hidden" />
+          <div class="space-y-2">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+            </svg>
+            <p class="text-gray-600">
+              <span class="font-medium text-indigo-600 hover:text-indigo-500 cursor-pointer" id="browseLink">Click to upload</span>
+              or drag and drop
+            </p>
+            <p class="text-xs text-gray-500">JSON file up to 10MB</p>
+          </div>
+          <p class="mt-2 text-sm text-gray-500" id="fileName"></p>
+        </div>
+
+      <div class="flex flex-wrap gap-4 mt-4">
+        <button id="viewSampleBtn" class="px-4 py-2 rounded-md text-white bg-gray-600 hover:bg-gray-700">
+          View Sample
+        </button>
+        <div class="flex-grow"></div>
+        <button id="processBtn" class="px-6 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+          Process Documents
+        </button>
+      </div>
+    </div>
+
+    <!-- Sample Section (initially hidden) -->
+    <div id="sampleSection" class="hidden bg-white rounded-lg shadow-md p-6 mb-6">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-semibold">Sample Configuration</h2>
+        <button id="closeSampleBtn" class="text-gray-400 hover:text-gray-500">
+          <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <pre class="bg-gray-50 p-4 rounded overflow-auto max-h-80 text-sm" style="min-height: 150px;">{
+  "items": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Mount_Everest",
+      "doc_type": "mediawiki",
+      "skip_sections": ["References", "External links", "See also", "Further reading"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Grand_Canyon",
+      "doc_type": "mediawiki",
+      "skip_sections": ["References", "External links", "See also", "Further reading"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Mont_Blanc",
+      "doc_type": "html",
+      "skip_sections": ["References", "External links", "See also", "Further reading"],
+      "user_agent": "Mozilla/5.0 (compatible; MyBot/1.0; +http://example.com/bot)"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Salcantay",
+      "doc_type": "html",
+      "skip_sections": ["References", "External links", "See also", "Further reading"],
+      "user_agent": "Mozilla/5.0 (compatible; MyBot/1.0; +http://example.com/bot)"
+    },
+    {
+      "url": "https://appalachiantrail.org/wp-content/uploads/2020/07/appalachian-trail-day-hikes-1.pdf",
+      "doc_type": "pdf",
+      "skip_sections": []
+    },
+    {
+      "url": "file:///path/to/your/local/file.pdf",
+      "doc_type": "pdf",
+      "skip_sections": []
+    }
+  ],
+  "max_chunks": 100,
+  "estimate": true,
+  "force_delete": false
+}</pre>
+      <div class="mt-4 flex justify-end">
+        <button id="copySampleBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">
+          Copy to Clipboard
+        </button>
+      </div>
+    </div>
+    </div>
+    <!-- End of Grid Container -->
+
+    <!-- Output Section - Full Width -->
+    <div class="bg-white rounded-lg shadow-md p-6 mt-6 w-full">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-semibold">Processing Results</h2>
+        <div class="flex items-center space-x-2">
+          <span id="statusBadge" class="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800">
+            Ready
+          </span>
+          <button id="clearResultsBtn" class="text-sm text-gray-500 hover:text-gray-700">
+            Clear
+          </button>
+        </div>
+      </div>
+      <div id="progressBar" class="w-full bg-gray-200 rounded-full h-2.5 mb-4 hidden">
+        <div id="progressFill" class="bg-indigo-600 h-2.5 rounded-full" style="width: 0%"></div>
+      </div>
+      <pre id="output" class="bg-gray-50 p-4 rounded overflow-auto h-96 text-sm font-mono whitespace-pre-wrap break-words w-full"></pre>
+    </div>
+  </div>
+
+  <!-- JSON Preview Modal -->
+  <div id="jsonPreviewModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+      <div class="px-6 py-4 border-b flex justify-between items-center">
+        <h3 class="text-lg font-semibold">Preview & Save JSON</h3>
+        <button id="closePreview" class="text-gray-400 hover:text-gray-500">
+          <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div class="p-6 flex-1 overflow-auto">
+        <pre id="jsonPreview" class="bg-gray-50 p-4 rounded text-sm overflow-auto max-h-[60vh]">Loading preview...</pre>
+      </div>
+      <div class="px-6 py-4 border-t flex justify-end space-x-3">
+        <button id="copyJsonBtn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
+          Copy to Clipboard
+        </button>
+        <button id="downloadJsonBtn" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+          Download JSON
+        </button>
+        <button id="useThisConfigBtn" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
+          Use This Config
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Fetch collection name from the backend
+    async function fetchCollectionName() {
+      try {
+        const response = await fetch('/api/config/api-defaults');
+        if (!response.ok) {
+          throw new Error('Failed to fetch config');
+        }
+        const config = await response.json();
+        document.getElementById('collectionName').textContent = config.collection_name || 'default';
+      } catch (error) {
+        console.error('Error fetching collection name:', error);
+        document.getElementById('collectionName').textContent = 'default';
+      }
+    }
+
+    // Call the function when the page loads
+    document.addEventListener('DOMContentLoaded', fetchCollectionName);
+
+    // DOM Elements - Single declaration for each element
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('batchFile');
+    const browseLink = document.getElementById('browseLink');
+    const fileName = document.getElementById('fileName');
+    const processBtn = document.getElementById('processBtn');
+    const output = document.getElementById('output');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+    const viewSampleBtn = document.getElementById('viewSampleBtn');
+    const sampleModal = document.getElementById('sampleModal');
+    const closeSampleBtn = document.getElementById('closeSampleBtn');
+    const copySampleBtn = document.getElementById('copySampleBtn');
+    const sampleContent = document.getElementById('sampleContent');
+    
+    // PDF Upload Elements
+    const generateJsonBtn = document.getElementById('generateJsonBtn');
+    const pdfFolderPath = document.getElementById('pdfFolderPath');
+    const forceDelete = document.getElementById('forceDelete');
+    const estimateOnly = document.getElementById('estimateOnly');
+    const skipSectionsInput = document.getElementById('skipSections');
+    const jsonPreviewModal = document.getElementById('jsonPreviewModal');
+    const closePreview = document.getElementById('closePreview');
+    const jsonPreview = document.getElementById('jsonPreview');
+    const copyJsonBtn = document.getElementById('copyJsonBtn');
+    const downloadJsonBtn = document.getElementById('downloadJsonBtn');
+    const useThisConfigBtn = document.getElementById('useThisConfigBtn');
+    
+
+    let currentFile = null;
+
+    // Event Listeners
+    browseLink.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', handleFileSelect);
+    dropZone.addEventListener('dragover', handleDragOver);
+    dropZone.addEventListener('dragleave', handleDragLeave);
+    dropZone.addEventListener('drop', handleDrop);
+    processBtn.addEventListener('click', processBatch);
+    viewSampleBtn.addEventListener('click', toggleSample);
+    closeSampleBtn.addEventListener('click', toggleSample);
+    copySampleBtn.addEventListener('click', copySampleToClipboard);
+    
+    // New PDF Upload Event Listeners
+    generateJsonBtn.addEventListener('click', generatePdfUploadConfig);
+    closePreview.addEventListener('click', () => jsonPreviewModal.classList.add('hidden'));
+    copyJsonBtn.addEventListener('click', copyJsonToClipboard);
+    downloadJsonBtn.addEventListener('click', downloadJson);
+    useThisConfigBtn.addEventListener('click', useThisConfig);
+    clearResultsBtn.addEventListener('click', clearResults);
+
+    // Helper function to read file as text
+    function readFileAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => resolve(event.target.result);
+        reader.onerror = (error) => reject(error);
+        reader.readAsText(file);
+      });
+    }
+
+    // Functions
+    function handleFileSelect(e) {
+      const file = e.target.files[0];
+      if (file) {
+        processFile(file);
+      }
+    }
+
+    function handleDragOver(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.add('dragover');
+    }
+
+    function handleDragLeave(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove('dragover');
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove('dragover');
+      
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        processFile(file);
+      }
+    }
+
+    function processFile(file) {
+      // Check file type
+      if (!file.name.endsWith('.json')) {
+        showError('Please upload a JSON file');
+        return;
+      }
+
+      // Check file size (max 10MB)
+      if (file.size > 10 * 1024 * 1024) {
+        showError('File is too large. Maximum size is 10MB.');
+        return;
+      }
+
+      currentFile = file;
+      fileName.textContent = file.name;
+      processBtn.disabled = false;
+      
+      // Preview the file content
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const content = JSON.parse(e.target.result);
+          output.textContent = JSON.stringify(content, null, 2);
+          updateStatus('File loaded', 'bg-blue-100 text-blue-800');
+        } catch (err) {
+          showError('Invalid JSON file');
+          processBtn.disabled = true;
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    async function processBatch() {
+      if (!currentFile) return;
+
+      // Read the file content
+      const fileContent = await readFileAsText(currentFile);
+      let batchData;
+      
+      try {
+        batchData = JSON.parse(fileContent);
+      } catch (e) {
+        showError('Invalid JSON file');
+        return;
+      }
+
+      // Update UI
+      processBtn.disabled = true;
+      output.textContent = 'Starting batch processing...\n';
+      progressBar.classList.remove('hidden');
+      updateProgress(0);
+      updateStatus('Processing...', 'bg-yellow-100 text-yellow-800');
+
+      try {
+        const response = await fetch('/batch/process_docs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(batchData)
+        });
+
+        if (!response.ok) {
+          const error = await response.text();
+          throw new Error(error || 'Failed to process batch');
+        }
+
+        // Handle streaming response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let resultText = '';
+
+        // Process each chunk as it arrives
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          // Decode the chunk and add to buffer
+          buffer += decoder.decode(value, { stream: true });
+          
+          // Process complete lines (ending with newline)
+          const lines = buffer.split('\n');
+          
+          // Keep the last incomplete line in the buffer
+          buffer = lines.pop() || '';
+          
+          // Process each complete line
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            
+            try {
+              const data = JSON.parse(line);
+              console.log('Received data from server:', data);
+              
+              // Handle status messages first
+              if (data.message && !data.url && !data.summary) {
+                resultText += `${data.message}\n`;
+                output.textContent = resultText;
+                output.scrollTop = output.scrollHeight;
+              }
+              
+              // Handle progress updates
+              if (data.progress !== undefined) {
+                updateProgress(data.progress);
+                // Don't continue here, as we might have other data to process
+              }
+              
+              // Handle summary
+              if (data.summary) {
+                const s = data.summary;
+                resultText += '\nBATCH PROCESSING COMPLETE\n' +
+                  '='.repeat(80) + '\n' +
+                  `Total items processed: ${s.successful_items + s.failed_items}\n` +
+                  `Successful: ${s.successful_items}\n` +
+                  `Failed: ${s.failed_items}\n` +
+                  '-' + '-'.repeat(39) + '\n' +
+                  `${s.type.toUpperCase()} SUMMARY:\n` +
+                  `  Total chunks: ${s.total_chunks?.toLocaleString() || 0}\n` +
+                  `  Total tokens: ${s.total_tokens?.toLocaleString() || 0}\n` +
+                  `  ${s.type === 'estimate' ? 'Estimated' : 'Actual'} cost: $${s.total_cost?.toFixed(6) || '0.000000'}\n` +
+                  '='.repeat(80) + '\n';
+                updateProgress(100);
+              } 
+              // Handle individual results
+              if (data.url) {
+                // Check for already_indexed in both root and result object
+                const isAlreadyIndexed = data.already_indexed || 
+                                      (data.result && data.result.already_indexed) || 
+                                      (data.message && data.message.includes('already indexed')) ||
+                                      (data.result && data.result.message && data.result.message.includes('already indexed'));
+                
+                if (isAlreadyIndexed) {
+                  // Get values from result object if available, otherwise use root
+                  const resultObj = data.result || data;
+                  const message = resultObj.message || 'Document already indexed';
+                  const vectorsFound = resultObj.vectors_found || 0;
+                  const hint = resultObj.hint || 'Resubmit with force_delete=true to proceed';
+                  
+                  resultText += `\n${data.url} | Warning: ${message}\n` +
+                               `  Vectors found: ${vectorsFound.toLocaleString()} (already indexed)\n` +
+                               `  Hint: ${hint}\n`;
+                } else if (data.status === 'success') {
+                  const r = data.result || {};
+                  const action = r.chunks_planned !== undefined ? 'Estimated' : 'Indexed';
+                  const chunks = r.chunks_planned || r.vectors_indexed || 0;
+                  const tokens = r.tokens_used || 0;
+                  const cost = r.embedding_cost || 0;
+                  
+                  resultText += `\n${data.url} | ` +
+                    `${action}: ${chunks.toLocaleString()} ${r.chunks_planned ? 'chunks' : 'vectors'} | ` +
+                    `Tokens: ${tokens.toLocaleString()} | ` +
+                    `Cost: $${cost.toFixed(8)}\n`;
+                } else {
+                  resultText += `\n${data.url} | Error: ${data.error || 'Unknown error'}\n`;
+                }
+              }
+              
+              // Update the UI with the latest results if we have a URL or summary
+              if (data.url || data.summary) {
+                output.textContent = resultText;
+                output.scrollTop = output.scrollHeight;
+              }
+              
+            } catch (e) {
+              console.error('Error parsing JSON:', e, 'Line:', line);
+              // If we can't parse it as JSON, just display it as text
+              if (line.trim()) {
+                resultText += line + '\n';
+                output.textContent = resultText;
+                output.scrollTop = output.scrollHeight;
+              }
+            }
+          }
+          
+          // Small delay to allow UI to update
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        
+        // Process any remaining data in the buffer
+        if (buffer.trim()) {
+          try {
+            const data = JSON.parse(buffer);
+            if (data.progress) updateProgress(data.progress);
+            if (data.message) {
+              output.textContent += data.message + '\n';
+            }
+          } catch (e) {
+            // Ignore parse errors in the final buffer
+          }
+        }
+
+        updateStatus('Completed', 'bg-green-100 text-green-800');
+      } catch (error) {
+        console.error('Batch processing error:', error);
+        showError(`Error: ${error.message}`);
+      } finally {
+        processBtn.disabled = false;
+      }
+    }
+
+    function toggleSample() {
+      sampleSection.classList.toggle('hidden');
+    }
+
+    function copySampleToClipboard() {
+      const sampleText = document.querySelector('#sampleSection pre').textContent;
+      
+      // Create a temporary textarea element
+      const textArea = document.createElement('textarea');
+      textArea.value = sampleText;
+      textArea.style.position = 'fixed';  // Avoid scrolling to bottom
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      try {
+        // Try using the modern clipboard API first
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(sampleText).then(() => {
+            showCopySuccess();
+          }).catch(() => {
+            // Fallback to execCommand if clipboard API fails
+            fallbackCopyTextToClipboard(textArea);
+          });
+        } else {
+          // Fallback for older browsers
+          fallbackCopyTextToClipboard(textArea);
+        }
+      } catch (err) {
+        console.error('Failed to copy:', err);
+        showError('Failed to copy to clipboard');
+      } finally {
+        document.body.removeChild(textArea);
+      }
+    }
+    
+    function fallbackCopyTextToClipboard(textArea) {
+      try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+          showCopySuccess();
+        } else {
+          throw new Error('Copy command failed');
+        }
+      } catch (err) {
+        console.error('Fallback copy failed:', err);
+        showError('Failed to copy. Please copy manually.');
+      }
+    }
+    
+    function showCopySuccess() {
+      const originalText = copySampleBtn.textContent;
+      copySampleBtn.textContent = 'Copied!';
+      copySampleBtn.classList.remove('bg-indigo-600');
+      copySampleBtn.classList.add('bg-green-600');
+      copySampleBtn.classList.add('hover:bg-green-700');
+      
+      setTimeout(() => {
+        copySampleBtn.textContent = originalText;
+        copySampleBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+        copySampleBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+      }, 2000);
+    }
+
+    function clearResults() {
+      output.textContent = '';
+      updateStatus('Ready', 'bg-gray-100 text-gray-800');
+      progressBar.classList.add('hidden');
+    }
+
+    function updateStatus(text, className = 'bg-gray-100 text-gray-800') {
+      statusBadge.textContent = text;
+      statusBadge.className = `px-3 py-1 rounded-full text-sm font-medium ${className}`;
+    }
+
+    function updateProgress(percent) {
+      // Ensure percent is a valid number between 0 and 100
+      const validPercent = Math.min(100, Math.max(0, Number(percent) || 0));
+      progressFill.style.width = `${validPercent}%`;
+      
+      // Update the progress text if the element exists
+      const progressText = document.getElementById('progressText');
+      if (progressText) {
+        progressText.textContent = `${Math.round(validPercent)}%`;
+      }
+    }
+
+    // PDF Upload Functions
+    async function generatePdfUploadConfig() {
+      const folderPath = pdfFolderPath.value.trim();
+      if (!folderPath) {
+        showError('Please enter a PDF folder path');
+        return;
+      }
+
+      try {
+        updateStatus('Scanning for PDF files...', 'bg-yellow-100 text-yellow-800');
+        
+        // Create form data
+        const formData = new FormData();
+        formData.append('folder_path', folderPath);
+        
+        // Log the request for debugging
+        console.log('Sending request to /batch/list-pdfs with path:', folderPath);
+        
+        // Call the backend to list PDF files
+        const response = await fetch('/batch/list-pdfs', {
+          method: 'POST',
+          body: formData,
+          // Don't set Content-Type header - let the browser set it with the correct boundary
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
+
+        if (!response.ok) {
+          let errorDetail = 'Failed to scan directory';
+          try {
+            const errorData = await response.json();
+            errorDetail = errorData.detail || JSON.stringify(errorData);
+          } catch (e) {
+            errorDetail = await response.text();
+          }
+          throw new Error(`Server error: ${response.status} - ${errorDetail}`);
+        }
+
+        const data = await response.json();
+        console.log('Received response:', data);
+        
+        if (!data.pdf_files) {
+          throw new Error('Invalid response format from server');
+        }
+        
+        if (data.pdf_files.length === 0) {
+          throw new Error('No PDF files found in the specified directory');
+        }
+
+        // Create the configuration
+        const config = {
+          items: data.pdf_files.map(pdf => ({
+            url: pdf.url.startsWith('file://') ? pdf.url : 
+                 pdf.url.startsWith('/') ? `file://${pdf.url}` : `file:///${pdf.url}`,
+            doc_type: "pdf",
+            skip_sections: skipSectionsInput.value
+              .split(',')
+              .map(section => section.trim())
+              .filter(section => section.length > 0),
+            user_agent: null,
+            api_url: null
+          })),
+          max_chunks: 100,
+          estimate: estimateOnly.checked,
+          force_delete: forceDelete.checked
+        };
+        
+        showJsonPreview(config);
+        updateStatus(`Found ${data.pdf_files.length} PDF file(s)`, 'bg-green-100 text-green-800');
+      } catch (error) {
+        console.error('Error generating PDF upload config:', error);
+        showError(`Error: ${error.message}`);
+      }
+    }
+
+    function showJsonPreview(config) {
+      // Store the original config first
+      window.currentConfig = JSON.parse(JSON.stringify(config));
+      
+      // Create a copy for display with formatted skip_sections
+      const displayConfig = JSON.parse(JSON.stringify(config));
+      
+      // Format the JSON with skip_sections on one line for display
+      const formattedJson = JSON.stringify(displayConfig, (key, value) => {
+        if (key === 'skip_sections' && Array.isArray(value)) {
+          return value;
+        }
+        return value;
+      }, 2).replace(/"skip_sections": \[[^\]]*\]/g, match => 
+        match.replace(/\s*\n\s*/g, ' ').replace(/\s*,\s*/g, ', ')
+      );
+      
+      jsonPreview.textContent = formattedJson;
+      jsonPreviewModal.classList.remove('hidden');
+    }
+
+    async function copyJsonToClipboard() {
+      try {
+        // Get the config from window and stringify it properly
+        const jsonToCopy = JSON.parse(jsonPreview.textContent);
+        const jsonString = JSON.stringify(jsonToCopy, null, 2);
+        
+        await navigator.clipboard.writeText(jsonString);
+        
+        const originalText = copyJsonBtn.textContent;
+        copyJsonBtn.textContent = 'Copied!';
+        copyJsonBtn.classList.add('bg-green-100', 'text-green-800');
+        
+        setTimeout(() => {
+          copyJsonBtn.textContent = originalText;
+          copyJsonBtn.classList.remove('bg-green-100', 'text-green-800');
+        }, 2000);
+      } catch (err) {
+        console.error('Failed to copy text: ', err);
+        alert('Failed to copy JSON to clipboard. Please try again or copy manually.');
+      }
+    }
+
+    function downloadJson() {
+      const blob = new Blob([jsonPreview.textContent], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'pdf_upload_config.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function useThisConfig() {
+      // Use the config stored in window.currentConfig
+      const config = window.currentConfig;
+      if (!config) {
+        showError('No configuration available');
+        return;
+      }
+      
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+      const file = new File([blob], 'pdf_upload_config.json', { type: 'application/json' });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      fileInput.files = dataTransfer.files;
+      processFile(file);
+      jsonPreviewModal.classList.add('hidden');
+      updateStatus('Config loaded!', 'bg-green-100 text-green-800');
+    }
+
+    function showError(message) {
+      output.textContent = `Error: ${message}`;
+      updateStatus('Error', 'bg-red-100 text-red-800');
+      processBtn.disabled = false;
+    }
+  </script>
+</footer>
+<footer class="text-center text-xs text-gray-500 mt-8">
+  <p>
+    Optional seed data derived from 
+    <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
+    licensed under 
+    <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
+  </p>
+</footer>
+</body>
+</html>

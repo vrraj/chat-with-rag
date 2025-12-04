@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Qdrant local storage and backups
+qdrant_storage/
+backups/
+qdrant_commands
+
+# jsonl output log files
+*.jsonl
+
+# Exception : track docs-index.seed.jsonl (seed data for application)
+!docs-index.seed.jsonl
+!docs-index-seed.jsonl
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Environment / configuration
+.env
+*.env          # ignore all .env variants
+!.env.example  # keep the safe example file
+
+# Local development settings
+local_settings.py
+project_map.txt
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Coverage outputs
+.coverage
+htmlcov/
+
+# Python/CI tooling
+.tox/
+.nox/
+
+# Frontend dependencies and builds
+node_modules/
+qdrant_storage_backup_*/

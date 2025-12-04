@@ -1,0 +1,41 @@
+/* Index Page Button Styles - Consistent Blue Theme */
+#openSearchBtn,
+#openDebugBtn,
+#openListDocsBtn,
+a[href^="/"],
+button {
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    cursor: pointer;
+    border: none;
+    background-color: #2563eb; /* Consistent blue-600 */
+    color: white;
+    text-decoration: none;
+}
+
+/* Hover state */
+#openSearchBtn:hover,
+#openDebugBtn:hover,
+#openListDocsBtn:hover,
+a[href^="/"]:hover,
+button:hover {
+    background-color: #1d4ed8; /* Slightly darker blue-700 on hover */
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Focus state for accessibility */
+#openSearchBtn:focus,
+#openDebugBtn:focus,
+#openListDocsBtn:focus,
+a[href^="/"]:focus,
+button:focus {
+    outline: 2px solid #93c5fd; /* Lighter blue for focus ring */
+    outline-offset: 2px;
+}

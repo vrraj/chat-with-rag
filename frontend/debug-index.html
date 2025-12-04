@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Debug Index Viewer</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-6">Debug Index</h1>
+    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="md:col-span-2">
+          <label class="block text-sm font-medium text-gray-700">Filter by URL (optional)</label>
+          <input id="debugUrl" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://example.com/path" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Max rows</label>
+          <input id="maxRows" type="number" min="1" step="1" value="10" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" />
+          <p class="text-xs text-gray-500 mt-1">Controls how many array items are shown (display only).</p>
+        </div>
+        <div class="flex items-end">
+          <button id="fetchDebugBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Fetch</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-md p-6">
+      <div class="flex justify-between items-center mb-4">
+        <div>
+          <h2 class="text-xl font-semibold inline">Results</h2>
+          <span id="resultCount" class="ml-2 text-sm text-gray-500"></span>
+        </div>
+        <button id="downloadBtn" class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700" disabled>Download JSON</button>
+      </div>
+      <div class="mb-2 text-sm text-gray-500">
+        <span id="showingCount" class="font-medium"></span>
+        <span id="truncatedWarning" class="hidden text-yellow-600 ml-2">(truncated for display, download for full data)</span>
+      </div>
+      <pre id="debugOutput" class="bg-gray-50 p-4 rounded overflow-auto h-96 text-sm"></pre>
+    </div>
+  </div>
+
+  <script>
+    const fetchBtn = document.getElementById('fetchDebugBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const input = document.getElementById('debugUrl');
+    const output = document.getElementById('debugOutput');
+    let lastJson = null;
+    const maxRowsInput = document.getElementById('maxRows');
+
+    // Prefer a primary array; otherwise fall back to the largest array anywhere in the payload
+    function pickPrimaryArray(data) {
+      if (!data) return [];
+      if (Array.isArray(data)) return data;
+      const candidates = ['documents', 'chunks', 'items', 'results', 'points', 'payloads', 'data', 'list'];
+      for (const k of candidates) {
+        if (data && typeof data === 'object' && Array.isArray(data[k])) return data[k];
+      }
+      // Deep scan for the largest array
+      let best = [];
+      let maxLen = 0;
+      const seen = new Set();
+      function dfs(node) {
+        if (!node || typeof node !== 'object') return;
+        if (seen.has(node)) return;
+        seen.add(node);
+        if (Array.isArray(node)) {
+          if (node.length > maxLen) {
+            best = node;
+            maxLen = node.length;
+          }
+          for (const el of node) dfs(el);
+          return;
+        }
+        for (const v of Object.values(node)) dfs(v);
+      }
+      dfs(data);
+      return best;
+    }
+
+    function countDocuments(data) {
+      return pickPrimaryArray(data).length;
+    }
+
+    async function fetchDebug() {
+      try {
+        const url = (input.value || '').trim();
+        const qs = url ? `?url=${encodeURIComponent(url)}` : '';
+        const resp = await fetch(`/debug-index${qs}`);
+        const data = await resp.json();
+        lastJson = data;
+
+        // Determine max rows (default 10)
+        let maxRows = parseInt(maxRowsInput?.value || '10', 10);
+        if (!Number.isFinite(maxRows) || maxRows < 1) maxRows = 10;
+        
+        // Update document count based on the primary array in the payload
+        const primary = pickPrimaryArray(data);
+        const docCount = primary.length;
+        document.getElementById('resultCount').textContent = `(${docCount} documents)`;
+        
+        // Stringify with a max depth and length to prevent freezing
+        const jsonStr = JSON.stringify(data, (key, value) => {
+          if (typeof value === 'object' && value !== null) {
+            // Limit array items according to maxRows
+            if (Array.isArray(value) && value.length > maxRows) {
+              return [...value.slice(0, maxRows), `... ${value.length - maxRows} more items`];
+            }
+          }
+          return value;
+        }, 2);
+        
+        output.textContent = jsonStr;
+        downloadBtn.disabled = false;
+        
+        // Show truncated warning if needed
+        const truncatedWarning = document.getElementById('truncatedWarning');
+        const showingCount = document.getElementById('showingCount');
+        
+        if (docCount > maxRows) {
+          showingCount.textContent = `Showing ${Math.min(maxRows, docCount)} of ${docCount} document chunks`;
+          truncatedWarning.classList.remove('hidden');
+        } else {
+          showingCount.textContent = `Showing all ${docCount} document chunks`;
+          truncatedWarning.classList.add('hidden');
+        }
+      } catch (e) {
+        output.textContent = `Error: ${e}`;
+        downloadBtn.disabled = true;
+      }
+    }
+
+    function downloadJson() {
+      if (!lastJson) return;
+      const blob = new Blob([JSON.stringify(lastJson, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'debug_index.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    fetchBtn.addEventListener('click', fetchDebug);
+    downloadBtn.addEventListener('click', downloadJson);
+  </script>
+</footer>
+<footer class="text-center text-xs text-gray-500 mt-8">
+  <p>
+    Optional seed data derived from 
+    <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
+    licensed under 
+    <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
+  </p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,1653 @@
+import os
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Any
+import uvicorn
+import re
+import requests
+from urllib.parse import urlsplit, urlunsplit
+from qdrant_client.http import models
+from backend.core import settings
+from backend.embeddings.embeddings_manager import EmbeddingsManager
+from backend.crawler.crawler import WebCrawler
+from backend.crawler.pdf_crawler import PDFCrawler
+from backend.extractor import HTMLExtractor, MediaWikiExtractor, PDFExtractor
+from backend.core import (
+    EmbeddingRequest,
+    SearchRequest,
+    SearchResponse,
+    ChatRequest,
+    ChatResponse,
+    MediaWikiURLInput,
+    PDFInput,
+    URLInput,
+    PayloadUpdateRequest,
+)
+from typing import List, Dict, Optional, Any
+from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field
+from backend.db import QdrantDB
+from backend.chat.chat_manager import ChatManager
+from pydantic import BaseModel
+
+class ClearChatRequest(BaseModel):
+    conversation_id: str | None = None
+    user_id: str | None = None
+
+import logging.config
+from backend.core.logging import LOGGING_CONFIG
+
+logging.config.dictConfig(LOGGING_CONFIG)
+logger = logging.getLogger(__name__)
+
+# --- Swagger/OpenAPI tags & UI ordering ---
+tags_metadata = [
+    {"name": "1. UI Pages", "description": "Frontend pages served by FastAPI (HTML)."},
+    {"name": "2. Ingest", "description": "Bring content in: MediaWiki, URLs, PDFs; embed documents; delete by URL; batch processing."},
+    {"name": "3. Search & Chat", "description": "Vector search and conversational endpoints over indexed content."},
+    {"name": "4. Index Admin", "description": "Index maintenance utilities (payload updates, etc.)."},
+    {"name": "5. Debug", "description": "Developer diagnostics and inspection utilities."},
+]
+
+# Load environment variables from .env file if it exists
+load_dotenv()
+
+app = FastAPI(
+    title="RAG Pipeline Chat API",
+    openapi_tags=tags_metadata,
+    swagger_ui_parameters={
+        "tagsSorter": "alpha",
+        "operationsSorter": "alpha",
+    },
+)
+
+# Attempt to mount SSE streaming routes by default. This is best-effort and guarded
+# to avoid breaking startup if the SSE module isn't ready yet.
+try:
+    from backend.stream_stages import router as stream_stages_router
+    app.include_router(stream_stages_router, prefix="/chat")
+except Exception as _e:
+    logger.warning("SSE stream routes could not be registered: %s", _e)
+
+# Configure static file serving
+# This allows the frontend to be served from the same server as the API
+# Static files will be served from the frontend directory
+from pathlib import Path
+
+static_dir = Path(__file__).resolve().parent.parent / "frontend" / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+# Root route to serve the main index.html file
+@app.get(
+    "/",
+    tags=["1. UI Pages"],
+    summary="1. Home (index.html)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Home Page</body></html>"}}}}
+)
+async def root():
+    """Serve the main HTML file at the root path"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "index.html"))
+
+# Debug route to list registered routes
+@app.get("/debug/routes", tags=["5. Debug"], summary="List registered routes")
+async def debug_routes():
+    return {"paths": sorted([r.path for r in app.router.routes])}
+
+# Search page route
+@app.get(
+    "/search",
+    tags=["1. UI Pages"],
+    summary="2. Search page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Search Page</body></html>"}}}}
+)
+async def search_page():
+    """Serve the dedicated search interface page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "search.html"))
+
+# Debug index HTML page (separate from API JSON at /debug-index)
+@app.get(
+    "/debug_index",
+    tags=["1. UI Pages"],
+    summary="3. Debug Index (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Debug Index</body></html>"}}}}
+)
+async def debug_index_page():
+    """Serve the debug-index HTML page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "debug-index.html"))
+
+
+@app.get(
+    "/list-docs-data",
+    tags=["1. UI Pages"],
+    summary="4. List Documents Data (JSON)",
+    responses={200: {"content": {"application/json": {"example": "{\"documents\": []}"}}}},
+)
+async def list_docs_data(limit: int = None):
+    """Return a JSON payload containing documents for display.
+
+    Each item includes: base_url, title, total_chunks, updated_at.
+    The frontend displays one item per line.
+    """
+    # Try to fetch real data from Qdrant using the configured collection
+    data = {"documents": []}
+    try:
+        from backend.db import QdrantDB
+        from backend.core.config import settings
+
+        # Initialize DB handle
+        qd = QdrantDB(host=settings.qdrant_host, port=settings.qdrant_port, collection_name=settings.collection_name)
+        # Attempt a simple scroll to fetch documents; best-effort approach
+        offset = None
+        while True:
+            try:
+                # The underlying client.scroll returns (points, next_offset)
+                resp = qd.client.scroll(collection_name=qd.collection_name, offset=offset, limit=100)
+                if isinstance(resp, tuple) and len(resp) == 2:
+                    points, offset = resp
+                else:
+                    points = resp
+                    offset = None
+            except TypeError:
+                # Fallback if the client returns a different structure
+                points = []
+                offset = None
+
+            if not isinstance(points, list):
+                points = list(points)
+
+            for p in points:
+                payload = getattr(p, 'payload', {}) or {}
+                base_url = payload.get('base_url') or payload.get('url')
+                title = payload.get('title') or ''
+                # total_chunks: prefer explicit field, else infer from a chunks list
+                total_chunks = payload.get('total_chunks')
+                if total_chunks is None:
+                    chunks = payload.get('chunks') or []
+                    total_chunks = len(chunks)
+                updated_at = payload.get('updated_at', '') or ''
+                if base_url:
+                    data['documents'].append({
+                        'base_url': base_url,
+                        'title': title,
+                        'total_chunks': int(total_chunks) if total_chunks is not None else 0,
+                        'updated_at': updated_at,
+                    })
+            if not offset:
+                break
+        # Respect the limit at display time; the UI will slice, and the download will provide full data
+        if limit is not None and limit > 0:
+            data['documents'] = data['documents'][:limit]
+    except Exception as e:
+        logger.exception("Error wiring real data for list-docs-data: %s", e)
+        # Fall back to a best-effort empty payload to avoid breaking the UI
+        data = {"documents": []}
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=data)
+
+@app.get(
+    "/list-docs.html",
+    include_in_schema=False  # Keep this alias for the UI; not part of API docs
+)
+async def list_docs_html_page():
+    """Serve the list-docs HTML page (UI)"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "list-docs.html"))
+
+@app.get(
+    "/process-batch-docs",
+    tags=["1. UI Pages"],
+    summary="5. Batch Process Documents (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Batch Process Page</body></html>"}}}}
+)
+@app.get(
+    "/process-batch-docs.html",
+    include_in_schema=False  # Hide this from the API docs since it's just an alias
+)
+async def process_batch_docs_page():
+    """Serve the process-batch-docs HTML page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "process-batch-docs.html"))
+
+# Chat page route (HTML)
+@app.get(
+    "/chat.html",
+    tags=["1. UI Pages"],
+    summary="4. Chat page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Chat Page</body></html>"}}}}
+)
+async def chat_page():
+    """Serve the standalone chat page"""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "chat.html"))
+
+from typing import Optional
+@app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
+async def index_mediawiki_url(
+    mediawiki_input: MediaWikiURLInput
+):
+    """
+    Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
+    You can override the target MediaWiki API with `api_url` and the User-Agent with `ua` per request.
+    """
+    global embeddings_manager
+    if embeddings_manager is None:
+        #logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
+        embeddings_manager = EmbeddingsManager()
+        #logger.info("TRACE MW: Embeddings manager initialized")
+    try:
+        #logger.info("TRACE MW: Before MediaWikiExtractor init")
+        extractor = MediaWikiExtractor(
+            chunk_size=settings.html_chunk_size,
+            chunk_overlap=settings.html_chunk_overlap,
+            api_url=mediawiki_input.api_url,
+            user_agent=mediawiki_input.user_agent,
+        )
+        #logger.info("TRACE MW: MediaWikiExtractor init done")
+        url = mediawiki_input.url
+        max_chunks = mediawiki_input.max_chunks
+        skip_sections = mediawiki_input.skip_sections
+        force_delete = mediawiki_input.force_delete
+        estimate = mediawiki_input.estimate
+        #logger.info(f"TRACE MW: Read URL: {url}")
+        # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
+        if bool(settings.check_document_indexed):
+            global qdrant_db
+            if qdrant_db is None:
+                qdrant_db = QdrantDB(
+                    host=settings.qdrant_host,
+                    port=settings.qdrant_port,
+                    collection_name=settings.collection_name,
+                )
+            try:
+                existing_count = qdrant_db.count_points_by_url(url)
+                logger.info("Existing vectors found for URL: %s", existing_count)
+                #logger.info("Confirm reindex: %s", force_delete)
+            except Exception as e:
+                # If counting fails, proceed without blocking indexing
+                existing_count = 0
+                logger.warning("Failed checking existing index for %s: %s", url, e)
+            if existing_count > 0 and not estimate and not bool(force_delete):
+                # logger.info("Confirmation required to reindex; aborting until confirmed")
+                return {
+                    "message": "URL already indexed",
+                    "url": url,
+                    "already_indexed": True,
+                    "vectors_found": int(existing_count),
+                    "confirmation_required": True,
+                    "hint": "Resubmit with force_delete=true to proceed",
+                }
+            elif existing_count > 0 and bool(force_delete):
+                logger.info("force_delete=true; proceeding with reindex")
+        # Use extractor.parse_from_url directly, passing skip_sections
+        #logger.info(f"TRACE MW: Extraction started for URL: {url}")
+        chunks = extractor.parse_from_url(url, skip_sections=skip_sections)
+        #logger.info(f"TRACE MW: Extraction done. Number of chunks created: {len(chunks)}")
+        # Limit the number of chunks indexed if max_chunks is a positive value
+        if max_chunks is not None and max_chunks > 0:
+            chunks = chunks[:max_chunks]
+        #logger.info(f"TRACE MW: Chunks after capping (if any): {len(chunks)}")
+        if mediawiki_input.estimate:
+            # Calculate estimated tokens using the embeddings manager's token counter
+            tokens_used = 0
+            for chunk in chunks:
+                if isinstance(chunk, dict) and 'text' in chunk:
+                    tokens_used += embeddings_manager.estimate_tokens(chunk['text'])
+                elif isinstance(chunk, str):
+                    tokens_used += embeddings_manager.estimate_tokens(chunk)
+                    
+            # logger.info("Estimate only; planned chunks: %d, tokens: %d", len(chunks), tokens_used)
+            # Calculate estimated embedding cost
+            estimated_cost = (tokens_used * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            return {
+                "message": "Estimate only", 
+                "chunks_planned": len(chunks),
+                "tokens_used": tokens_used,
+                "embedding_cost": round(estimated_cost, 8)
+            }
+        #logger.info(f"TRACE MW: Sending {len(chunks)} chunks for embedding")
+        result = embeddings_manager.index_chunks(
+            chunks,
+            force_delete=  force_delete,
+            max_chunks=max_chunks
+        )
+        logger.info(
+            "Embedding finished. vectors_indexed=%s, tokens_used=%s",
+            result.get('vectors_indexed', 0),
+            result.get('tokens_used', 0),
+        )
+        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        return {
+            "message": "MediaWiki content indexed successfully",
+            "chunks_indexed": len(chunks),
+            "vectors_indexed": result.get("vectors_indexed", 0),
+            "tokens_used": result.get("tokens_used", 0),
+            "embedding_cost": round(embedding_cost, 8),
+            "url": url,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/clear", tags=["3. Search & Chat"], summary="6. Clear conversation summaries (stateless)")
+async def clear_chat_summaries(payload: ClearChatRequest):
+    """Clear server-side summary cache for a conversation namespace.
+
+    Namespace rule (Option A):
+    - If both user_id and conversation_id: f"{user_id}:{conversation_id}"
+    - Else: conversation_id only
+    - If conversation_id missing/empty: no-op
+    """
+    try:
+        from backend.chat import chat_manager as cm
+        cid = (payload.conversation_id or "").strip()
+        uid = (payload.user_id or "").strip()
+        if not cid and not uid:
+            return JSONResponse({"removed": 0, "remaining": 0, "reclaimed_bytes": 0})
+        ns = f"{uid}:{cid}" if uid and cid else (cid or "")
+        stats = cm.clear_summaries_for_namespace(ns)
+        return JSONResponse(stats)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pdf", tags=["2. Ingest"], summary="1c. Index PDF (upload or URL)")
+async def index_pdf(
+    pdf_input: PDFInput
+):
+    """Index a PDF either by uploaded file or by URL."""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    
+    if not pdf_input.file and not pdf_input.url:
+        raise HTTPException(status_code=400, detail="Provide either a PDF file or a URL")
+    
+    # Initialize qdrant_db at function start
+    global qdrant_db
+    
+    try:
+        source = pdf_input.url if pdf_input.url else "uploaded://file.pdf"
+        
+        # For URL-based PDFs, check if already indexed
+        if pdf_input.url and bool(settings.check_document_indexed):
+            if qdrant_db is None:
+                qdrant_db = QdrantDB(
+                    host=settings.qdrant_host,
+                    port=settings.qdrant_port,
+                    collection_name=settings.collection_name,
+                )
+            try:
+                existing_count = qdrant_db.count_points_by_url(pdf_input.url)
+                logger.info("Existing vectors found for PDF URL: %s", existing_count)
+            except Exception as e:
+                # If counting fails, proceed without blocking indexing
+                existing_count = 0
+                logger.warning("Failed checking existing index for %s: %s", pdf_input.url, e)
+            
+            if existing_count > 0 and not pdf_input.estimate and not bool(pdf_input.force_delete):
+                return {
+                    "message": "PDF URL already indexed",
+                    "url": pdf_input.url,
+                    "already_indexed": True,
+                    "vectors_found": int(existing_count),
+                    "confirmation_required": True,
+                    "hint": "Resubmit with force_delete=true to proceed",
+                }
+            elif existing_count > 0 and bool(pdf_input.force_delete):
+                logger.info("force_delete=true; proceeding with reindex")
+        
+        extractor = PDFExtractor(
+            chunk_size=settings.html_chunk_size,
+            chunk_overlap=settings.html_chunk_overlap,
+        )
+        
+        if pdf_input.file:
+            # Handle base64 encoded file
+            import base64
+            import hashlib
+            try:
+                file_data = base64.b64decode(pdf_input.file)
+                
+                # Generate a unique hash of the file content for duplicate checking
+                file_hash = hashlib.sha256(file_data).hexdigest()
+                source = f"uploaded://{file_hash}"
+                
+                # Check for existing indexed content with the same hash
+                if bool(settings.check_document_indexed):
+                    if qdrant_db is None:
+                        qdrant_db = QdrantDB(
+                            host=settings.qdrant_host,
+                            port=settings.qdrant_port,
+                            collection_name=settings.collection_name,
+                        )
+                    try:
+                        existing_count = qdrant_db.count_points_by_url(source)
+                        logger.info("Existing vectors found for PDF hash: %s", existing_count)
+                        
+                        if existing_count > 0 and not pdf_input.estimate and not bool(pdf_input.force_delete):
+                            return {
+                                "message": "This PDF has already been indexed",
+                                "url": source,
+                                "already_indexed": True,
+                                "vectors_found": int(existing_count),
+                                "confirmation_required": True,
+                                "hint": "Resubmit with 'Force delete existing' checked to proceed",
+                            }
+                        elif existing_count > 0 and bool(pb_input.force_delete):
+                            logger.info("force_delete=true; proceeding with reindex")
+                            
+                    except Exception as e:
+                        # If counting fails, proceed without blocking indexing
+                        logger.warning("Failed checking existing index for PDF hash: %s", e)
+                
+                chunks = extractor.parse_from_bytes(file_data, source)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid file data: {str(e)}")
+        else:
+            # Handle URL
+            chunks = extractor.parse_from_url(pdf_input.url)
+            
+        if pdf_input.max_chunks is not None and pdf_input.max_chunks > 0:
+            chunks = chunks[:pdf_input.max_chunks]
+            
+        if pdf_input.estimate:
+            # Calculate estimated tokens using the embeddings manager's token counter
+            tokens_used = 0
+            for chunk in chunks:
+                if isinstance(chunk, dict) and 'text' in chunk:
+                    tokens_used += embeddings_manager.estimate_tokens(chunk['text'])
+                elif isinstance(chunk, str):
+                    tokens_used += embeddings_manager.estimate_tokens(chunk)
+                    
+            # Calculate estimated embedding cost
+            estimated_cost = (tokens_used * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            return {
+                "message": "Estimate only", 
+                "chunks_planned": len(chunks),
+                "tokens_used": tokens_used,
+                "embedding_cost": round(estimated_cost, 8)
+            }
+            
+        result = embeddings_manager.index_chunks(
+            chunks,
+            force_delete=pdf_input.force_delete,
+            max_chunks=pdf_input.max_chunks,
+        )
+        
+        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        return {
+            "message": "PDF content indexed successfully",
+            "chunks_indexed": len(chunks),
+            "vectors_indexed": result.get("vectors_indexed", 0),
+            "tokens_used": result.get("tokens_used", 0),
+            "embedding_cost": round(embedding_cost, 8),
+            "source": source,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+## Consolidated structured PDF indexing handled by /pdf endpoint below
+
+from backend.chat.chat_manager import ChatManager
+from fastapi import Depends, HTTPException
+from pydantic import BaseModel
+from backend.core.config import Settings
+import uuid
+import time
+
+# Initialize managers as None; instantiate lazily in routes
+embeddings_manager = None
+chat_manager = None
+qdrant_db = None
+
+# Chat session management
+class ChatSessionManager:
+    def __init__(self):
+        self.sessions = {}
+        self.settings = Settings()
+
+    def create_session(self) -> str:
+        """Create a new chat session"""
+        session_id = str(uuid.uuid4())
+        self.sessions[session_id] = {
+            "messages": [],
+            "context": [],
+            "last_access": time.time()
+        }
+        return session_id
+
+    def get_session(self, session_id: str) -> dict:
+        """Get a chat session by ID"""
+        if session_id not in self.sessions:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        return self.sessions[session_id]
+
+    def update_session(self, session_id: str, message: dict) -> None:
+        """Update chat session with new message"""
+        if session_id not in self.sessions:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        
+        # Add new message to session
+        self.sessions[session_id]["messages"].append(message)
+        self.sessions[session_id]["last_access"] = time.time()
+
+    def get_context(self, session_id: str) -> list:
+        """Get relevant context for chat session"""
+        session = self.get_session(session_id)
+        messages = session["messages"]
+        
+        # Get recent messages within token limit
+        total_tokens = 0
+        context = []
+        
+        # Start from most recent message and work backwards
+        for msg in reversed(messages):
+            msg_tokens = len(msg["content"].split())
+            if total_tokens + msg_tokens <= self.settings.max_history_tokens:
+                context.append(msg)
+                total_tokens += msg_tokens
+            else:
+                break
+        
+        return list(reversed(context))
+
+    def reset_session(self, session_id: str) -> None:
+        """Clear messages and context for a session."""
+        if session_id not in self.sessions:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        self.sessions[session_id]["messages"] = []
+        self.sessions[session_id]["context"] = []
+        self.sessions[session_id]["last_access"] = time.time()
+
+chat_session_manager = ChatSessionManager()
+
+@app.post("/chat/session", tags=["3. Search & Chat"], summary="1. Create chat session")
+async def create_chat_session():
+    """Create a new chat session"""
+    session_id = chat_session_manager.create_session()
+    return {"session_id": session_id}
+
+# --- Reset chat totals/state for frontend ---
+@app.post(
+    "/chat/reset",
+    tags=["3. Search & Chat"],
+    summary="Reset chat totals/state",
+    status_code=200
+)
+async def reset_chat_totals():
+    """
+    Reset conversation-level metrics/state for the stateless chat path used by chat.html.
+    This resets the chat history, parameters, and clears the conversation window.
+    """
+    global chat_manager
+    if chat_manager is None:
+        chat_manager = ChatManager()
+    try:
+        reset_fn = getattr(chat_manager, "reset_metrics", None) or getattr(chat_manager, "reset", None)
+        if callable(reset_fn):
+            reset_fn()
+        return {"ok": True}
+    except Exception as e:
+        # logger.error("Error resetting chat totals: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat/{session_id}", tags=["3. Search & Chat"], summary="2. Chat (session)")
+async def chat_endpoint(session_id: str, chat_request: ChatRequest):
+    """Process a chat message with context"""
+    try:
+        # Get session context
+        session = chat_session_manager.get_session(session_id)
+        
+        # Get relevant context from chat history
+        context = chat_session_manager.get_context(session_id)
+        
+        # Process chat message with context
+        response = await chat_manager.chat(
+            message=chat_request.message,
+            context=context,
+            use_web_search=chat_request.use_web_search,
+            params=(chat_request.params or {})
+        )
+        
+        # Update session with new message and response
+        chat_session_manager.update_session(session_id, {
+            "role": "user",
+            "content": chat_request.message,
+            "sources": []
+        })
+        chat_session_manager.update_session(session_id, {
+            "role": "assistant",
+            "content": response["response"],
+            "sources": response["sources"],
+            "tools_used": response.get("tools_used", [])
+        })
+        
+        return ChatResponse(
+            response=response["response"],
+            sources=response["sources"],
+            tools_used=response.get("tools_used", [])
+        )
+    except Exception as e:
+        # logger.error("Error processing chat: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat/{session_id}/history", tags=["3. Search & Chat"], summary="3. Get chat history")
+async def get_chat_history(session_id: str):
+    """Get chat history for session"""
+    try:
+        session = chat_session_manager.get_session(session_id)
+        return {
+            "messages": session["messages"],
+            "context": session["context"]
+        }
+    except Exception as e:
+        # logger.error("Error getting chat history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat/{session_id}/reset", tags=["3. Search & Chat"], summary="Reset chat session state")
+async def reset_chat_session(session_id: str):
+    """Reset server-side chat session messages/context for the given session."""
+    try:
+        chat_session_manager.reset_session(session_id)
+        return {"ok": True}
+    except Exception as e:
+        # logger.error("Error resetting chat session: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/index", tags=["2. Ingest"], summary="2. Index URLs / PDFs")
+async def index_content(url_input: URLInput):
+    """Index content from URLs (HTML or PDF)"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    try:
+        #print("DEBUG: Entered index_content route")
+        #print("Received input:", url_input.dict())  # Debugging line
+        # Process each URL
+        planned_chunks_total = 0
+        tokens_total = 0
+        for url in url_input.urls:
+            if url_input.doc_type.lower() == "html":
+                crawler = WebCrawler(
+                    url,
+                    force_crawl=url_input.force_crawl
+                )
+                pages = await crawler.crawl(url, 1)  # Depth 1 for now
+                # logger.debug("Crawled %d page(s) from %s", len(pages), url)
+
+                for page in pages:
+                    url = page['url']
+                    # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
+                    if bool(settings.check_document_indexed):
+                        global qdrant_db
+                        if qdrant_db is None:
+                            qdrant_db = QdrantDB(
+                                host=settings.qdrant_host,
+                                port=settings.qdrant_port,
+                                collection_name=settings.collection_name,
+                            )
+                        try:
+                            existing_count = qdrant_db.count_points_by_url(url)
+                            logger.info("Existing vectors found for URL: %s", existing_count)
+                        except Exception as e:
+                            # If counting fails, proceed without blocking indexing
+                            existing_count = 0
+                            logger.warning("Failed checking existing index for %s: %s", url, e)
+                        if existing_count > 0 and not url_input.estimate and not bool(url_input.force_delete):
+                            return {
+                                "message": "URL already indexed",
+                                "url": url,
+                                "already_indexed": True,
+                                "vectors_found": int(existing_count),
+                                "confirmation_required": True,
+                                "hint": "Resubmit with force_delete=true to proceed",
+                            }
+                        elif existing_count > 0 and bool(url_input.force_delete):
+                            logger.info("force_delete=true; proceeding with reindex")
+
+                    # logger.debug("Extracting content from page: %s", page['url'])
+                    # logger.debug("Raw page content length: %d", len(page['content']))
+
+                    # Use section-aware HTML extractor (DOM mode) for parity with PDF/MediaWiki
+                    extractor = HTMLExtractor(
+                        chunk_size=settings.html_chunk_size,
+                        chunk_overlap=settings.html_chunk_overlap,
+                        html_mode="dom",
+                    )
+
+                    # If provided content lacks real heading tags, refetch raw HTML to ensure DOM headings are available
+                    html_input = page['content'] or ''
+                    if not re.search(r'<h[2-4][^>]*>', html_input, flags=re.IGNORECASE):
+                        try:
+                            # logger.debug("No <h2-4> tags in crawler content; refetching raw HTML: %s", page['url'])
+                            resp = requests.get(page['url'], timeout=20)
+                            resp.raise_for_status()
+                            html_input = resp.text
+                        except Exception as e:
+                            logger.debug("Refetch failed; using crawler content. Error: %s", e)
+
+                    chunks = extractor.parse(
+                        html_input,
+                        page['url'],
+                        skip_sections=url_input.skip_sections,
+                    )
+
+                    # Debug: show detected sections
+                    try:
+                        found_sections = sorted({ (c.get('section') or 'Lead') for c in chunks })
+                        if settings.debug_verbose:
+                            logger.debug("Sections detected: %s", found_sections)
+                    except Exception:
+                        pass
+
+                    # Sanity: show first chunk's key fields before indexing
+                    try:
+                        if chunks and settings.debug_verbose:
+                            for sample in chunks:
+                                keys_of_interest = [
+                                    "section", "subsection", "subsubsection",
+                                    "section_index", "subsection_index",
+                                    "chunk_index", "total_chunks",
+                                    "url", "document_type", "title", "description",
+                                ]
+                                view = {k: sample.get(k) for k in keys_of_interest}
+                                missing = [k for k in keys_of_interest if k not in sample]
+                                #logger.debug("Sample chunk payload %s (pre-index): %s", sample.get('chunk_index'), view)
+                                if missing:
+                                    logger.debug("Missing keys in sample chunk: %s", missing)
+                    except Exception as e:
+                        logger.debug("Failed to print sample chunk payload: %s", e, exc_info=True)
+
+                    # Standardize on chunk-based limiting for /index
+                    user_max_chunks = url_input.max_chunks if (url_input.max_chunks and url_input.max_chunks > 0) else None
+
+                    if url_input.estimate:
+                        effective_cap = int(settings.max_chunks_per_doc)
+                        if user_max_chunks is not None:
+                            effective_cap = min(effective_cap, int(user_max_chunks))
+                        planned_chunks = min(len(chunks), effective_cap)
+                        planned_chunks_total += planned_chunks
+                        # Calculate tokens for the planned chunks
+                        for chunk in chunks[:planned_chunks]:
+                            if isinstance(chunk, dict) and 'text' in chunk:
+                                tokens_total += embeddings_manager.estimate_tokens(chunk['text'])
+                            elif isinstance(chunk, str):
+                                tokens_total += embeddings_manager.estimate_tokens(chunk)
+                    else:
+                        #logger.debug("Indexing HTML chunks for: %s", page['url'])
+                        result = embeddings_manager.index_chunks(
+                            chunks,
+                            force_delete=url_input.force_delete,
+                            max_chunks=user_max_chunks,
+                        )
+                        planned_chunks_total += result.get("vectors_indexed", 0)
+                        tokens_total += result.get("tokens_used", 0)
+            
+            elif url_input.doc_type == "PDF":
+                pdf_crawler = PDFCrawler()
+                pdf_data = pdf_crawler.crawl(url)
+                if settings.debug_verbose:
+                    from pprint import pformat
+                    logger.debug("PDF data retrieved: %s", pformat(pdf_data)[:settings.debug_log_truncate_chars])
+                
+                if pdf_data:
+                    for section in pdf_data['sections']:
+                        document = {
+                            'url': url,
+                            'text': section['content'],
+                            'doc_type': 'PDF',
+                            'title': pdf_data['title'],
+                            'page_number': section['page_number']
+                        }
+                        # Standardize on chunk-based limiting for /index (no max_chars support)
+                        user_max_chunks = url_input.max_chunks if (url_input.max_chunks and url_input.max_chunks > 0) else None
+                        if url_input.estimate:
+                            from backend.extractor.splitters import TextSplitter
+                            # Use PDF chunk settings for PDFs
+                            chunk_size = settings.pdf_chunk_size or len(document['text'])
+                            splitter = TextSplitter(
+                                chunk_size=chunk_size,
+                                chunk_overlap=settings.pdf_chunk_overlap,
+                                use_manual_splitter=False,
+                            )
+                            chunks = splitter.split_text(document.get('text', '') or '')
+                            effective_cap = int(settings.max_chunks_per_doc)
+                            if user_max_chunks is not None:
+                                effective_cap = min(effective_cap, int(user_max_chunks))
+                            planned_chunks = min(len(chunks), effective_cap)
+                            planned_chunks_total += planned_chunks
+                            # Calculate tokens for the planned chunks
+                            for chunk in chunks[:planned_chunks]:
+                                tokens_total += embeddings_manager.estimate_tokens(chunk)
+                        else:
+                            result = embeddings_manager.index_document(
+                                document,
+                                force_delete=url_input.force_delete,
+                                max_chunks=user_max_chunks
+                            )
+                            planned_chunks_total += result.get("vectors_indexed", 0)
+                            tokens_total += result.get("tokens_used", 0)
+        if url_input.estimate:
+            estimated_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            return {
+                "message": "Estimate only", 
+                "chunks_planned": planned_chunks_total,
+                "tokens_used": tokens_total,
+                "embedding_cost": round(estimated_cost, 8)
+            }
+        embedding_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        return {
+            "message": "Content indexed successfully",
+            "vectors_indexed": planned_chunks_total,
+            "tokens_used": tokens_total,
+            "embedding_cost": round(embedding_cost, 8)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/search", tags=["3. Search & Chat"], summary="4. Vector search")
+async def search_content(search_request: SearchRequest):
+    """Search indexed content"""
+    global qdrant_db
+    if qdrant_db is None:
+        qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
+    try:
+        if not search_request.query:
+            if search_request.query_filter and "url" in search_request.query_filter:
+                results = qdrant_db.get_chunks_by_url(
+                    url=search_request.query_filter["url"],
+                    limit=search_request.limit
+                )
+                return SearchResponse(results=results, total=len(results))
+            else:
+                raise HTTPException(status_code=400, detail="URL must be provided in query_filter if no query is given.")
+        else:
+            qdrant_filter = None
+            if search_request.query_filter:
+                filter_conditions = []
+                for key, value in search_request.query_filter.items():
+                    qdrant_key = "url_lower" if key == "url" else key
+                    match_value = value.lower() if isinstance(value, str) else value
+                    filter_conditions.append(
+                        models.FieldCondition(
+                            key=qdrant_key,
+                            match=models.MatchValue(value=match_value)
+                        )
+                    )
+                qdrant_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+            
+            logger.debug("Search: query=%s limit=%s filter=%s", search_request.query, search_request.limit, qdrant_filter)
+            
+            # Extract optional parameters (direct attribute access)
+            score_threshold = search_request.score_threshold
+            exact = search_request.exact
+            with_payload = search_request.with_payload
+            
+            # Use QdrantDB directly for the search with query string
+            results = qdrant_db.search_similar(
+                query=search_request.query,
+                limit=search_request.limit,
+                query_filter=qdrant_filter,
+                score_threshold=score_threshold,
+                exact=exact,
+                with_payload=with_payload
+            )
+            logger.debug("Search results count: %d", len(results))
+            return SearchResponse(results=results, total=len(results))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat", tags=["3. Search & Chat"], summary="5. Chat (stateless)")
+async def chat_with_content(chat_request: ChatRequest):
+    """Chat with the indexed content"""
+    global chat_manager
+    if chat_manager is None:
+        chat_manager = ChatManager()
+    try:
+        # Thin handler: delegate to handle_chat(payload) and return as-is
+        # First try to get the handler from the instance (chat_manager/handle_chat)
+        handler = getattr(chat_manager, "handle_chat", None)
+        if handler is None:
+            # Fallback: import module-level handler(backend/chat/chat_manager.py)(if not bound to instance)
+            from backend.chat import chat_manager as cm_module
+            handler = getattr(cm_module, "handle_chat")
+        # Offload blocking work to a background thread so the event loop can stream SSE
+        result = await asyncio.to_thread(handler, chat_request.model_dump())
+        return result
+    except Exception as e:
+        logger.error("Error in chat endpoint: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.post("/embed", tags=["2. Ingest"], summary="3. Embed single document")
+async def generate_embedding(embedding_request: EmbeddingRequest):
+    """Generate embedding for a specific document"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    try:
+        document = {
+            'url': embedding_request.url,
+            'text': embedding_request.content,
+            'title': embedding_request.title,
+            'description': embedding_request.description,
+            'domain': embedding_request.domain,
+            'document_type': embedding_request.document_type,
+            'date': embedding_request.date,
+            'chunk_index': embedding_request.chunk_index,
+            'total_chunks': embedding_request.total_chunks
+        }
+        embeddings_manager.index_document(document)
+        return {"message": "Document embedded successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/delete/{url}", tags=["2. Ingest"], summary="4. Delete by URL")
+async def delete_document(url: str):
+    """Delete embeddings for a specific document"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    try:
+        embeddings_manager.delete_document(url)
+        return {"message": "Document deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug-index", tags=["5. Debug"], summary="1. Inspect Qdrant collections")
+def debug_index(url: Optional[str] = None):
+    """List current indexed collections and their first 10 documents, optionally filtered by URL"""
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    try:
+        collections_info = embeddings_manager.qdrant.client.get_collections()
+        collection_names = [col.name for col in collections_info.collections]
+        debug_info = {}
+        for name in collection_names:
+            try:
+                #logger.info("Fetching documents from collection: %s", name)
+                all_docs = []
+                next_offset = None
+                if url:
+                    url_lower = url.lower()
+                    #logger.debug("Filtering for URL (lowercase): %s", url_lower)
+                    qdrant_filter = models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="base_url_lower",
+                                match=models.MatchValue(value=url_lower)
+                            )
+                        ]
+                    )
+                    # Debug: Check if any documents match this filter
+                    count_resp = embeddings_manager.qdrant.client.count(
+                        collection_name=name,
+                        count_filter=qdrant_filter
+                    )
+                    #logger.debug("Found %d documents matching URL filter", count_resp.count)
+                    
+                    # Debug: Check the actual field names in the first few documents
+                    sample_docs, _ = embeddings_manager.qdrant.client.scroll(
+                        collection_name=name,
+                        limit=3,
+                        with_payload=True,
+                        scroll_filter=qdrant_filter
+                    )
+                    if settings.debug_verbose:
+                        for i, doc in enumerate(sample_docs):
+                            logger.debug("Sample doc %d fields: %s", i, list(doc.payload.keys()))
+                            if 'url' in doc.payload or 'url_lower' in doc.payload:
+                                logger.debug("Sample doc %d URL fields - url: %s, url_lower: %s", i, doc.payload.get('url'), doc.payload.get('url_lower'))
+                else:
+                    qdrant_filter = None
+                    logger.debug("No URL filter applied")
+                while True:
+                    docs, next_offset = embeddings_manager.qdrant.client.scroll(
+                        collection_name=name,
+                        limit=100,  # Batch size per scroll request (not total limit). Adjust for performance/memory.
+                        with_payload=True,
+                        offset=next_offset,
+                        scroll_filter=qdrant_filter
+                    )
+                    all_docs.extend(docs)
+                    if next_offset is None:
+                        break
+                if url and not docs:
+                    continue
+                # Get collection info to verify total count
+                collection_info = embeddings_manager.qdrant.client.get_collection(collection_name=name)
+                if settings.debug_verbose:
+                    logger.debug("Qdrant collection %s info: %s", name, collection_info)
+                logger.debug("Total points in collection: %s", getattr(collection_info, 'points_count', 'n/a'))
+                
+                #logger.info("Scroll response for %s: %d docs retrieved", name, len(all_docs))
+                if all_docs:
+                    #logger.debug("Found %d total documents in collection %s", len(all_docs), name)
+                    sorted_docs = sorted(
+                        all_docs,
+                        key=lambda d: (
+                            d.payload.get("url", ""),
+                            int(d.payload.get("section_index")) if d.payload.get("section_index") is not None else 0,
+                            int(d.payload.get("subsection_index")) if d.payload.get("subsection_index") is not None else -1,
+                            int(d.payload.get("chunk_index")) if d.payload.get("chunk_index") is not None else 0
+                        )
+                    )
+                    #logger.debug("After sorting, have %d documents", len(sorted_docs))
+                    if settings.debug_verbose:
+                        for d in sorted_docs:
+                            logger.debug(
+                                "URL: %s | Section: %s | Subsection: %s | SectionIdx: %s | SubsectionIdx: %s | ChunkIdx: %s",
+                                d.payload.get('url', ''), d.payload.get('section', ''), d.payload.get('subsection', ''),
+                                d.payload.get('section_index'), d.payload.get('subsection_index'), d.payload.get('chunk_index')
+                            )
+                    debug_info[name] = sorted_docs
+                else:
+                    debug_info[name] = f"No documents found in collection {name}"
+            except Exception as inner_e:
+                logger.error("Error retrieving documents from %s: %s", name, inner_e)
+                debug_info[name] = f"Error retrieving documents: {str(inner_e)}"
+        if settings.debug_verbose:
+            from pprint import pformat
+            logger.debug("Debug info to return: %s", pformat(debug_info)[:settings.debug_log_truncate_chars])
+        return {"collections": debug_info}
+    except Exception as e:
+        logger.exception("Top-level exception in /debug-index")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/list-docs-debug", tags=["5. Debug"], summary="List all documents in Qdrant (debug)")
+def list_docs(url: Optional[str] = None):
+    """Return a JSON list of all documents in Qdrant with selected fields.
+
+    The returned structure is: {"documents": [ {document_title, url, total_chunks, updated_at, collection} ]}
+    """
+    global embeddings_manager
+    if embeddings_manager is None:
+        embeddings_manager = EmbeddingsManager()
+    try:
+        collection_docs = []
+        # Restrict to the configured collection name only
+        configured = getattr(settings, 'collection_name', None)
+        if not configured:
+            raise HTTPException(status_code=500, detail='No collection_name configured in settings')
+        collection_names = [configured]
+        for name in collection_names:
+            try:
+                all_docs = []
+                next_offset = None
+                if url:
+                    url_lower = url.lower()
+                    qdrant_filter = models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="base_url_lower",
+                                match=models.MatchValue(value=url_lower)
+                            )
+                        ]
+                    )
+                else:
+                    qdrant_filter = None
+                while True:
+                    docs, next_offset = embeddings_manager.qdrant.client.scroll(
+                        collection_name=name,
+                        limit=100,
+                        with_payload=True,
+                        offset=next_offset,
+                        scroll_filter=qdrant_filter
+                    )
+                    all_docs.extend(docs)
+                    if next_offset is None:
+                        break
+                # Aggregate by base_url: count chunks per base_url, keep title and most recent updated_at
+                agg = {}
+                for d in all_docs:
+                    p = d.payload or {}
+                    base = p.get('base_url') or p.get('url') or p.get('url_lower')
+                    if not base:
+                        continue
+                    # If a url filter was provided, ensure match
+                    if url and url.lower() not in str(base).lower():
+                        continue
+                    title = p.get('title')
+                    updated_at = p.get('updated_at') or p.get('date')
+                    entry = agg.get(base)
+                    if not entry:
+                        agg[base] = {
+                            'document_title': title,
+                            'url': base,
+                            'total_chunks': 1,
+                            'updated_at': updated_at,
+                            'collection': name,
+                        }
+                    else:
+                        entry['total_chunks'] = entry.get('total_chunks', 0) + 1
+                        # choose the most recent updated_at if present (lexicographic fallback)
+                        if updated_at:
+                            prev = entry.get('updated_at')
+                            if not prev or str(updated_at) > str(prev):
+                                entry['updated_at'] = updated_at
+                # extend aggregated results
+                collection_docs.extend(list(agg.values()))
+            except Exception as inner_e:
+                logger.error("Error retrieving documents from %s: %s", name, inner_e)
+                # skip collection on error
+                continue
+        return {"documents": collection_docs}
+    except Exception as e:
+        logger.exception("Top-level exception in /list-docs")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/delete_index",
+    tags=["1. UI Pages"],
+    summary="6. Delete-by-URL admin page (HTML)",
+    response_class=HTMLResponse,
+)
+async def delete_index_page():
+    """Serve the delete-index HTML page used for delete-by-URL admin operations."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "delete-index.html"))
+
+
+class DeleteByBaseURLRequest(BaseModel):
+    """Request body for deleting Qdrant points grouped by base URL.
+
+    Either `url` or `base_url` may be provided; if `base_url` is omitted,
+    it will be derived from `url` by stripping any fragment.
+    """
+
+    url: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+def _strip_fragment_url(u: str) -> str:
+    if not u:
+        return u
+    p = urlsplit(u)
+    return urlunsplit((p.scheme, p.netloc, p.path, p.query, ""))
+
+
+@app.get(
+    "/admin/delete-preview",
+    tags=["4. Index Admin"],
+    summary="Preview Qdrant chunks matched by base_url_lower before delete",
+)
+def delete_preview(url: str = Query(..., description="Full URL of the document to delete"), sample_limit: int = Query(5, ge=1, le=500)):
+    """Return a count and sample of chunks that would be deleted for the given URL's base_url.
+
+    - Normalizes the provided URL to a base URL (no fragment) and lowercases it.
+    - Counts all matching chunks via `base_url_lower`.
+    - Returns up to `sample_limit` example chunks for review.
+    """
+    global qdrant_db
+    if qdrant_db is None:
+        qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name,
+        )
+    try:
+        base = _strip_fragment_url(url)
+        total = qdrant_db.count_points_by_base_url(base)
+        sample_chunks = qdrant_db.get_chunks_by_base_url(base, limit=sample_limit)
+        # Optionally, keep sample payloads smaller by trimming long text fields
+        max_text_chars = int(getattr(settings, "debug_log_truncate_chars", 500))
+        for ch in sample_chunks:
+            payload = ch.get("payload") or {}
+            txt = payload.get("text")
+            if isinstance(txt, str) and len(txt) > max_text_chars:
+                payload["text"] = txt[:max_text_chars] + "…"
+            ch["payload"] = payload
+
+        return {
+            "input_url": url,
+            "base_url": base,
+            "base_url_lower": (base or "").lower(),
+            "total_chunks": int(total),
+            "sample_limit": int(sample_limit),
+            "sample_chunks": sample_chunks,
+        }
+    except Exception as e:
+        logger.exception("Error in /admin/delete-preview: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/admin/delete-by-base-url",
+    tags=["4. Index Admin"],
+    summary="Delete Qdrant chunks by base_url_lower",
+)
+def delete_by_base_url(request: DeleteByBaseURLRequest):
+    """Delete all Qdrant chunks whose `base_url_lower` matches the derived base URL.
+
+    You can provide either:
+    - `url`: a full URL, from which base_url will be derived, or
+    - `base_url`: used directly.
+    """
+    global qdrant_db
+    if qdrant_db is None:
+        qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name,
+        )
+    try:
+        base = request.base_url or _strip_fragment_url(request.url or "")
+        if not base:
+            raise HTTPException(status_code=400, detail="Either url or base_url must be provided")
+
+        deleted = qdrant_db.delete_by_base_url(base)
+        return {
+            "base_url": base,
+            "base_url_lower": (base or "").lower(),
+            "deleted_points": int(deleted),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in /admin/delete-by-base-url: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ModelConfig(BaseModel):
+    """Model configuration response model."""
+    embedding_model: Optional[str] = None
+    re_ranker_model: Optional[str] = None
+    query_rewrite_model: Optional[str] = None
+    summarizer_model: Optional[str] = None
+    inference_model: Optional[str] = None
+    # runtime defaults exposed for frontend
+    score_threshold: Optional[float] = None
+    top_k: Optional[int] = None
+    summarizer_max_input_tokens: Optional[int] = None
+    summarizer_max_output_tokens: Optional[int] = None
+    inference_temperature: Optional[float] = None
+    inference_top_p: Optional[float] = None
+    chat_history_window_turns: Optional[int] = None
+    raw_tail_turns: Optional[int] = None
+    max_inference_output_tokens: Optional[int] = None
+    enable_tools: Optional[bool] = None
+    enable_query_rewrite: Optional[bool] = None
+
+@app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
+async def get_model_config():
+    """
+    Get the current model configuration.
+    This endpoint returns the models used for different tasks in the application.
+    Returns None for any model that is not configured.
+    """
+    def get_model_setting(name):
+        value = getattr(settings, name, None)
+        return value if value is not None else None
+    
+    return ModelConfig(
+        embedding_model=get_model_setting("embedding_model"),
+        re_ranker_model=get_model_setting("re_ranker_model"),
+        query_rewrite_model=get_model_setting("rewrite_model"),
+        summarizer_model=get_model_setting("summarizer_model"),
+        inference_model=get_model_setting("inference_model"),
+        # expose a small set of runtime defaults so the frontend can pre-populate form fields
+        score_threshold=get_model_setting("score_threshold"),
+        top_k=get_model_setting("top_k"),
+        summarizer_max_input_tokens=get_model_setting("summarizer_max_input_tokens"),
+        summarizer_max_output_tokens=get_model_setting("summarizer_max_output_tokens"),
+        inference_temperature=get_model_setting("inference_temperature"),
+        inference_top_p=get_model_setting("inference_top_p"),
+        chat_history_window_turns=get_model_setting("chat_history_window_turns"),
+        raw_tail_turns=get_model_setting("raw_tail_turns"),
+        max_inference_output_tokens=get_model_setting("max_inference_output_tokens"),
+        enable_tools=get_model_setting("enable_tools"),
+        enable_query_rewrite=get_model_setting("enable_query_rewrite"),
+    )
+
+@app.get(
+    "/api/config/api-defaults",
+    tags=["5. Debug"],
+    summary="Get frontend configuration defaults",
+    response_description="A JSON object containing default values for frontend forms",
+    responses={
+        200: {
+            "description": "Successfully retrieved frontend configuration defaults",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "html": {
+                            "maxChunks": 0,
+                            "skipSections": ["References", "External links"],
+                            "estimate": False,
+                            "forceDelete": False
+                        },
+                        "pdf": {
+                            "maxChunks": 0,
+                            "estimate": False,
+                            "forceDelete": False
+                        },
+                        "mediawiki": {
+                            "maxChunks": 0,
+                            "skipSections": ["References", "External links"],
+                            "estimate": False,
+                            "forceDelete": False,
+                            "apiUrl": "https://en.wikipedia.org/w/api.php",
+                            "userAgent": "WebsiteChatAgent/0.1"
+                        }
+                    }
+                }
+            }
+        },
+        500: {"description": "Internal server error while retrieving configuration"}
+    }
+)
+async def get_api_defaults():
+    """
+    Retrieve the default configuration values for frontend forms.
+    
+    This endpoint provides the centralized configuration that defines the default
+    values used in the frontend's HTML, PDF, and MediaWiki indexing forms. The values
+    are defined in `backend/core/config.py` and are converted to camelCase for
+    frontend compatibility.
+    
+    Returns:
+        dict: A dictionary containing default configuration values for all frontend forms.
+        The structure matches the frontend's expected format with camelCase keys.
+    """
+    try:
+        # Get the frontend config and add the collection name
+        config = settings.frontend.to_dict()
+        config['collection_name'] = settings.collection_name
+        return config
+    except Exception as e:
+        print(f"Error in get_api_defaults: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class BatchURLItem(BaseModel):
+    """Individual URL to process in a batch"""
+    url: str
+    doc_type: str  # 'html', 'pdf', or 'mediawiki'
+    skip_sections: List[str] = Field(
+        default_factory=lambda: ["References", "External links", "See also", "Further reading"]
+    )
+    user_agent: Optional[str] = None
+    api_url: Optional[str] = None  # For MediaWiki API URL override
+
+class BatchRequest(BaseModel):
+    """Request model for batch processing documents"""
+    items: List[BatchURLItem]
+    max_chunks: Optional[int] = None
+    estimate: bool = True  # Default to True for safety
+    force_delete: bool = False
+
+from fastapi.responses import StreamingResponse, JSONResponse
+import json
+import asyncio
+import os
+from typing import List, Dict
+import aiohttp
+from fastapi import HTTPException
+
+async def process_item(item, request, settings):
+    try:
+        # Handle local file paths for PDFs
+        if item.doc_type.lower() == 'pdf' and item.url.startswith('file://'):
+            file_path = item.url[7:]  # Remove 'file://' prefix
+            try:
+                # Create a file-like object from the local file
+                with open(file_path, 'rb') as f:
+                    files = {'file': (os.path.basename(file_path), f, 'application/pdf')}
+                    form_data = {
+                        'estimate': str(request.estimate).lower(),
+                        'force_delete': str(request.force_delete).lower()
+                    }
+                    if request.max_chunks is not None:
+                        form_data['max_chunks'] = str(request.max_chunks)
+                    
+                    # Make an internal request to the /pdf endpoint
+                    async with aiohttp.ClientSession() as session:
+                        # Read the file and encode as base64
+                        import base64
+                        with open(file_path, 'rb') as f:
+                            file_content = f.read()
+                            file_b64 = base64.b64encode(file_content).decode('utf-8')
+                        
+                        # Create JSON payload with base64-encoded file
+                        payload = {
+                            'file': file_b64,
+                            'estimate': request.estimate,
+                            'force_delete': request.force_delete
+                        }
+                        if request.max_chunks is not None:
+                            payload['max_chunks'] = request.max_chunks
+                            
+                        # Using default FastAPI port for local development
+                        headers = {'Content-Type': 'application/json'}
+                        async with session.post(
+                            'http://localhost:8000/pdf',
+                            json=payload,
+                            headers=headers
+                        ) as response:
+                            response.raise_for_status()
+                            result = await response.json()
+                            return {
+                                "url": item.url,
+                                "doc_type": item.doc_type,
+                                "status": "success",
+                                "result": result
+                            }
+                            
+            except Exception as e:
+                logger.error(f"Error processing local file {file_path}: {str(e)}")
+                return {
+                    "url": item.url,
+                    "doc_type": item.doc_type,
+                    "status": "error",
+                    "error": f"Failed to process local file {file_path}: {str(e)}"
+                }
+        
+        # Route based on doc_type for non-file URLs
+        if item.doc_type.lower() == 'pdf':
+            input_data = PDFInput(
+                url=item.url,
+                max_chunks=request.max_chunks,
+                force_delete=request.force_delete,
+                estimate=request.estimate
+            )
+            handler = index_pdf
+            
+        elif item.doc_type.lower() == 'mediawiki':
+            input_data = MediaWikiURLInput(
+                url=item.url,
+                max_chunks=request.max_chunks,
+                force_delete=request.force_delete,
+                estimate=request.estimate
+            )
+            handler = index_mediawiki_url
+            
+        else:  # Default to HTML
+            input_data = URLInput(
+                urls=[item.url],
+                doc_type='html',
+                max_chunks=request.max_chunks,
+                force_delete=request.force_delete,
+                estimate=request.estimate,
+                skip_sections=item.skip_sections,
+                user_agent=item.user_agent or settings.default_user_agent
+            )
+            handler = index_content
+        
+        # Process the document
+        response = await handler(input_data)
+        
+        return {
+            "url": item.url,
+            "doc_type": item.doc_type,
+            "status": "success",
+            "result": response
+        }
+        
+    except HTTPException as e:
+        return {
+            "url": item.url,
+            "doc_type": item.doc_type,
+            "status": "error",
+            "error": e.detail,
+            "status_code": e.status_code
+        }
+    except Exception as e:
+        return {
+            "url": item.url,
+            "doc_type": item.doc_type,
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post(
+    "/batch/process_docs",
+    tags=["2. Ingest"],
+    summary="Batch process multiple documents with streaming updates",
+    responses={
+        200: {"description": "Batch processing completed with streaming updates"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def batch_process_docs(request: BatchRequest):
+    """
+    Process multiple documents (PDFs, web pages, or MediaWiki) with streaming updates.
+    
+    - Supports mixed document types in one batch
+    - Global settings for max_chunks, estimate, and force_delete
+    - Per-document skip_sections customization
+    - Streams progress updates in real-time
+    """
+    async def stream_results():
+        total_items = len(request.items)
+        successful = 0
+        errors = 0
+        total_chunks = 0
+        total_tokens = 0
+        total_cost = 0.0
+        
+        # Process each item one by one
+        for i, item in enumerate(request.items):
+            # Send progress update
+            progress = (i / total_items) * 100
+            yield json.dumps({
+                "progress": progress,
+                "message": f"Processing {i+1} of {total_items}: {item.url}"
+            }) + "\n"
+            
+            # Process the item
+            result = await process_item(item, request, settings)
+            
+            # Update totals
+            if result.get('status') == 'success' and 'result' in result:
+                res = result['result']
+                if isinstance(res, dict):
+                    if 'chunks_planned' in res:
+                        total_chunks += res['chunks_planned']
+                    if 'tokens_used' in res:
+                        total_tokens += res['tokens_used']
+                    if 'embedding_cost' in res:
+                        total_cost += res['embedding_cost']
+                successful += 1
+            else:
+                errors += 1
+            
+            # Send the result
+            yield json.dumps(result) + "\n"
+            
+            # Small delay to allow the client to process the update
+            await asyncio.sleep(0.1)
+        
+        # Send final summary
+        summary = {
+            "summary": {
+                "type": "estimate" if request.estimate else "index",
+                "total_items": total_items,
+                "successful_items": successful,
+                "failed_items": errors,
+                "total_chunks": total_chunks,
+                "total_tokens": total_tokens,
+                "total_cost": total_cost,
+                "progress": 100,
+                "message": "Processing complete"
+            }
+        }
+        yield json.dumps(summary) + "\n"
+    
+    return StreamingResponse(stream_results(), media_type="text/event-stream")
+
+@app.post("/batch/list-pdfs", tags=["2. Ingest"])
+async def list_pdfs(folder_path: str = Form(...)):
+    """
+    List all PDF files in the specified directory.
+    
+    Args:
+        folder_path: The absolute path to the directory to scan for PDF files
+        
+    Returns:
+        List of PDF files with their paths and metadata
+    """
+    if not os.path.isdir(folder_path):
+        raise HTTPException(status_code=400, detail="Invalid directory path")
+    
+    try:
+        pdf_files = []
+        for filename in os.listdir(folder_path):
+            if filename.lower().endswith('.pdf'):
+                full_path = os.path.join(folder_path, filename)
+                pdf_files.append({
+                    "url": f"file://{os.path.abspath(full_path)}",
+                    "filename": filename,
+                    "size": os.path.getsize(full_path)
+                })
+        
+        return {"pdf_files": pdf_files}
+    except Exception as e:
+        logger.error(f"Error listing PDFs in {folder_path}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error scanning directory: {str(e)}")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# Endpoint to update a specific payload field for all chunks matching the given URL.
+from fastapi import HTTPException
+
+@app.post("/update_payload", tags=["4. Index Admin"], summary="1. Bulk update payload by URL")
+async def update_payload_field(update_request: PayloadUpdateRequest):
+    """
+    Update a specific payload field for all chunks matching the given URL.
+    """
+    global qdrant_db
+    if qdrant_db is None:
+        qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
+    try:
+        updated = qdrant_db.update_payload_by_url(update_request)
+        return {
+            "message": f"Updated payloads with key '{update_request.meta_key}' for URL '{update_request.url}'",
+            "updated": updated
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Delete Documents by URL</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-6">Delete Document from Qdrant</h1>
+    <p class="text-sm text-gray-700 mb-6">This delete operation is <b>non-recoverable</b>. You will lose the document chunks indexed by provided URL. </p>
+
+    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="md:col-span-2">
+          <label class="block text-sm font-medium text-gray-700">Document URL</label>
+          <input id="deleteUrl" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500" placeholder="https://example.com/path" />
+          <p class="text-xs text-gray-500 mt-1">Will be normalized to base URL and matched against <code>base_url_lower</code>.</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Sample chunks</label>
+          <input id="sampleLimit" type="number" min="1" step="1" value="5" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500" />
+          <p class="text-xs text-gray-500 mt-1">How many document chunks to preview before deleting.</p>
+        </div>
+        <div class="flex items-end space-x-2">
+          <button id="fetchPreviewBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Fetch</button>
+          <button id="confirmDeleteBtn" class="px-4 py-2 rounded-md text-white bg-red-600 hover:bg-red-700 opacity-50 cursor-not-allowed" disabled>Confirm Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-md p-6">
+      <div class="flex justify-between items-center mb-4">
+        <div>
+          <h2 class="text-xl font-semibold inline">Preview Chunks</h2>
+          <span id="previewSummary" class="ml-2 text-sm text-gray-500"></span>
+        </div>
+      </div>
+      <div id="statusMessage" class="mb-2 text-sm"></div>
+      <pre id="previewOutput" class="bg-gray-50 p-4 rounded overflow-auto h-96 text-sm"></pre>
+    </div>
+  </div>
+
+  <script>
+    const fetchPreviewBtn = document.getElementById('fetchPreviewBtn');
+    const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+    const urlInput = document.getElementById('deleteUrl');
+    const sampleLimitInput = document.getElementById('sampleLimit');
+    const previewOutput = document.getElementById('previewOutput');
+    const previewSummary = document.getElementById('previewSummary');
+    const statusMessage = document.getElementById('statusMessage');
+
+    let lastPreview = null;
+    let lastRequest = { url: null, base_url: null };
+
+    function setConfirmDeleteEnabled(enabled) {
+      if (!confirmDeleteBtn) return;
+      confirmDeleteBtn.disabled = !enabled;
+      if (enabled) {
+        confirmDeleteBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+      } else {
+        if (!confirmDeleteBtn.classList.contains('opacity-50')) {
+          confirmDeleteBtn.classList.add('opacity-50');
+        }
+        if (!confirmDeleteBtn.classList.contains('cursor-not-allowed')) {
+          confirmDeleteBtn.classList.add('cursor-not-allowed');
+        }
+      }
+    }
+
+    function setStatus(text, type = 'info') {
+      statusMessage.textContent = text || '';
+      statusMessage.className = 'mb-2 text-sm ' + (type === 'error'
+        ? 'text-red-700'
+        : type === 'success'
+        ? 'text-green-700'
+        : 'text-gray-700');
+    }
+
+    // If the user edits the URL after a fetch, immediately disable Confirm Delete
+    // and clear the last known request to avoid deleting stale results.
+    urlInput && urlInput.addEventListener('input', () => {
+      lastPreview = null;
+      lastRequest = { url: null, base_url: null };
+      setConfirmDeleteEnabled(false);
+    });
+
+    async function fetchPreview() {
+      try {
+        const url = (urlInput.value || '').trim();
+        if (!url) {
+          setStatus('Please enter a URL to fetch.', 'error');
+          return;
+        }
+
+        let sampleLimit = parseInt(sampleLimitInput.value || '5', 10);
+        if (!Number.isFinite(sampleLimit) || sampleLimit < 1) sampleLimit = 5;
+
+        setStatus('Fetching preview from server...', 'info');
+        setConfirmDeleteEnabled(false);
+
+        const qs = `?url=${encodeURIComponent(url)}&sample_limit=${encodeURIComponent(sampleLimit)}`;
+        const resp = await fetch(`/admin/delete-preview${qs}`);
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`Server error (${resp.status}): ${text}`);
+        }
+
+        const data = await resp.json();
+        lastPreview = data;
+        lastRequest = { url: data.input_url || url, base_url: data.base_url || null };
+
+        const total = data.total_chunks || 0;
+        previewSummary.textContent = `(total chunks: ${total}, showing up to ${data.sample_limit || sampleLimit})`;
+
+        if (total === 0) {
+          setStatus('No chunks found for this URL / base URL. Nothing to delete.', 'info');
+          setConfirmDeleteEnabled(false);
+        } else {
+          setStatus(`Found ${total} chunk(s). Review the sample below, then click Confirm Delete.`, 'info');
+          setConfirmDeleteEnabled(true);
+        }
+
+        previewOutput.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        console.error(e);
+        setStatus(`Error fetching preview: ${e.message || e}`, 'error');
+        previewOutput.textContent = '';
+        previewSummary.textContent = '';
+        setConfirmDeleteEnabled(false);
+      }
+    }
+
+    async function confirmDelete() {
+      try {
+        if (!lastRequest.url && !lastRequest.base_url) {
+          setStatus('Fetch a preview before deleting.', 'error');
+          return;
+        }
+        setStatus('Deleting documents from Qdrant...', 'info');
+        setConfirmDeleteEnabled(false);
+
+        const resp = await fetch('/admin/delete-by-base-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: lastRequest.url }),
+        });
+
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`Server error (${resp.status}): ${text}`);
+        }
+
+        const result = await resp.json();
+        setStatus(`Deleted ${result.deleted_points || 0} chunk(s) for base URL: ${result.base_url}`, 'success');
+      } catch (e) {
+        console.error(e);
+        setStatus(`Error deleting documents: ${e.message || e}`, 'error');
+      }
+    }
+
+    fetchPreviewBtn.addEventListener('click', fetchPreview);
+    confirmDeleteBtn.addEventListener('click', confirmDelete);
+  </script>
+
+  <footer class="text-center text-xs text-gray-500 mt-8">
+    <p>
+      Optional seed data derived from
+      <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
+      licensed under
+      <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
+    </p>
+  </footer>
+</body>
+</html>

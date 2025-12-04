@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""
+NOTE: This script should be run within the project's Python virtual environment (venv)
+to ensure all dependencies (e.g., qdrant-client) are available.
+Activate venv using:
+  . venv/bin/activate
+
+qdrant_ops.py — Utility operations for a local Qdrant instance.
+
+Functions (selected by CLI flags):
+  1) Retrieve points by payload field/value and display `point_id` + `url_lower`.
+  1b) Retrieve all points (optionally with a limit).
+  2) Display payload field names (using the first point as reference).
+  2b) List unique URLs with titles (30-char max)
+  3) Delete points either by (a) payload field/value or (b) explicit point id(s).
+
+Defaults try to import host/port/collection from backend/core/config.py, with
+fallbacks to localhost:6333 and collection "document_index" if import fails.
+
+Examples:
+  # 1) Retrieve by payload field/value
+  python qdrant_scripts/qdrant_ops.py --get --field source --value wikipedia --limit 50
+
+  # 1b) Retrieve all points (optionally with a limit)
+  python qdrant_scripts/qdrant_ops.py --get --limit 100
+
+  # 2) List payload field names (from first point)
+  python qdrant_scripts/qdrant_ops.py --list-fields
+
+  # 2b) List unique URLs with titles (30-char max)
+  python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
+
+  # 3a) Delete by payload field/value (asks for confirmation)
+  python qdrant_scripts/qdrant_ops.py --delete --field doc_id --value 123
+
+  # 3b) Delete by payload field/value (skip confirmation)
+  python qdrant_scripts/qdrant_ops.py --delete --field doc_id --value 123 --yes
+
+  # 3c) Delete by explicit point IDs (skip confirmation)
+  python qdrant_scripts/qdrant_ops.py --delete --ids 10 11 12 --yes
+
+  # 3d) Delete all points from a given source (interactive confirmation)
+  python qdrant_scripts/qdrant_ops.py --delete --field source --value wikipedia
+"""
+from __future__ import annotations
+import argparse
+import os
+import sys
+import json
+from typing import Iterable, List, Optional
+
+try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from backend.core.config import settings  # type: ignore
+    DEFAULT_HOST = settings.qdrant_host
+    DEFAULT_PORT = settings.qdrant_port
+    DEFAULT_COLLECTION = settings.collection_name
+except Exception:
+    DEFAULT_HOST = "localhost"
+    DEFAULT_PORT = 6333
+    DEFAULT_COLLECTION = "document_index"
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Filter,
+    FieldCondition,
+    MatchValue,
+)
+
+
+def build_client(host: str, port: int) -> QdrantClient:
+    return QdrantClient(url=f"http://{host}:{port}")
+
+
+def scroll_points(
+    client: QdrantClient,
+    collection: str,
+    *,
+    flt: Optional[Filter] = None,
+    with_vectors: bool = False,
+    with_payload: bool = True,
+    page_size: int = 256,
+    max_points: Optional[int] = None,
+):
+    """Generator yielding points with an optional filter."""
+    offset = None
+    yielded = 0
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            with_vectors=with_vectors,
+            with_payload=with_payload,
+            offset=offset,
+            limit=page_size,
+            scroll_filter=flt,
+        )
+        if not points:
+            break
+        for p in points:
+            yield p
+            yielded += 1
+            if max_points is not None and yielded >= max_points:
+                return
+        if offset is None:
+            break
+
+
+def cmd_get(args) -> int:
+    client = build_client(args.host, args.port)
+
+    # Build optional filter only if both field and value are provided
+    flt = None
+    if args.field and args.value is not None:
+        cond = FieldCondition(key=args.field, match=MatchValue(value=args.value))
+        flt = Filter(must=[cond])
+
+    count = 0
+    for p in scroll_points(
+        client,
+        args.collection,
+        flt=flt,
+        page_size=args.page_size,
+        max_points=args.limit,
+        with_vectors=False,
+        with_payload=True,
+    ):
+        title = ""
+        base_url_lower = ""
+        if p.payload and isinstance(p.payload, dict):
+            title = p.payload.get("title") or ""
+            base_url_lower = p.payload.get("base_url_lower") or ""
+        # Truncate or pad title to 25 characters
+        title_display = (title[:25]).ljust(25)
+        print(f"id={p.id}\ttitle={title_display}\tbase_url_lower={base_url_lower}")
+        count += 1
+
+    if count == 0:
+        print("No points matched the given payload filter.")
+    else:
+        print(f"Total: {count}")
+    return 0
+
+
+def cmd_list_fields(args) -> int:
+    client = build_client(args.host, args.port)
+    # Get a single point (any) to introspect payload keys
+    pts, _ = client.scroll(
+        collection_name=args.collection,
+        limit=1,
+        with_payload=True,
+        with_vectors=False,
+    )
+    if not pts:
+        print("Collection is empty or not found.")
+        return 0
+
+    payload = pts[0].payload or {}
+    if not isinstance(payload, dict) or not payload:
+        print("No payload on the first point.")
+        return 0
+
+    keys = sorted(payload.keys())
+    print("Payload fields (from first point):")
+    for k in keys:
+        print(f"- {k}")
+    return 0
+
+
+def cmd_list_titles(args) -> int:
+    client = build_client(args.host, args.port)
+    seen_urls = set()
+    unique_points = []
+
+    for p in scroll_points(
+        client,
+        args.collection,
+        page_size=args.page_size,
+        max_points=args.limit,   # reuse --limit if provided
+        with_vectors=False,
+        with_payload=True,
+    ):
+        if not p.payload or not isinstance(p.payload, dict):
+            continue
+        title = (p.payload.get("title") or "")
+        base_url_lower = (p.payload.get("base_url_lower") or "")
+        if not base_url_lower or base_url_lower in seen_urls:
+            continue
+        seen_urls.add(base_url_lower)
+        title_display = (title[:30]).ljust(30)  # truncate to 30 and right-pad
+        unique_points.append((title_display, base_url_lower))
+
+    if not unique_points:
+        print("No points found in the collection.")
+        return 0
+
+    print(f"{'TITLE':30}\tURL")
+    print("-" * 80)
+    for title_display, base_url_lower in unique_points:
+        print(f"{title_display}\t{base_url_lower}")
+    print(f"\nTotal unique URLs: {len(unique_points)}")
+    return 0
+
+
+def cmd_export(args) -> int:
+    """
+    Export all points from the given collection to a JSONL file.
+
+    Each line in the output file will be:
+      {"id": <int|str>, "vector": [..], "payload": {..}}
+
+    The collection defaults to DEFAULT_COLLECTION (from backend/core/config.py
+    when available) but can be overridden via --collection.
+
+    The output file is placed under the project-level "data" directory. If no
+    filename is provided, "docs-index-seed.jsonl" is used by default.
+
+    Example usage:
+      # Export default collection to default file (docs-index-seed.jsonl)
+      python qdrant_scripts/qdrant_ops.py --export
+
+      # Export specific collection to default file
+      python qdrant_scripts/qdrant_ops.py --export --collection my_collection
+
+      # Export specific collection to custom filename (saved under ./data)
+      python qdrant_scripts/qdrant_ops.py --export --collection my_collection -f my-export.jsonl
+    """
+    client = build_client(args.host, args.port)
+
+    # Resolve data directory relative to project root: ../data from this script
+    script_dir = os.path.dirname(__file__)
+    data_dir = os.path.abspath(os.path.join(script_dir, "..", "data"))
+    os.makedirs(data_dir, exist_ok=True)
+
+    # Default filename if none provided
+    filename = args.file or "docs-index-seed.jsonl"
+    output_path = os.path.join(data_dir, filename)
+
+    count = 0
+    with open(output_path, "w", encoding="utf-8") as f:
+        for p in scroll_points(
+            client,
+            args.collection,
+            with_vectors=True,
+            with_payload=True,
+        ):
+            # Qdrant's Record.vector can be a list or a dict of named vectors.
+            vec = getattr(p, "vector", None)
+            if isinstance(vec, dict):
+                # Take the first vector if multiple are present
+                vec = next(iter(vec.values())) if vec else []
+            if vec is None:
+                vec = []
+
+            payload = p.payload or {}
+
+            record = {
+                "id": p.id,
+                "vector": vec,
+                "payload": payload,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            count += 1
+
+    print(f"Exported {count} point(s) from collection '{args.collection}' to {output_path}")
+    return 0
+
+
+def cmd_truncate(args) -> int:
+    """
+    Delete all points in a collection while preserving the collection configuration
+    (distance, vector size, payload schema, etc.).
+
+    The collection name is taken from --collection (defaulting to backend/core/config.py).
+    This command is interactive and will ask you to re-type the collection name
+    before proceeding.
+
+    Example usage:
+      # Truncate default collection (from backend/core/config.py)
+      python qdrant_scripts/qdrant_ops.py --truncate
+
+      # Truncate a specific collection
+      python qdrant_scripts/qdrant_ops.py --truncate --collection my_collection
+
+      # Expected prompt:
+      #   All <N> point(s) will be deleted from the '<collection>' collection.
+      #   This is a NON-reversible operation.
+      #   To proceed, enter the collection name:
+    """
+    client = build_client(args.host, args.port)
+
+    # Get collection info so we can show points, vectors, and dimensions
+    try:
+        info = client.get_collection(args.collection)
+    except Exception as e:
+        print(f"Error retrieving collection '{args.collection}': {e}")
+        return 1
+
+    points_count = getattr(info, "points_count", None)
+    vectors_count = getattr(info, "vectors_count", None)
+
+    # Try to infer vector dimension robustly
+    dim = "unknown"
+    try:
+        cfg = getattr(info, "config", None)
+        if cfg is not None:
+            # qdrant-client 1.x usually exposes params.vectors
+            params = getattr(cfg, "params", cfg)
+            vectors = getattr(params, "vectors", None)
+            if vectors is not None:
+                if hasattr(vectors, "size"):
+                    dim = vectors.size
+                elif isinstance(vectors, dict) and vectors:
+                    first = next(iter(vectors.values()))
+                    dim = getattr(first, "size", "unknown")
+    except Exception:
+        dim = "unknown"
+
+    print(f"Collection: {args.collection}")
+    if points_count is not None:
+        print(f"Points: {points_count}")
+    if vectors_count is not None:
+        print(f"Vectors: {vectors_count}")
+    print(f"Vector dimension: {dim}")
+
+    if not points_count:
+        print("Collection has no points to delete.")
+        return 0
+
+    print(
+        f"\nAll {points_count} point(s) will be deleted from the '{args.collection}' collection."
+    )
+    print("This is a NON-reversible operation.")
+    confirm = input("To proceed, enter the collection name: ").strip()
+
+    if confirm != args.collection:
+        print("Collection name did not match. Aborting without deleting anything.")
+        return 0
+
+    # Delete all points but keep collection config: empty filter matches everything
+    flt = Filter(must=[])
+    client.delete(collection_name=args.collection, points_selector=flt)
+
+    print(f"Truncated collection '{args.collection}'; deleted {points_count} point(s).")
+    return 0
+
+
+def cmd_delete(args) -> int:
+    client = build_client(args.host, args.port)
+
+    # Delete by explicit point ids
+    if args.ids:
+        targets: List[int] = []
+        for s in args.ids:
+            try:
+                targets.append(int(s))
+            except ValueError:
+                print(f"Skipping non-integer id: {s}")
+        if not targets:
+            print("No valid point ids provided.")
+            return 1
+        if not args.yes:
+            print(f"About to delete {len(targets)} point(s) by id from '{args.collection}'.")
+            resp = input("Proceed? (y/N): ").strip().lower()
+            if resp not in ("y", "yes"):
+                print("Cancelled.")
+                return 0
+        client.delete(collection_name=args.collection, points_selector=targets)
+        print(f"Deleted {len(targets)} point(s) by id.")
+        return 0
+
+    # Delete by payload field/value
+    if args.field and args.value is not None:
+        cond = FieldCondition(key=args.field, match=MatchValue(value=args.value))
+        flt = Filter(must=[cond])
+
+        # Optional pre-count for user feedback
+        cnt = client.count(collection_name=args.collection, count_filter=flt, exact=True).count
+        if cnt == 0:
+            print("No points match the provided payload filter; nothing to delete.")
+            return 0
+        if not args.yes:
+            print(f"About to delete {cnt} point(s) from '{args.collection}' where {args.field} == {args.value!r}.")
+            resp = input("Proceed? (y/N): ").strip().lower()
+            if resp not in ("y", "yes"):
+                print("Cancelled.")
+                return 0
+
+        client.delete(collection_name=args.collection, points_selector=flt)
+        print(f"Deleted {cnt} point(s) by payload filter.")
+        return 0
+
+    print("Provide either --ids or both --field and --value for deletion.")
+    return 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Qdrant maintenance operations")
+    p.add_argument("--host", default=DEFAULT_HOST, help=f"Qdrant host (default: {DEFAULT_HOST})")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Qdrant port (default: {DEFAULT_PORT})")
+    p.add_argument("--collection", default=DEFAULT_COLLECTION, help=f"Collection name (default: {DEFAULT_COLLECTION})")
+    p.add_argument("--page-size", type=int, default=256, help="Scroll page size (default: 256)")
+
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--get", action="store_true", help="Retrieve points (optionally filter by payload field/value)")
+    g.add_argument("--list-fields", action="store_true", help="List payload field names (from first point)")
+    g.add_argument("--list-titles", action="store_true", help="List unique URLs with titles (30-char max)")
+    g.add_argument("--delete", action="store_true", help="Delete points by id or payload filter")
+    g.add_argument("--truncate", action="store_true", help="Delete all points but keep collection config")
+    g.add_argument("--export", action="store_true", help="Export collection to JSONL file")
+
+    # Common filter args
+    p.add_argument("--field", help="Payload field name for filtering (for --get/--delete)")
+    p.add_argument("--value", help="Payload field value for filtering (for --get/--delete)")
+    p.add_argument("--limit", type=int, default=None, help="Limit number of points to retrieve (for --get)")
+
+    # Delete by ids
+    p.add_argument("--ids", nargs="*", help="Point ids to delete (for --delete)")
+    p.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
+
+    # Export options
+    p.add_argument(
+        "-f",
+        "--file",
+        help="Output JSONL filename (saved under ./data) for --export",
+        default=None,
+    )
+
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.get:
+        # Show example usage when missing both field/value and limit
+        if not args.field and args.value is None and args.limit is None:
+            print("Usage examples for --get:")
+            print("  Retrieve all points (limit optional):")
+            print("    python qdrant_scripts/qdrant_ops.py --get --limit 50")
+            print("  Retrieve points filtered by payload field/value:")
+            print("    python qdrant_scripts/qdrant_ops.py --get --field source --value wikipedia --limit 10")
+        return cmd_get(args)
+
+    if args.list_fields:
+        print("Usage example for --list-fields:")
+        print("  python qdrant_scripts/qdrant_ops.py --list-fields")
+        return cmd_list_fields(args)
+
+    if args.list_titles:
+        print("Usage example for --list-titles:")
+        print("  python qdrant_scripts/qdrant_ops.py --list-titles --limit 100")
+        return cmd_list_titles(args)
+
+    if args.truncate:
+        return cmd_truncate(args)
+
+    if args.export:
+        return cmd_export(args)
+
+    if args.delete:
+        # Either --ids or (--field and --value)
+        if args.ids or (args.field and args.value is not None):
+            return cmd_delete(args)
+        print("--delete requires either --ids or both --field and --value, e.g.:")
+        print("  python qdrant_scripts/qdrant_ops.py --delete --field source --value wikipedia")
+        print("  or")
+        print("  python qdrant_scripts/qdrant_ops.py --delete --ids 101 102 103")
+        return 2
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

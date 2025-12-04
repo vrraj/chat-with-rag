@@ -1,0 +1,471 @@
+from typing import List, Dict, Any, Optional
+import openai
+import uuid
+import logging
+import time
+from backend.core.config import settings
+from backend.db.qdrant_client import QdrantStorage
+from backend.extractor.splitters import TextSplitter
+from qdrant_client import models
+from backend.embeddings.collection_manager import CollectionManager
+from backend.db import QdrantDB
+from urllib.parse import urlsplit, urlunsplit
+
+logger = logging.getLogger(__name__)
+
+def _strip_fragment(u: str) -> str:
+    if not u:
+        return u
+    p = urlsplit(u)
+    # keep scheme, host, path, query; drop fragment
+    return urlunsplit((p.scheme, p.netloc, p.path, p.query, ""))
+
+class EmbeddingsManager:
+    def __init__(self):
+        self.qdrant: QdrantStorage = QdrantStorage()
+        self.collection_manager = CollectionManager(self.qdrant.client)
+        self._client = None  # lazy init; use get_client()
+        # Initialize QdrantDB without the callback first
+        self.qdrant_db = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=settings.collection_name
+        )
+        # Now set the callback after the method is defined
+        self.qdrant_db.generate_embeddings = self.generate_embeddings
+        # Track tokens used during a single indexing operation
+        self._tokens_used: int = 0
+
+    def get_client(self) -> openai.OpenAI:
+        """Lazily initialize and return the OpenAI client."""
+        if self._client is None:
+            logger.debug("Initializing OpenAI client for embeddings")
+            try:
+                self._client = openai.OpenAI(api_key=settings.openai_api_key)
+            except Exception as e:
+                logger.exception("Failed to create OpenAI client: %s", e)
+                raise
+        return self._client
+        
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate the number of tokens in the text using tiktoken.
+        
+        Args:
+            text: The text to count tokens for
+            
+        Returns:
+            int: Number of tokens in the text
+        """
+        try:
+            import tiktoken
+            # Use the same encoding as the embeddings model
+            encoding = tiktoken.get_encoding("cl100k_base")  # cl100k_base is used by text-embedding-ada-002
+            return len(encoding.encode(text, disallowed_special=()))
+        except Exception as e:
+            logger.warning(f"Failed to use tiktoken for token counting: {e}")
+            # Fallback to character count estimation if tiktoken fails
+            return max(1, len(text) // 4)
+
+    def generate_embeddings(self, text: str) -> List[float]:
+        """
+        Generate embeddings using OpenAI's API
+        Args:
+            text: Text to embed
+        Returns:
+            List of float values representing the embedding
+        """
+        attempt = 0
+        backoff = max(0.0, float(settings.embeddings_initial_backoff_secs))
+        last_err = None
+        while attempt < int(settings.embeddings_max_retries):
+            try:
+                if settings.embeddings_call_delay_secs:
+                    time.sleep(float(settings.embeddings_call_delay_secs))
+                #logger.debug("Generating embedding using model: %s", settings.embedding_model)
+                response = self.get_client().embeddings.create(
+                    input=text,
+                    model=settings.embedding_model
+                )
+                embedding = response.data[0].embedding
+                prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
+                total_tokens = response.usage.total_tokens if response.usage else 0
+                try:
+                    self._tokens_used += int(total_tokens or 0)
+                except Exception:
+                    pass
+                logger.debug("Tokens used - prompt: %s, total: %s", prompt_tokens, total_tokens)
+                #logger.debug("Received embedding vector of length: %d", len(embedding))
+                return embedding
+            except Exception as e:
+                last_err = e
+                attempt += 1
+                logger.warning(
+                    "Embedding call failed (attempt %s/%s): %s",
+                    attempt, settings.embeddings_max_retries, e, exc_info=True
+                )
+                if attempt >= int(settings.embeddings_max_retries):
+                    break
+                # Exponential backoff
+                sleep_for = max(0.0, backoff)
+                time.sleep(sleep_for)
+                backoff *= 2
+        logger.error("Error generating embeddings after retries: %s", last_err)
+        raise last_err
+
+    def process_document(self, document: Dict, max_chunks: Optional[int] = None) -> List[Dict]:
+        """
+        Process a document by splitting it into chunks and generating embeddings
+        Args:
+            document: Dictionary containing text and metadata
+        Returns:
+            List of processed chunks with embeddings
+        """
+        text = document.get("text", "")
+
+        # Handle both doc_type and document_type for backward compatibility
+        doc_type = document.get("doc_type") or document.get("document_type", "HTML")
+        normalized_doc_type = doc_type.lower()
+        if normalized_doc_type == "html":
+            chunk_size = settings.html_chunk_size
+            chunk_overlap = settings.html_chunk_overlap
+        elif normalized_doc_type == "pdf":
+            chunk_size = settings.pdf_chunk_size or len(text)
+            chunk_overlap = settings.pdf_chunk_overlap
+        elif normalized_doc_type == "mediawiki":
+            chunk_size = settings.mediawiki_chunk_size
+            chunk_overlap = settings.mediawiki_chunk_overlap
+        else:
+            doc_type = "text"
+            chunk_size = settings.default_chunk_size
+            chunk_overlap = settings.default_chunk_overlap
+
+        #logger.debug("Chunk size: %s", chunk_size)
+        #logger.debug("Chunk overlap: %s", chunk_overlap)
+
+        # Use Langchain-based token splitter (not manual tiktoken-based splitter)
+        text_splitter = TextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            use_manual_splitter=False
+        )
+        # Only pass the raw text to split_text
+        chunks = text_splitter.split_text(text)
+        # Safety cap to prevent runaway processing; respect user-provided max if supplied
+        effective_cap = int(settings.max_chunks_per_doc)  # Hard limit set in config.py
+        if max_chunks is not None:
+            try:
+                user_cap = int(max_chunks)
+                if user_cap > 0:
+                    effective_cap = min(effective_cap, user_cap)
+            except Exception:
+                pass
+        if len(chunks) > effective_cap:
+            #  logger.warning("Capping chunks from %d to %d", len(chunks), effective_cap)
+            chunks = chunks[:effective_cap]
+        # Attach MediaWiki-style metadata manually
+        processed_chunks = []
+        total_chunks = len(chunks)
+        failures = 0
+        started_at = time.time()
+
+        # Get the original total_chunks from the first chunk if it exists
+        original_total_chunks = None
+        if chunks and hasattr(chunks[0], 'get') and 'total_chunks' in chunks[0]:
+            original_total_chunks = chunks[0].get('total_chunks')
+
+        for idx, chunk in enumerate(chunks):
+            try:
+                chunk_id = str(uuid.uuid4())
+                chunk_text = chunk if isinstance(chunk, str) else chunk.get('text', '')
+                embedding = self.generate_embeddings(chunk_text)
+
+                # Optional per-document token budget guard
+                try:
+                    max_tokens_budget = int(getattr(settings, "embeddings_max_tokens_per_doc", 0) or 0)
+                except Exception:
+                    max_tokens_budget = 0
+                if max_tokens_budget > 0 and self._tokens_used > max_tokens_budget:
+                    logger.error(
+                        "Aborting document processing: embedding token budget exceeded (%s > %s)",
+                        self._tokens_used,
+                        max_tokens_budget,
+                    )
+                    break
+
+                # Get URL from chunk metadata if available, otherwise from document
+                url = chunk.get('url') if hasattr(chunk, 'get') else document.get("url", "")
+                base = _strip_fragment(url)
+
+                # Get chunk_index from chunk metadata if available, otherwise use loop index
+                chunk_index = chunk.get('chunk_index', idx) if hasattr(chunk, 'get') else idx
+
+                # Use original_total_chunks if available, otherwise use current batch size
+                chunk_total_chunks = original_total_chunks if original_total_chunks is not None else total_chunks
+
+                payload = {
+                    "text": chunk_text,
+                    "chunk_index": chunk_index,
+                    "total_chunks": chunk_total_chunks,
+                    "url": url,
+                    "url_lower": url.lower(),  # Add lowercase version for case-insensitive filtering
+                    "base_url": base,
+                    "base_url_lower": (base or "").lower(),
+                    "document_type": doc_type,
+                    "source": url,
+                    "title": document.get("title", ""),
+                    "description": document.get("description", ""),
+                }
+
+                # Prefer provided headings; default section to "Lead" if nothing present
+                section = document.get("section") or document.get("section_title") or None
+                if section is None:
+                    section = "Lead"
+                payload["section"] = section
+
+                subsection = document.get("subsection") or document.get("subsection_title")
+                if subsection:
+                    payload["subsection"] = subsection
+                else:
+                    payload["subsection"] = None
+
+                section_index = document.get("section_index")
+                if section_index is not None:
+                    payload["section_index"] = section_index
+                else:
+                    payload["section_index"] = None
+
+                subsection_index = document.get("subsection_index")
+                if subsection_index is not None:
+                    payload["subsection_index"] = subsection_index
+                else:
+                    payload["subsection_index"] = None
+
+                processed_chunks.append({
+                    "id": chunk_id,
+                    "vector": embedding,
+                    "payload": payload,
+                })
+            except Exception as e:
+                failures += 1
+                logger.error("Error processing chunk %s: %s", chunk_id, e, exc_info=True)
+                # Abort on too many consecutive failures
+                if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
+                    logger.error("Aborting document processing due to excessive embedding failures")
+                    break
+            # Time budget guard
+            if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                logger.error("Aborting document processing due to time limit exceeded")
+                break
+
+        return processed_chunks
+
+    def index_document(self, document: Dict, force_delete: bool = True, max_chunks: Optional[int] = None) -> Dict[str, int]:
+        """
+        Index a document by processing it and storing embeddings
+        
+        Args:
+            document: Dictionary containing text and metadata
+            force_delete: If True, deletes existing Qdrant entries for the document URL before indexing
+        """
+        try:
+            logger.debug("Indexing document: %s", document.get('url', 'unknown'))
+            # Ensure collection exists before indexing
+            try:
+                self.qdrant.client.get_collection(settings.collection_name)
+            except Exception:
+                logger.debug("Collection not found, creating it now...")
+                self.qdrant.create_collection()
+
+            url = document.get('url')
+            if url and force_delete:
+                #logger.debug("Force delete enabled; deleting existing entries for: %s", url)
+                self.delete_document(url)
+
+            # Reset token counter and process document
+            self._tokens_used = 0
+            # Process document and generate embeddings
+            processed_chunks = self.process_document(document, max_chunks=max_chunks)
+
+            try:
+                #logger.debug("Inserting %d vectors into Qdrant collection: %s", len(processed_chunks), self.qdrant.collection_name)
+                success = self.qdrant.add_embeddings(processed_chunks)
+                if not success:
+                    raise Exception("Failed to add embeddings to Qdrant")
+                #logger.debug("Successfully added %d embeddings to Qdrant", len(processed_chunks))
+                return {"vectors_indexed": len(processed_chunks), "tokens_used": int(self._tokens_used)}
+            except Exception as e:
+                logger.exception("Error indexing embeddings to Qdrant: %s", e)
+                raise
+        except Exception as e:
+            logger.exception("Error indexing document: %s", e)
+            raise
+
+    def remove_search_similar(self, query: str, limit: int = 5, query_filter: Optional[Any] = None) -> List[Dict]:
+        """
+        Search for similar content using a query
+        
+        Args:
+            query: Search query
+            limit: Number of results to return
+            filter: Optional Qdrant filter to narrow the search (e.g., by URL)
+        
+        Returns:
+            List of search results with scores and content
+        """
+        try:
+            try:
+                from backend.core.config import settings as _s
+            except Exception:
+                _s = settings
+            maxc = int(getattr(_s, "debug_log_truncate_chars", 500))
+            if getattr(_s, "debug_verbose", False):
+                q_snip = query if len(query) <= maxc else (query[:maxc] + "…")
+                logger.debug("Searching for query: %s", q_snip)
+            else:
+                logger.debug("Searching for query (len=%d)", len(query or ""))
+            query_embedding = self.generate_embeddings(query)
+            qdrant_filter = None
+            if query_filter:
+                url = query_filter["url"]
+                url_lower = url.lower()
+                qdrant_filter = models.Filter(
+                    should=[
+                        models.FieldCondition(
+                            key="url",
+                            match=models.MatchValue(value=url)
+                        ),
+                        models.FieldCondition(
+                            key="url_lower",
+                            match=models.MatchValue(value=url_lower)
+                        )
+                    ]
+                )
+
+            results = self.qdrant.search(query_embedding, limit=limit, filter=qdrant_filter)
+            logger.debug("Found %d results for query", len(results))
+
+            return [{
+                "score": result.score,
+                "payload": result.payload
+            } for result in results]
+        except Exception as e:
+            logger.exception("Error searching Qdrant: %s", e)
+            raise
+
+    def delete_document(self, url: str) -> int:
+        """
+        Delete all embeddings associated with a document
+        
+        Args:
+            url: URL of the document to delete
+            
+        Returns:
+            Number of points deleted
+        """
+        return self.qdrant_db.delete_by_url(url)
+
+    def build_url_filter(self, url: str):
+        return models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="url",
+                    match=models.MatchValue(value=url)
+                )
+            ]
+        )
+
+    def index_chunks(self, chunks: List[Dict], force_delete: bool = True, max_chunks: Optional[int] = None) -> Dict[str, int]:
+        """
+        Index pre-chunked data into Qdrant. Generates embeddings for each chunk and wraps in Qdrant format.
+        Args:
+            chunks: List of dicts, each with at least 'text' and metadata (not pre-embedded)
+            force_delete: If True, deletes existing Qdrant entries for the URL(s) before indexing
+        """
+        if not chunks:
+            logger.debug("No chunks to index.")
+            return
+
+        #logger.debug("Indexing %d pre-chunked entries", len(chunks))
+
+        try:
+            self.qdrant.client.get_collection(settings.collection_name)
+        except Exception:
+            logger.debug("Collection not found, creating it now...")
+            self.qdrant.create_collection()
+
+        # Apply safety cap here as well; respect user-provided max if supplied
+        effective_cap = int(settings.max_chunks_per_doc)
+        if max_chunks is not None:
+            try:
+                user_cap = int(max_chunks)
+                if user_cap > 0:
+                    effective_cap = min(effective_cap, user_cap)
+            except Exception:
+                pass
+        if len(chunks) > effective_cap:
+            logger.warning("Capping pre-chunked inputs from %d to %d", len(chunks), effective_cap)
+            chunks = chunks[:effective_cap]
+
+        # Reset token counter; generate embeddings and wrap chunks
+        self._tokens_used = 0
+        points = []
+        failures = 0
+        started_at = time.time()
+        for i, chunk in enumerate(chunks):
+            text = chunk.get("text", "")
+            if not text:
+                logger.warning("Embeddings: Skipping empty chunk at index %d", i)
+                continue
+            try:
+                # Ensure URL-derived helpers exist on the payload
+                u = chunk.get("url") or ""
+                if "url_lower" not in chunk:
+                    chunk["url_lower"] = u.lower()
+                base = chunk.get("base_url")
+                if not base:
+                    base = _strip_fragment(u)
+                    chunk["base_url"] = base
+                if "base_url_lower" not in chunk:
+                    chunk["base_url_lower"] = (base or "").lower()
+
+                embedding = self.generate_embeddings(text)
+
+                # Optional per-document token budget guard for pre-chunked inputs
+                try:
+                    max_tokens_budget = int(getattr(settings, "embeddings_max_tokens_per_doc", 0) or 0)
+                except Exception:
+                    max_tokens_budget = 0
+                if max_tokens_budget > 0 and self._tokens_used > max_tokens_budget:
+                    logger.error(
+                        "Aborting chunk indexing: embedding token budget exceeded (%s > %s)",
+                        self._tokens_used,
+                        max_tokens_budget,
+                    )
+                    break
+
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{u}-{i}"))
+                points.append({
+                    "id": point_id,
+                    "vector": embedding,
+                    "payload": chunk
+                })
+            except Exception as e:
+                failures += 1
+                logger.error("Failed to embed chunk %d: %s", i, e, exc_info=True)
+                if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
+                    logger.error("Aborting chunk indexing due to excessive embedding failures")
+                    break
+            if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                logger.error("Aborting chunk indexing due to time limit exceeded")
+                break
+
+        if force_delete:
+            url_set = {point["payload"].get("url") for point in points}
+            for url in url_set:
+                if url:
+                    self.delete_document(url)
+
+        success = self.qdrant.add_embeddings(points)
+        if not success:
+            raise Exception("Failed to add embeddings to Qdrant")
+        return {"vectors_indexed": len(points), "tokens_used": int(self._tokens_used)}

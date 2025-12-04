@@ -1,0 +1,54 @@
+{
+  "items": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Mount_Everest",
+      "doc_type": "mediawiki",
+      "skip_sections": [
+        "References",
+        "External links",
+        "See also",
+        "Further reading"
+      ]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/yellowstone_national_park",
+      "doc_type": "mediawiki",
+      "skip_sections": [
+        "References",
+        "External links",
+        "See also",
+        "Further reading"
+      ]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Mont_Blanc",
+      "doc_type": "html",
+      "skip_sections": [
+        "References",
+        "External links",
+        "See also",
+        "Further reading"
+      ],
+      "user_agent": "Mozilla/5.0 (compatible; MyBot/1.0; +http://example.com/bot)"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Salcantay",
+      "doc_type": "html",
+      "skip_sections": [
+        "References",
+        "External links",
+        "See also",
+        "Further reading"
+      ],
+      "user_agent": "Mozilla/5.0 (compatible; MyBot/1.0; +http://example.com/bot)"
+    },
+    {
+      "url": "https://appalachiantrail.org/wp-content/uploads/2020/07/appalachian-trail-day-hikes-1.pdf",
+      "doc_type": "pdf",
+      "skip_sections": []
+    }
+  ],
+  "max_chunks": 100,
+  "estimate": true,
+  "force_delete": false
+}

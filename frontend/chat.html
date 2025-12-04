@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Retriever & Tool-Assisted Chat</title>
+    <!-- Use local static assets; no external CDNs -->
+    <link rel="stylesheet" href="static/chat.css" />
+    </style>
+  </head>
+  <body>
+    <!-- App layout: sidebar (controls), main (metrics + history + input) -->
+    <div id="app">
+      <aside id="sidebar" aria-label="Parameters Sidebar">
+        <h2 class="section-title">Parameters</h2>
+        <form id="params_form" autocomplete="off">
+          <!-- Retrieval group -->
+          <div class="group-box ux-11px">
+            <div class="subsection-title">Retrieval</div>
+            <div class="form-field">
+              <label for="top_k">Top K</label>
+              <input id="top_k" type="number" min="1" step="1" value="10" />
+            </div>
+            <div class="form-field">
+              <label for="score_threshold">Score Threshold</label>
+              <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
+            </div>
+          </div>
+          <!-- Query Rewrite group -->
+          <div class="group-box ux-11px" id="query_rewrite_section" style="position:relative;">
+            <div class="rewrite-header" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
+              <div class="subsection-title" style="margin-right:6px;">Query Rewrite</div>
+            </div>
+            <div class="form-field">
+              <label for="enable_query_rewrite">Enable Rewrite</label>
+              <input id="enable_query_rewrite" type="checkbox" />
+            </div>
+            <div class="form-field rewrite-row">
+              <label for="rewrite_confidence_threshold">Rewrite Confidence Threshold</label>
+              <input id="rewrite_confidence_threshold" type="number" min="0" max="1" step="0.01" value="0.67" />
+              <div id="rewrite_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;">
+                <p>
+                  For Rewrite Tail Turns: Minimum confidence (0–1) required before a rewritten
+                  query replaces the user’s original. Lower = more rewrites, higher = more cautious.
+                </p>
+                <p>
+                  For Rewrite Confidence Threshold: Minimum confidence (0–1) required before a rewritten
+                  query replaces the user’s original. Lower = more rewrites, higher = more cautious.
+                </p>
+              </div>
+            </div>
+            <div class="form-field">
+              <label for="rewrite_tail_turns">Rewrite Tail Turns</label>
+              <input id="rewrite_tail_turns" type="number" min="0" step="1" value="1" />
+            </div>
+          </div>
+          <!-- Summarizer group -->
+          <div class="group-box ux-11px">
+            <div class="subsection-title">Summarizer</div>
+            <div class="form-field">
+              <label for="chat_history_window_turns">Chat History Window Turns</label>
+              <input id="chat_history_window_turns" type="number" min="0" step="1" value="10" />
+            </div>
+            <div class="form-field">
+              <label for="raw_tail_turns">Raw Tail Turns</label>
+              <input id="raw_tail_turns" type="number" min="0" step="1" value="2" />
+            </div>
+            <div class="form-field">
+              <label for="summarizer_max_input_tokens">Summarizer Max Input Tokens</label>
+              <input id="summarizer_max_input_tokens" type="number" min="0" step="1" />
+            </div>
+            <div class="form-field">
+              <label for="summarizer_max_output_tokens">Summarizer Max Output Tokens</label>
+              <input id="summarizer_max_output_tokens" type="number" min="0" step="1" />
+            </div>
+          </div>
+
+
+          <!-- Inference group -->
+          <div class="group-box ux-11px">
+            <div class="subsection-title">Inference</div>
+            <div class="form-field field-row" style="position: relative;">
+              <label for="use_tools">
+                Use tools?
+                <a href="#" id="tools_help_link" class="help-link" aria-haspopup="true" aria-controls="tools_help_popup">Help</a>
+              </label>
+              <input id="use_tools" type="checkbox" />
+              <!-- Lightweight popover container; populated by chat.js -->
+              <div id="tools_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;"></div>
+            </div>
+             <div class="form-field">
+              <label for="temperature">Temperature</label>
+              <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.4" />
+            </div>
+            <div class="form-field">
+              <label for="top_p">Top P</label>
+              <input id="top_p" type="number" min="0" max="1" step="0.01" value="0.9" />
+            </div>
+           
+            <div class="form-field">
+              <label for="max_output_tokens">Max Output Tokens</label>
+              <input id="max_output_tokens" type="number" min="1" step="1" value="300" />
+            </div>
+          </div>
+
+          <div>
+            <button id="clear_chat_btn" type="button" title="Clear chat">Clear chat</button>
+            <button id="reset_params_btn" type="button" title="Reset all parameters to server defaults" style="margin-left:8px;">Reset Params</button>
+          </div>
+
+          <!-- Models Information -->
+          <div class="group-box ux-11px" id="models_section">
+            <div class="subsection-title">Models Used</div>
+            <div class="form-field model-row">
+              <label for="model_embedding">Embedding:</label>
+              <div id="model_embedding" class="model-value" style="width:100%">text-embedding-3-small</div>
+            </div>
+            <div class="form-field model-row">
+              <label for="model_query_rewrite">Query Rewrite:</label>
+              <div id="model_query_rewrite" class="model-value" style="width:100%">gpt-4o</div>
+            </div>
+            <div class="form-field model-row">
+              <label for="model_summarizer">Summarizer:</label>
+              <div id="model_summarizer" class="model-value" style="width:100%">gpt-4o</div>
+            </div>
+            <div class="form-field model-row">
+              <label for="model_reranker">Reranker:</label>
+              <div id="model_reranker" class="model-value" style="width:100%">gpt-4o-mini</div>
+            </div>
+            <div class="form-field model-row">
+              <label for="model_inference">Inference:</label>
+              <div id="model_inference" class="model-value" style="width:100%">gpt-4o</div>
+            </div>
+          </div>
+          <!-- Note: Controls are inert in this phase (no backend). -->
+        </form>
+      </aside>
+
+      <main id="main" aria-label="Chat Area">
+        <!-- Turn rollups -->
+        <section id="metrics_bar" class="metrics-compact" aria-label="Metrics">
+          <!-- Part 1: Turn Metrics -->
+          <div class="metrics-subsection-title">Per Turn Metrics  :</div>
+          <div class="metric"><span class="metric-label">Tokens</span><span id="turn_total_tokens" class="metric-value" data-metric="turn_metrics.totals.tokens.turn_total">0</span></div>
+          <div class="metric emphasis"><span class="metric-label">Cost</span><span id="turn_total_cost" class="metric-value" data-metric="turn_metrics.totals.cost.turn_total">0</span></div>
+
+          <div style="flex-basis:100%;height:0"></div>
+          <!-- Query Embedding -->
+          <div class="metric group-label">Query Embedding</div>
+          <div class="metric"><span class="metric-label">Tokens</span><span id="embed_tokens" class="metric-value" data-metric="turn_metrics.embedding.input_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="embed_cost" class="metric-value" data-metric="turn_metrics.embedding.cost">0</span></div>
+
+          <div class="metric sep"></div>
+
+          <!-- Rewrite -->
+          <div class="metric group-label">Query Rewrite</div>
+          <div class="metric"><span class="metric-label">Input Tokens</span><span id="rewrite_tokens_in" class="metric-value" data-metric="turn_metrics.rewrite.input_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Output Tokens</span><span id="rewrite_tokens_out" class="metric-value" data-metric="turn_metrics.rewrite.output_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="rewrite_cost" class="metric-value" data-metric="turn_metrics.rewrite.cost">0</span></div>
+
+          <div class="metric sep"></div>
+
+          <!-- Summarizer -->
+          <div class="metric group-label">Summarizer</div>
+          <div class="metric"><span class="metric-label">Input Tokens</span><span id="summary_tokens_in" class="metric-value" data-metric="turn_metrics.summary.input_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Output Tokens</span><span id="summary_tokens_out" class="metric-value" data-metric="turn_metrics.summary.output_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="summary_cost" class="metric-value" data-metric="turn_metrics.summary.cost">0</span></div>
+
+          <div class="metric sep"></div>
+
+          <!-- Rerank -->
+          <div class="metric group-label">Rerank</div>
+          <div class="metric"><span class="metric-label">Input Tokens</span><span id="rerank_tokens_in" class="metric-value" data-metric="turn_metrics.rerank.input_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Output Tokens</span><span id="rerank_tokens_out" class="metric-value" data-metric="turn_metrics.rerank.output_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="rerank_cost" class="metric-value" data-metric="turn_metrics.rerank.cost">0</span></div>
+
+          <div class="metric sep"></div>
+
+          
+          <!-- Inference -->
+          <div class="metric group-label">Inference</div>
+          <div class="metric"><span class="metric-label">Prompt Tokens</span><span id="prompt_tokens" class="metric-value" data-metric="turn_metrics.inference.prompt_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Cached Tokens</span><span id="inference_cached_tokens" class="metric-value" data-metric="turn_metrics.inference.prompt_cached_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Completion Tokens</span><span id="completion_tokens" class="metric-value" data-metric="turn_metrics.inference.completion_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Total Tokens</span><span id="total_tokens" class="metric-value" data-sum="turn_metrics.inference.prompt_tokens, turn_metrics.inference.prompt_cached_tokens, turn_metrics.inference.completion_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Prompt Cost</span><span id="prompt_cost" class="metric-value" data-metric="turn_metrics.inference.cost_prompt">0</span></div>
+          <div class="metric"><span class="metric-label">Completion Cost</span><span id="completion_cost" class="metric-value" data-metric="turn_metrics.inference.cost_completion">0</span></div>
+          <div class="metric"><span class="metric-label">Inference <b>Total</b> Cost</span><span id="total_cost" class="metric-value" data-metric="turn_metrics.inference.cost_total">0</span></div>
+
+          <div class="metric sep"></div>
+ 
+         
+          <!-- Part 2: Total Conversation Metrics -->
+          <div style="flex-basis:100%;height:0"></div>
+          <div class="metrics-subsection-title">Total Conversation Metrics :</div>
+          <div class="metric"><span class="metric-label"> Cost</span><span id="conversation_total_cost" class="metric-value" data-metric="conversation_totals.cost.conversation_total">0</span></div>
+          <div class="metric"><span class="metric-label">Tokens</span><span id="conversation_total_tokens" class="metric-value" data-metric="conversation_totals.tokens.conversation_total">0</span></div>
+        </section>
+
+        <!-- Scrollable chat history -->
+        <section id="chat_history" role="log" aria-live="polite" aria-label="Chat History"></section>
+
+        <!-- Input bar -->
+        <section id="input_bar" aria-label="Message Input">
+          <textarea id="chat_input" rows="1" placeholder="Type a message..." spellcheck="true"></textarea>
+          <button id="send_button" type="button" title="Send (Enter)">Send</button>
+        </section>
+      </main>
+    </div>
+
+    <script src="static/chat.js"></script>
+  <footer class="text-center text-xs text-gray-500 mt-8">
+    <p>
+      Optional seed data derived from 
+      <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
+      licensed under 
+      <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
+    </p>
+  </footer>
+  </body>
+  </html>

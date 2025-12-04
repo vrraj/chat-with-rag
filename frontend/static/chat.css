@@ -1,0 +1,317 @@
+/* Minimal, readable UI shell styles. Light theme. */
+:root {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --surface: #ffffff;
+  --muted: #64748b; /* slate-500 */
+  --text: #0f172a;  /* slate-900 */
+  --accent: #2563eb; /* blue-600 */
+  --border: #e5e7eb; /* gray-200 */
+  --badge-bg: #eef2f7;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+}
+
+#app { display: flex; height: 100vh; }
+
+/* Sidebar: ~15% width, scrollable if needed */
+#sidebar {
+  flex: 0 0 15%;
+  min-width: 220px;
+  max-width: 320px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 16px 14px;
+  overflow: auto;
+}
+.section-title { margin: 0 0 12px; font-weight: 600; font-size: 14px; color: var(--muted); }
+
+/* New grouped box for parameter sections (Retrieval/Inference) */
+.group-box {
+  display: block;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.subsection-title {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 12px; /* smaller than main Parameters title */
+  color: var(--muted);
+}
+
+.metrics-subsection-title {
+  margin: 0 0 1px;
+  font-weight: 500;
+  font-size: 14px; /* smaller than main Parameters title */
+  color: var(--muted);
+}
+
+.model-value {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+/* Form field tweaks for Rewrite row to keep inline layout */
+.form-field.rewrite-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+.model-value {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+/* Make form fields in Models section non-interactive */
+#models_info .form-field {
+  pointer-events: none;
+}
+
+/* Unboxed individual fields inside a group */
+.form-field {
+  display: grid;                 /* consistent column alignment */
+  grid-template-columns: var(--label-col, 95px) 9ch; /* label width set via JS to Score Threshold */
+  align-items: center;
+  column-gap: 8px;
+  margin-bottom: 10px;
+}
+.form-field:last-child { margin-bottom: 0; }
+
+/* Optional variant retains same grid for row style */
+.form-field.field-row { grid-template-columns: var(--label-col, 95px) auto; }
+
+/* Labels can wrap to two lines if longer than reference */
+.form-field > label { overflow-wrap: anywhere; text-align: left; width: 100%; }
+/* Fixed input width sized to ~7 chars; box-sizing keeps borders within width */
+.form-field input[type="number"] {
+  width: 11ch;
+  min-width: 11ch;
+}
+.form-field input[type="checkbox"] { justify-self: start; }
+label { color: var(--muted); font-size: 11px; }
+
+/* Help link near label */
+.help-link {
+  margin-left: 1px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: underline;
+}
+.help-link:hover { opacity: 0.9; }
+
+/* Simple popover for Tools Help */
+.popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  transform: translateY(6px);
+  max-width: 340px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+  z-index: 9999;
+}
+
+/* Scoped layout for Models section: vertical stack and full-width values */
+#models_section .model-row {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 8px;
+}
+#models_section .model-row .model-value {
+  width: 100%;
+  display: block;
+}
+
+/* UX tweak: reduce font size for inputs in Retriever, Query Rewrite, Summarizer, Inference blocks */
+.ux-11px .form-field input,
+.ux-11px .form-field textarea,
+.ux-11px .form-field select {
+  font-size: 11px;
+}
+.popover .title { font-weight: 600; margin: 0 0 6px; font-size: 13px; }
+.popover .tool { margin: 8px 0; }
+.popover .tool-name { font-weight: 600; font-size: 12px; }
+.popover .tool-desc { color: var(--muted); font-size: 12px; margin: 2px 0 4px; }
+.popover code { font-size: 12px; background: #f8fafc; padding: 1px 4px; border-radius: 4px; }
+input[type="number"] {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+input[type="number"]:focus { outline: none; border-color: var(--accent); }
+
+/* Main column */
+#main { flex: 1; display: flex; flex-direction: column; height: 100vh; gap: 12px; padding: 12px; }
+
+/* Metrics bar: read-only placeholders */
+#metrics_bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+/* Compact metrics spacing */
+#metrics_bar.metrics-compact { 
+  --metric-font: 12px; 
+  --metric-group-label-font: 13px;
+  padding-top: 2px; 
+  padding-bottom: 2px; 
+}
+#metrics_bar .metric[hidden] { 
+  display: none !important; 
+}
+#metrics_bar.metrics-compact .metric {
+  line-height: 1.88;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+#metrics_bar.metrics-compact .metric.group-label { 
+  margin-top: 1px; 
+  margin-bottom: 0; 
+  font-size: var(--metric-group-label-font); 
+}
+#metrics_bar.metrics-compact .metric.sep { 
+  height: 4px; 
+}
+#metrics_bar.metrics-compact .metric .metric-label,
+#metrics_bar.metrics-compact .metric .metric-value { 
+  font-size: var(--metric-font); 
+}
+
+.metric { 
+  display: inline-flex; 
+  gap: 6px; 
+  align-items: baseline; 
+}
+.metric.sep { 
+  width: 1px; 
+  height: 16px; 
+  background: var(--border); 
+  margin: 0 4px; 
+}
+.metric-label { 
+  color: var(--muted); 
+  font-size: 12px; 
+}
+.metric-value { 
+  color: var(--text); 
+  font-variant-numeric: tabular-nums; 
+}
+
+/* Chat history */
+#chat_history {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 16px 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.msg { display: flex; gap: 8px; margin: 8px 0; max-width: 75%; }
+.msg.user { margin-left: auto; justify-content: flex-end; }
+.msg.assistant { margin-right: auto; }
+
+.badge {
+  align-self: flex-start;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #1f2937;
+  background: var(--badge-bg);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.bubble {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  white-space: pre-wrap; /* keep user newlines */
+}
+.msg.user .bubble { background: #eff6ff; border-color: #bfdbfe; }
+.msg.assistant .bubble { background: #ecfdf5; border-color: #bbf7d0; }
+
+/* Dimmed tools-used indicator under assistant messages */
+.tools-used {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Input bar */
+#input_bar {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+#chat_input {
+  flex: 1;
+  min-height: 36px; /* 1 line */
+  max-height: 120px; /* ~ up to 4 lines depending on line-height */
+  resize: none; /* auto-resized via JS */
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+#chat_input:focus { outline: none; border-color: var(--accent); }
+
+#send_button {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+}
+#send_button:hover { border-color: var(--accent); background: #eef2ff; }
+
+/* Reduce motion/overscroll artifacts */
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; }
+}

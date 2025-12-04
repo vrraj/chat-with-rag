@@ -1,0 +1,50 @@
+.message {
+    margin-bottom: 1rem;
+}
+
+.user-message {
+    background-color: #e5e7eb;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    max-width: 75%;
+}
+
+.assistant-message {
+    background-color: #f3f4f6;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    max-width: 75%;
+}
+
+.source-link {
+    color: #60a5fa;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.source-link:hover {
+    color: #3b82f6;
+}
+
+.loading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.loading::after {
+    content: "";
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid #60a5fa;
+    border-radius: 50%;
+    border-top-color: transparent;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

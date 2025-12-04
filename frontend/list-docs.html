@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>View Documents in Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100">
+  <div class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-6">View Documents in Database</h1>
+    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="md:col-span-2">
+          <label class="block text-sm font-medium text-gray-700">Filter by URL (optional)</label>
+          <input id="debugUrl" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://example.com/path" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Max rows</label>
+          <input id="maxRows" type="number" min="1" step="1" value="20" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" />
+          <p class="text-xs text-gray-500 mt-1">Controls how many array items are shown (display only).</p>
+        </div>
+        <div class="flex items-end">
+          <button id="fetchDebugBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Fetch</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-md p-6">
+      <div class="flex justify-between items-center mb-4">
+        <div>
+          <h2 class="text-xl font-semibold inline">Results</h2>
+          <span id="resultCount" class="ml-2 text-sm text-gray-500"></span>
+        </div>
+        <button id="downloadBtn" class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700">Download JSON</button>
+      </div>
+      <div class="mb-2 text-sm text-gray-500">
+        <span id="showingCount" class="font-medium"></span>
+        <span id="truncatedWarning" class="hidden text-yellow-600 ml-2">(truncated for display, download for full data)</span>
+      </div>
+      <pre id="debugOutput" class="bg-gray-50 p-4 rounded overflow-auto h-96 text-sm"></pre>
+    </div>
+  </div>
+
+  <script>
+    const fetchBtn = document.getElementById('fetchDebugBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const input = document.getElementById('debugUrl');
+    const output = document.getElementById('debugOutput');
+    let lastJson = null;
+    const maxRowsInput = document.getElementById('maxRows');
+
+    function pickPrimaryArray(data) {
+      if (!data) return [];
+      if (Array.isArray(data)) return data;
+      const candidates = ['documents', 'chunks', 'items', 'results', 'points', 'payloads', 'data', 'list'];
+      for (const k of candidates) {
+        if (data && typeof data === 'object' && Array.isArray(data[k])) return data[k];
+      }
+      let best = [];
+      let maxLen = 0;
+      const seen = new Set();
+      function dfs(node) {
+        if (!node || typeof node !== 'object') return;
+        if (seen.has(node)) return;
+        seen.add(node);
+        if (Array.isArray(node)) {
+          if (node.length > maxLen) {
+            best = node;
+            maxLen = node.length;
+          }
+          for (const el of node) dfs(el);
+          return;
+        }
+        for (const v of Object.values(node)) dfs(v);
+      }
+      dfs(data);
+      return best;
+    }
+
+    function aggregateByBaseUrl(items) {
+      const aggregated = {};
+      
+      items.forEach(item => {
+        const baseUrl = item.base_url || 'Unknown';
+        if (!aggregated[baseUrl]) {
+          aggregated[baseUrl] = {
+            base_url: baseUrl,
+            title: item.title || baseUrl,
+            total_chunks: 0,
+            updated_at: item.updated_at || new Date().toISOString(),
+            count: 0
+          };
+        }
+        // Sum up the chunks
+        aggregated[baseUrl].total_chunks += parseInt(item.total_chunks || 0, 10);
+        // Keep the most recent updated_at
+        if (item.updated_at && item.updated_at > aggregated[baseUrl].updated_at) {
+          aggregated[baseUrl].updated_at = item.updated_at;
+        }
+        aggregated[baseUrl].count++;
+      });
+      
+      return Object.values(aggregated);
+    }
+
+    async function fetchDebug() {
+      try {
+        const url = (input.value || '').trim();
+        const qs = url ? `?url=${encodeURIComponent(url)}` : '';
+        // Fetch data from the dedicated JSON data endpoint and render as a borderless table
+        const resp = await fetch(`/list-docs-data${qs}`);
+        const data = await resp.json();
+        lastJson = data;
+
+        const items = (Array.isArray(data?.documents) ? data.documents : []);
+        
+        // Aggregate the data by base_url
+        const aggregatedItems = aggregateByBaseUrl(items);
+        
+        // Build a borderless table with headers
+        const table = document.createElement('table');
+        table.style.width = '100%';
+        table.style.borderCollapse = 'collapse';
+        
+        // Header
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        ['Base URL', 'Title', 'Total Chunks', 'Updated At', 'Documents'].forEach(h => {
+          const th = document.createElement('th');
+          th.textContent = h;
+          th.style.textAlign = 'left';
+          th.style.padding = '6px 8px';
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+        
+        // Body
+        const maxDisplay = Math.max(1, Math.min(parseInt(maxRowsInput?.value || '20', 10), aggregatedItems.length));
+        
+        // Update display summary
+        const showing = document.getElementById('showingCount');
+        showing.textContent = `Showing ${maxDisplay} out of ${aggregatedItems.length} unique base URLs (${items.length} total documents)`;
+        
+        const tbody = document.createElement('tbody');
+        aggregatedItems.slice(0, maxDisplay).forEach(d => {
+          const tr = document.createElement('tr');
+          [d.base_url, d.title, d.total_chunks, d.updated_at, d.count].forEach(val => {
+            const td = document.createElement('td');
+            td.textContent = val != null ? val : '';
+            td.style.padding = '6px 8px';
+            // Add title attribute for full URL on hover
+            if (val === d.base_url) {
+              td.title = d.base_url;
+              td.style.maxWidth = '500px';  // Increased from 300px to 500px
+              td.style.overflow = 'hidden';
+              td.style.textOverflow = 'ellipsis';
+              td.style.whiteSpace = 'nowrap';
+              td.style.width = 'auto';  // Allow column to grow
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        // Replace output area with the table
+        output.innerHTML = '';
+        output.appendChild(table);
+      } catch (e) {
+        output.textContent = `Error: ${e}`;
+        // Keep the download button enabled even on error
+        downloadBtn.disabled = false;
+      }
+    }
+
+    async function downloadJson() {
+      console.log('Download button clicked');
+      downloadBtn.disabled = true;
+      output.textContent = 'Preparing download...';
+      
+      try {
+        let dataToDownload = null;
+        
+        // First, try to use the existing data if available
+        if (lastJson) {
+          console.log('Using existing data for download');
+          dataToDownload = lastJson;
+        } else {
+          // If no existing data, fetch fresh data
+          console.log('Fetching fresh data from /list-docs-data');
+          const resp = await fetch('/list-docs-data');
+          if (!resp.ok) {
+            const errorText = await resp.text();
+            console.error('Server response error:', resp.status, errorText);
+            throw new Error(`HTTP ${resp.status}: ${errorText}`);
+          }
+          dataToDownload = await resp.json();
+          lastJson = dataToDownload; // Cache the data
+        }
+        
+        // Process the data to aggregate by base_url before downloading
+        if (dataToDownload && Array.isArray(dataToDownload.documents)) {
+          const aggregatedData = {
+            aggregated: true,
+            timestamp: new Date().toISOString(),
+            documents: aggregateByBaseUrl(dataToDownload.documents)
+          };
+          triggerDownload(aggregatedData);
+        } else {
+          // If the data structure is different, download as is
+          triggerDownload(dataToDownload);
+        }
+        
+      } catch (err) {
+        console.error('Download error:', err);
+        output.textContent = `Download failed: ${err?.message || 'Unknown error'}. Check console for details.`;
+      } finally {
+        downloadBtn.disabled = false;
+      }
+      
+      function triggerDownload(data) {
+        try {
+          console.log('Creating download...');
+          const jsonString = JSON.stringify(data, null, 2);
+          const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+          
+          // Method 1: Create object URL
+          const url = window.URL.createObjectURL(blob);
+          
+          // Create a temporary link and trigger download
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `list_docs_${new Date().toISOString().slice(0, 10)}.json`;
+          
+          // Required for Firefox
+          document.body.appendChild(link);
+          
+          // Trigger the download
+          const clickEvent = new MouseEvent('click', {
+            view: window,
+            bubbles: true,
+            cancelable: true
+          });
+          
+          link.dispatchEvent(clickEvent);
+          
+          // Clean up
+          setTimeout(() => {
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            console.log('Cleanup complete');
+          }, 100);
+          
+          output.textContent = 'Download started. If it doesn\'t work, right-click the button and select "Save link as..."';
+          
+        } catch (err) {
+          console.error('Error in download process:', err);
+          // Fallback: Create a data URL and open in new tab
+          try {
+            const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data, null, 2));
+            window.open(dataStr, '_blank');
+            output.textContent = 'Opened data in new tab. Please save the page (Ctrl+S or Cmd+S).';
+          } catch (e) {
+            output.textContent = 'Failed to prepare download. Check console for errors.';
+          }
+        }
+      }
+    }
+
+    fetchBtn.addEventListener('click', fetchDebug);
+    downloadBtn.addEventListener('click', downloadJson);
+  </script>
+
+  <footer class="text-center text-xs text-gray-500 mt-8">
+    <p>
+      Optional seed data derived from 
+      <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
+      licensed under 
+      <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
+    </p>
+  </footer>
+</body>
+</html>
