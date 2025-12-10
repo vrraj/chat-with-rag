@@ -13,7 +13,7 @@ from qdrant_client.http import models
 from backend.core import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
 from backend.crawler.crawler import WebCrawler
-from backend.crawler.pdf_crawler import PDFCrawler
+#from backend.crawler.pdf_crawler import PDFCrawler
 from backend.extractor import HTMLExtractor, MediaWikiExtractor, PDFExtractor
 from backend.core import (
     EmbeddingRequest,
@@ -132,11 +132,15 @@ async def debug_index_page():
     summary="4. List Documents Data (JSON)",
     responses={200: {"content": {"application/json": {"example": "{\"documents\": []}"}}}},
 )
-async def list_docs_data(limit: int = None):
-    """Return a JSON payload containing documents for display.
+async def list_docs_data(limit: int = None, url: str = None):
+    """Return a JSON payload containing documents for display, optionally filtered by URL.
 
     Each item includes: base_url, title, total_chunks, updated_at.
     The frontend displays one item per line.
+
+    Args:
+        limit: Maximum number of documents to return (optional)
+        url: If provided, only return documents matching this URL (case-insensitive)
     """
     # Try to fetch real data from Qdrant using the configured collection
     data = {"documents": []}
@@ -144,14 +148,35 @@ async def list_docs_data(limit: int = None):
         from backend.db import QdrantDB
         from backend.core.config import settings
 
+        from qdrant_client import models
+
         # Initialize DB handle
         qd = QdrantDB(host=settings.qdrant_host, port=settings.qdrant_port, collection_name=settings.collection_name)
+        
+        # Create filter if URL is provided
+        scroll_filter = None
+        if url:
+            url_lower = url.lower()
+            scroll_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="url_lower",
+                        match=models.MatchValue(value=url_lower)
+                    )
+                ]
+            )
+
         # Attempt a simple scroll to fetch documents; best-effort approach
         offset = None
         while True:
             try:
                 # The underlying client.scroll returns (points, next_offset)
-                resp = qd.client.scroll(collection_name=qd.collection_name, offset=offset, limit=100)
+                resp = qd.client.scroll(
+                    collection_name=qd.collection_name,
+                    offset=offset,
+                    limit=100,
+                    scroll_filter=scroll_filter
+                )
                 if isinstance(resp, tuple) and len(resp) == 2:
                     points, offset = resp
                 else:
@@ -176,12 +201,14 @@ async def list_docs_data(limit: int = None):
                     total_chunks = len(chunks)
                 updated_at = payload.get('updated_at', '') or ''
                 if base_url:
-                    data['documents'].append({
-                        'base_url': base_url,
-                        'title': title,
-                        'total_chunks': int(total_chunks) if total_chunks is not None else 0,
-                        'updated_at': updated_at,
-                    })
+                    # Only add if URL matches (case-insensitive) or no URL filter
+                    if not url or (isinstance(base_url, str) and url.lower() in base_url.lower()):
+                        data['documents'].append({
+                            'base_url': base_url,
+                            'title': title,
+                            'total_chunks': int(total_chunks) if total_chunks is not None else 0,
+                            'updated_at': updated_at,
+                        })
             if not offset:
                 break
         # Respect the limit at display time; the UI will slice, and the download will provide full data
@@ -254,6 +281,7 @@ async def index_mediawiki_url(
             chunk_overlap=settings.html_chunk_overlap,
             api_url=mediawiki_input.api_url,
             user_agent=mediawiki_input.user_agent,
+            wiki_mode="parsoid" # enable Parsoid first behavior with fallback to Action API
         )
         #logger.info("TRACE MW: MediaWikiExtractor init done")
         url = mediawiki_input.url
@@ -371,6 +399,18 @@ async def index_pdf(
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
     
+    logger.info(
+        "PDF DEBUG: url=%s has_file=%s max_chunks=%s force_delete=%s estimate=%s pdfinputfilename=%s",
+        pdf_input.url,
+        bool(pdf_input.file),
+        pdf_input.max_chunks,
+        pdf_input.force_delete,
+        pdf_input.estimate,
+        pdf_input.filename
+    )
+    if pdf_input.file:
+        logger.info("PDF DEBUG: pdf_input.file length=%s", len(pdf_input.file))
+    
     if not pdf_input.file and not pdf_input.url:
         raise HTTPException(status_code=400, detail="Provide either a PDF file or a URL")
     
@@ -379,6 +419,7 @@ async def index_pdf(
     
     try:
         source = pdf_input.url if pdf_input.url else "uploaded://file.pdf"
+        skip_sections = pdf_input.skip_sections
         
         # For URL-based PDFs, check if already indexed
         if pdf_input.url and bool(settings.check_document_indexed):
@@ -411,8 +452,9 @@ async def index_pdf(
         extractor = PDFExtractor(
             chunk_size=settings.html_chunk_size,
             chunk_overlap=settings.html_chunk_overlap,
+            skip_sections=skip_sections,
         )
-        
+        # for PDF file upload
         if pdf_input.file:
             # Handle base64 encoded file
             import base64
@@ -422,8 +464,18 @@ async def index_pdf(
                 
                 # Generate a unique hash of the file content for duplicate checking
                 file_hash = hashlib.sha256(file_data).hexdigest()
-                source = f"uploaded://{file_hash}"
+                #source = f"uploaded://{file_hash}"
+                # Prefer the original URL (including file:///app/...) if present.
+                # Only fall back to filename or hash when no URL is available.
+                if pdf_input.url:
+                    source = pdf_input.url
+                elif pdf_input.filename:
+                    source = f"file://{pdf_input.filename}"
+                else:
+                    source = f"uploaded://{file_hash}"
+                #source = f"file://{pdf_input.filename}"
                 
+                logger.info("PDF DEBUG filename : source=%s", source)
                 # Check for existing indexed content with the same hash
                 if bool(settings.check_document_indexed):
                     if qdrant_db is None:
@@ -445,7 +497,7 @@ async def index_pdf(
                                 "confirmation_required": True,
                                 "hint": "Resubmit with 'Force delete existing' checked to proceed",
                             }
-                        elif existing_count > 0 and bool(pb_input.force_delete):
+                        elif existing_count > 0 and bool(pdf_input.force_delete):
                             logger.info("force_delete=true; proceeding with reindex")
                             
                     except Exception as e:
@@ -795,50 +847,50 @@ async def index_content(url_input: URLInput):
                         planned_chunks_total += result.get("vectors_indexed", 0)
                         tokens_total += result.get("tokens_used", 0)
             
-            elif url_input.doc_type == "PDF":
-                pdf_crawler = PDFCrawler()
-                pdf_data = pdf_crawler.crawl(url)
-                if settings.debug_verbose:
-                    from pprint import pformat
-                    logger.debug("PDF data retrieved: %s", pformat(pdf_data)[:settings.debug_log_truncate_chars])
+            # elif url_input.doc_type == "PDF":
+            #     pdf_crawler = PDFCrawler()
+            #     pdf_data = pdf_crawler.crawl(url)
+            #     if settings.debug_verbose:
+            #         from pprint import pformat
+            #         logger.debug("PDF data retrieved: %s", pformat(pdf_data)[:settings.debug_log_truncate_chars])
                 
-                if pdf_data:
-                    for section in pdf_data['sections']:
-                        document = {
-                            'url': url,
-                            'text': section['content'],
-                            'doc_type': 'PDF',
-                            'title': pdf_data['title'],
-                            'page_number': section['page_number']
-                        }
-                        # Standardize on chunk-based limiting for /index (no max_chars support)
-                        user_max_chunks = url_input.max_chunks if (url_input.max_chunks and url_input.max_chunks > 0) else None
-                        if url_input.estimate:
-                            from backend.extractor.splitters import TextSplitter
-                            # Use PDF chunk settings for PDFs
-                            chunk_size = settings.pdf_chunk_size or len(document['text'])
-                            splitter = TextSplitter(
-                                chunk_size=chunk_size,
-                                chunk_overlap=settings.pdf_chunk_overlap,
-                                use_manual_splitter=False,
-                            )
-                            chunks = splitter.split_text(document.get('text', '') or '')
-                            effective_cap = int(settings.max_chunks_per_doc)
-                            if user_max_chunks is not None:
-                                effective_cap = min(effective_cap, int(user_max_chunks))
-                            planned_chunks = min(len(chunks), effective_cap)
-                            planned_chunks_total += planned_chunks
-                            # Calculate tokens for the planned chunks
-                            for chunk in chunks[:planned_chunks]:
-                                tokens_total += embeddings_manager.estimate_tokens(chunk)
-                        else:
-                            result = embeddings_manager.index_document(
-                                document,
-                                force_delete=url_input.force_delete,
-                                max_chunks=user_max_chunks
-                            )
-                            planned_chunks_total += result.get("vectors_indexed", 0)
-                            tokens_total += result.get("tokens_used", 0)
+            #     if pdf_data:
+            #         for section in pdf_data['sections']:
+            #             document = {
+            #                 'url': url,
+            #                 'text': section['content'],
+            #                 'doc_type': 'PDF',
+            #                 'title': pdf_data['title'],
+            #                 'page_number': section['page_number']
+            #             }
+            #             # Standardize on chunk-based limiting for /index (no max_chars support)
+            #             user_max_chunks = url_input.max_chunks if (url_input.max_chunks and url_input.max_chunks > 0) else None
+            #             if url_input.estimate:
+            #                 from backend.extractor.splitters import TextSplitter
+            #                 # Use PDF chunk settings for PDFs
+            #                 chunk_size = settings.pdf_chunk_size or len(document['text'])
+            #                 splitter = TextSplitter(
+            #                     chunk_size=chunk_size,
+            #                     chunk_overlap=settings.pdf_chunk_overlap,
+            #                     use_manual_splitter=False,
+            #                 )
+            #                 chunks = splitter.split_text(document.get('text', '') or '')
+            #                 effective_cap = int(settings.max_chunks_per_doc)
+            #                 if user_max_chunks is not None:
+            #                     effective_cap = min(effective_cap, int(user_max_chunks))
+            #                 planned_chunks = min(len(chunks), effective_cap)
+            #                 planned_chunks_total += planned_chunks
+            #                 # Calculate tokens for the planned chunks
+            #                 for chunk in chunks[:planned_chunks]:
+            #                     tokens_total += embeddings_manager.estimate_tokens(chunk)
+            #             else:
+            #                 result = embeddings_manager.index_document(
+            #                     document,
+            #                     force_delete=url_input.force_delete,
+            #                     max_chunks=user_max_chunks
+            #                 )
+            #                 planned_chunks_total += result.get("vectors_indexed", 0)
+            #                 tokens_total += result.get("tokens_used", 0)
         if url_input.estimate:
             estimated_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
             return {
@@ -1042,15 +1094,14 @@ def debug_index(url: Optional[str] = None):
                 #logger.info("Scroll response for %s: %d docs retrieved", name, len(all_docs))
                 if all_docs:
                     #logger.debug("Found %d total documents in collection %s", len(all_docs), name)
-                    sorted_docs = sorted(
-                        all_docs,
-                        key=lambda d: (
-                            d.payload.get("url", ""),
-                            int(d.payload.get("section_index")) if d.payload.get("section_index") is not None else 0,
-                            int(d.payload.get("subsection_index")) if d.payload.get("subsection_index") is not None else -1,
-                            int(d.payload.get("chunk_index")) if d.payload.get("chunk_index") is not None else 0
+                    def get_sort_key(d):
+                        return (
+                            int(d.payload.get("section_index") or 0),
+                            int(d.payload.get("subsection_index") or 0),
+                            int(d.payload.get("chunk_index") or 0)
                         )
-                    )
+                    
+                    sorted_docs = sorted(all_docs, key=get_sort_key)
                     #logger.debug("After sorting, have %d documents", len(sorted_docs))
                     if settings.debug_verbose:
                         for d in sorted_docs:
@@ -1394,6 +1445,7 @@ class BatchRequest(BaseModel):
     max_chunks: Optional[int] = None
     estimate: bool = True  # Default to True for safety
     force_delete: bool = False
+    filename: Optional[str] = None
 
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
@@ -1406,8 +1458,13 @@ from fastapi import HTTPException
 async def process_item(item, request, settings):
     try:
         # Handle local file paths for PDFs
+        logger.info(f"Processing item: {item.url}")
         if item.doc_type.lower() == 'pdf' and item.url.startswith('file://'):
-            file_path = item.url[7:]  # Remove 'file://' prefix
+            # Turn "file:///app/data/..." into "/app/data/..."
+            parsed = urlsplit(item.url)          # scheme=file, path=/app/...
+            file_path = parsed.path             # "/app/data/…/file.pdf"
+            logger.info (f"file_path {file_path}")
+            logger.info (f"original file name {os.path.basename(file_path)}")
             try:
                 # Create a file-like object from the local file
                 with open(file_path, 'rb') as f:
@@ -1431,7 +1488,9 @@ async def process_item(item, request, settings):
                         payload = {
                             'file': file_b64,
                             'estimate': request.estimate,
-                            'force_delete': request.force_delete
+                            'force_delete': request.force_delete,
+                            'url': item.url,
+                            'filename': os.path.basename(file_path)
                         }
                         if request.max_chunks is not None:
                             payload['max_chunks'] = request.max_chunks
@@ -1562,6 +1621,11 @@ async def batch_process_docs(request: BatchRequest):
                 if isinstance(res, dict):
                     if 'chunks_planned' in res:
                         total_chunks += res['chunks_planned']
+                    elif 'chunks_indexed' in res:
+                        total_chunks += res['chunks_indexed']
+                    elif 'vectors_indexed' in res:
+                        total_chunks += res['vectors_indexed']
+
                     if 'tokens_used' in res:
                         total_tokens += res['tokens_used']
                     if 'embedding_cost' in res:

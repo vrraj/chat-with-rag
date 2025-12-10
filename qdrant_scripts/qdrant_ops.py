@@ -12,7 +12,8 @@ Functions (selected by CLI flags):
   1b) Retrieve all points (optionally with a limit).
   2) Display payload field names (using the first point as reference).
   2b) List unique URLs with titles (30-char max)
-  3) Delete points either by (a) payload field/value or (b) explicit point id(s).
+  3) Count chunks for a specific base URL
+  4) Delete points either by (a) payload field/value or (b) explicit point id(s).
 
 Defaults try to import host/port/collection from backend/core/config.py, with
 fallbacks to localhost:6333 and collection "document_index" if import fails.
@@ -30,16 +31,19 @@ Examples:
   # 2b) List unique URLs with titles (30-char max)
   python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
 
-  # 3a) Delete by payload field/value (asks for confirmation)
+  # 3) Count chunks for a specific base URL
+  python qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://example.com"
+
+  # 4a) Delete by payload field/value (asks for confirmation)
   python qdrant_scripts/qdrant_ops.py --delete --field doc_id --value 123
 
-  # 3b) Delete by payload field/value (skip confirmation)
+  # 4b) Delete by payload field/value (skip confirmation)
   python qdrant_scripts/qdrant_ops.py --delete --field doc_id --value 123 --yes
 
-  # 3c) Delete by explicit point IDs (skip confirmation)
+  # 4c) Delete by explicit point IDs (skip confirmation)
   python qdrant_scripts/qdrant_ops.py --delete --ids 10 11 12 --yes
 
-  # 3d) Delete all points from a given source (interactive confirmation)
+  # 4d) Delete all points from a given source (interactive confirmation)
   python qdrant_scripts/qdrant_ops.py --delete --field source --value wikipedia
 """
 from __future__ import annotations
@@ -62,6 +66,9 @@ except Exception:
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
+    Filter,
+    FieldCondition,
+    MatchValue,
     Filter,
     FieldCondition,
     MatchValue,
@@ -393,83 +400,105 @@ def cmd_delete(args) -> int:
     return 1
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Qdrant maintenance operations")
-    p.add_argument("--host", default=DEFAULT_HOST, help=f"Qdrant host (default: {DEFAULT_HOST})")
-    p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Qdrant port (default: {DEFAULT_PORT})")
-    p.add_argument("--collection", default=DEFAULT_COLLECTION, help=f"Collection name (default: {DEFAULT_COLLECTION})")
-    p.add_argument("--page-size", type=int, default=256, help="Scroll page size (default: 256)")
-
-    g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--get", action="store_true", help="Retrieve points (optionally filter by payload field/value)")
-    g.add_argument("--list-fields", action="store_true", help="List payload field names (from first point)")
-    g.add_argument("--list-titles", action="store_true", help="List unique URLs with titles (30-char max)")
-    g.add_argument("--delete", action="store_true", help="Delete points by id or payload filter")
-    g.add_argument("--truncate", action="store_true", help="Delete all points but keep collection config")
-    g.add_argument("--export", action="store_true", help="Export collection to JSONL file")
-
-    # Common filter args
-    p.add_argument("--field", help="Payload field name for filtering (for --get/--delete)")
-    p.add_argument("--value", help="Payload field value for filtering (for --get/--delete)")
-    p.add_argument("--limit", type=int, default=None, help="Limit number of points to retrieve (for --get)")
-
-    # Delete by ids
-    p.add_argument("--ids", nargs="*", help="Point ids to delete (for --delete)")
-    p.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
-
-    # Export options
-    p.add_argument(
-        "-f",
-        "--file",
-        help="Output JSONL filename (saved under ./data) for --export",
-        default=None,
+def count_chunks_by_base_url(args) -> int:
+    """Count and display the number of chunks for a specific base URL."""
+    client = build_client(args.host, args.port)
+    collection = args.collection
+    base_url = args.base_url
+    
+    if not base_url:
+        print("Error: --base-url is required")
+        return 1
+    
+    base_url_lower = base_url.lower()
+    
+    # Create filter for base_url_lower
+    filter_condition = Filter(
+        must=[
+            FieldCondition(
+                key="base_url_lower",
+                match=MatchValue(value=base_url_lower),
+            )
+        ]
     )
+    
+    # Count points matching the filter
+    count = 0
+    for _ in scroll_points(client, collection, flt=filter_condition, with_payload=False):
+        count += 1
+    
+    print(f"Found {count} chunks for base URL: {base_url}")
+    return 0
 
-    return p
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Qdrant operations utility")
+    parser.add_argument("--host", type=str, default=DEFAULT_HOST, help="Qdrant host")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Qdrant port")
+    parser.add_argument("--collection", type=str, default=DEFAULT_COLLECTION, 
+                       help=f"Collection name (default: {DEFAULT_COLLECTION})")
+    
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+    
+    # Get command
+    get_parser = subparsers.add_parser("get", help="Get points by filter")
+    get_parser.add_argument("--field", type=str, help="Payload field to filter on")
+    get_parser.add_argument("--value", type=str, help="Value to match in the specified field")
+    get_parser.add_argument("--limit", type=int, default=10, help="Maximum number of points to return")
+    get_parser.set_defaults(func=cmd_get)
+    
+    # List fields command
+    list_fields_parser = subparsers.add_parser("list-fields", help="List all payload field names")
+    list_fields_parser.set_defaults(func=cmd_list_fields)
+    
+    # List titles command
+    list_titles_parser = subparsers.add_parser("list-titles", help="List unique URLs with titles")
+    list_titles_parser.add_argument("--limit", type=int, default=50, help="Maximum number of URLs to return")
+    list_titles_parser.set_defaults(func=cmd_list_titles)
+    
+    # Count chunks by base_url command
+    count_parser = subparsers.add_parser("count-chunks", help="Count chunks by base URL (case-insensitive)")
+    count_parser.add_argument("--base-url-lower", type=str, required=True, 
+                            dest="base_url",  # Store in args.base_url for backward compatibility
+                            help="Base URL to count chunks for (will be converted to lowercase)")
+    count_parser.set_defaults(func=count_chunks_by_base_url)
+    
+    # Export command
+    export_parser = subparsers.add_parser("export", help="Export collection to JSONL file")
+    export_parser.add_argument("-f", "--file", type=str, default="docs-index-seed.jsonl",
+                              help="Output filename (saved in data/ directory)")
+    export_parser.set_defaults(func=cmd_export)
+    
+    # Truncate command
+    truncate_parser = subparsers.add_parser("truncate", help="Delete all points in a collection")
+    truncate_parser.set_defaults(func=cmd_truncate)
+    
+    # Delete command
+    delete_parser = subparsers.add_parser("delete", help="Delete points by filter or ID")
+    delete_parser.add_argument("--field", type=str, help="Payload field to filter on")
+    delete_parser.add_argument("--value", type=str, help="Value to match in the specified field")
+    delete_parser.add_argument("--ids", nargs="+", help="List of point IDs to delete")
+    delete_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    delete_parser.set_defaults(func=cmd_delete)
+    
+    return parser
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.get:
-        # Show example usage when missing both field/value and limit
-        if not args.field and args.value is None and args.limit is None:
-            print("Usage examples for --get:")
-            print("  Retrieve all points (limit optional):")
-            print("    python qdrant_scripts/qdrant_ops.py --get --limit 50")
-            print("  Retrieve points filtered by payload field/value:")
-            print("    python qdrant_scripts/qdrant_ops.py --get --field source --value wikipedia --limit 10")
-        return cmd_get(args)
+    if not hasattr(args, 'func'):
+        # No command provided, show help
+        parser.print_help()
+        return 1
 
-    if args.list_fields:
-        print("Usage example for --list-fields:")
-        print("  python qdrant_scripts/qdrant_ops.py --list-fields")
-        return cmd_list_fields(args)
-
-    if args.list_titles:
-        print("Usage example for --list-titles:")
-        print("  python qdrant_scripts/qdrant_ops.py --list-titles --limit 100")
-        return cmd_list_titles(args)
-
-    if args.truncate:
-        return cmd_truncate(args)
-
-    if args.export:
-        return cmd_export(args)
-
-    if args.delete:
-        # Either --ids or (--field and --value)
-        if args.ids or (args.field and args.value is not None):
-            return cmd_delete(args)
-        print("--delete requires either --ids or both --field and --value, e.g.:")
-        print("  python qdrant_scripts/qdrant_ops.py --delete --field source --value wikipedia")
-        print("  or")
-        print("  python qdrant_scripts/qdrant_ops.py --delete --ids 101 102 103")
-        return 2
-
-    parser.print_help()
-    return 0
+    try:
+        return args.func(args)
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

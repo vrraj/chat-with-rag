@@ -46,6 +46,16 @@
       "url": "https://appalachiantrail.org/wp-content/uploads/2020/07/appalachian-trail-day-hikes-1.pdf",
       "doc_type": "pdf",
       "skip_sections": []
+    },
+    {
+      "url": "file:///app/data/pdf-files-for-upload/<your-file.pdf>",
+      "doc_type": "pdf",
+      "skip_sections": [
+        "References",
+        "External links",
+        "See also",
+        "Further reading"
+      ]
     }
   ],
   "max_chunks": 100,

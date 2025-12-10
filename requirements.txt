@@ -3,8 +3,10 @@ pydantic-settings==2.1.0
 python-dotenv==1.0.0
 fastapi==0.109.0
 uvicorn==0.27.0
-PyPDF2==3.0.1
-PyMuPDF==1.24.8
+#PyPDF2==3.0.1
+#PyMuPDF>=1.26.6
+# Let PyMuPDF float to whatever pymupdf4llm wants
+pymupdf4llm>=0.2.0
 openai>=1.50.0
 trafilatura==1.12.2
 beautifulsoup4==4.12.2

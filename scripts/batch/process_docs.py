@@ -460,7 +460,7 @@ def create_sample_input_file() -> None:
                 "skip_sections": []
             },
             {
-                "url": "file:///path/to/your/local/file.pdf",
+                "url": "file:///app/data/pdf-files-for-upload/<your-file.pdf>",
                 "doc_type": "pdf",
                 "skip_sections": ["References", "External links", "See also", "Further reading"]
             }

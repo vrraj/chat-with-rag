@@ -1,5 +1,7 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
+![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
+
 A full end‑to‑end RAG system that ingests PDFs, webpages, and internal documentation, converts them into searchable embeddings, and lets you chat with your knowledge base using real‑time retrieval. The platform also supports tool integration and extensible API‑driven connectors, enabling live data augmentation from external systems, internal services, or custom enterprise workflows.
 
 ## ✨ Features
@@ -24,7 +26,9 @@ The system offers a complete pipeline for document-to-chat capabilities:
   - **Context Control & Cost Management:** Conversation chain context is highly configurable:
     - Set the number of **raw tail turns** and **summary turns** and **Token limits** to be included in the context. This allows users to strike an optimal balance between conversational history and token cost management.
   - **Real-Time Observability (SSE):** The UI provides real-time Server-Sent Events (SSE) showing the progress of the entire RAG flow (Query Rewrite, Retrieval, Reranking, Summarizer, Tool calling, Inference) for transparency.
-  - **Per-Stage Cost Metrics:** Calculates **tokens and cost for every component** of the RAG pipeline and provides **total conversation metrics** for granular budget tracking.
+  - **Per-Stage Cost Metrics:** Calculates **tokens and cost for every component** of the RAG pipeline and provides 
+ - **Extensible Tool Calling:** Includes example tools (`get_nearby_airports`, `get_weather`) and supports adding custom API-driven tools for live data..
+  - **Total Conversation Metrics:** Provides **total conversation metrics** for granular budget tracking.
   - **Final Response:** Final responses across multiple documents with citations. 
 
 ## System Requirements
@@ -91,6 +95,8 @@ Start Qdrant and the web app. Pulls **qdrant image** from dockerhub if not alrea
 make start
 
 ```
+**Note for macOS Users:**
+The make start command is configured to automatically launch the Docker Desktop application if it is not already running. The script will pause briefly while waiting for the Docker daemon to initialize before starting the containers.
 
 1.2 (Optional, last) **Seed sample data**
 After seeding data open the **View Documents** page in the frontend UI — it displays the complete dataset loaded into Qdrant.
@@ -224,6 +230,18 @@ USER: what is the weather forecast for mount whitney
 ASSISTANT:Mount Whitney, California — 28 Oct  High: 7.2 °C (45 °F)....
 Tools Used: get_weather
 
+##  Multi-Turn RAG + Tool Calling Demo
+
+Below is a real conversation demonstrating:
+
+- Multi-turn context retention  
+- Retrieval + rewrite + rerank  
+- Automatic tool invocation (`get_nearby_airports`)  
+- Weather queries over prior tool results  
+- Final synthesis combining retrieval + tool calls  
+- Per-stage cost and token metrics  
+
+<img src="images/multi-turn-conversation-chain.png" width="100%" />
 ## Batch Ingestion
 
 The system supports batch processing of multiple documents (PDFs, web pages, MediaWiki) with the following directory structure and requirements:

@@ -222,7 +222,7 @@ def _make_rerank_prompt(query: str, cand_texts: List[str], chunk_size: int) -> s
     """Build a compact rerank prompt identical to existing inline versions."""
     return (
         "You are a reranker. Given a user query and N candidate snippets, return the indices "
-        "of the snippets in strictly decreasing relevance order. Return ONLY a JSON array of integers. "
+        "of the snippets in strictly decreasing relevance order. Crucially, ensure the top results cover distinct facets of the topic and minimize redundancy. Return ONLY a JSON array of integers. "
         "No prose, no code fences, no extra text. Example: [3,0,1].\n\n"
         f"Query: {query}\n\nCandidates (index: text excerpt):\n"
         + "\n".join([f"[{i}] {t[:chunk_size]}" for i, t in enumerate(cand_texts)])
@@ -453,16 +453,17 @@ def _summarize_messages_with_cache(
     Returns: (summary_text, from_cache, usage_dict_or_none)
     """
     # Log current cache size for observability
-    try:
-        total_bytes = 0
+    if logger.isEnabledFor(logging.DEBUG):
         try:
-            total_bytes = sum(len(v.encode('utf-8')) for v in cache.values())
+            total_bytes = 0
+            try:
+                total_bytes = sum(len(v.encode('utf-8')) for v in cache.values())
+            except Exception:
+                # Fallback to character count if encoding fails
+                total_bytes = sum(len(v) for v in cache.values())
+            logger.debug("%s Cache size: %d entries, %d bytes", log_prefix, len(cache), total_bytes)
         except Exception:
-            # Fallback to character count if encoding fails
-            total_bytes = sum(len(v) for v in cache.values())
-        logger.info("%s Cache size: %d entries, %d bytes", log_prefix, len(cache), total_bytes)
-    except Exception:
-        pass
+            pass
     try:
         if not messages:
             return "", True, None
@@ -900,7 +901,7 @@ def build_rewrite_prompt(tail_messages: List[Dict[str, str]] | None, summary_tex
     The model is instructed to return JSON only and to keep the original if ambiguous.
     """
     parts: List[str] = []
-    parts.append("Rewrite the user's latest question so it is self-contained using only the recent conversation.\n")
+    parts.append("Rewrite the user's latest question so it is self-contained using only the recent conversation and important keywords from latest question is included \n")
     parts.append("If the reference is ambiguous or cannot be resolved from the conversation, return the original question unchanged.\n")
     parts.append("Return strictly the following JSON (no extra text, no explanations):\n")
     parts.append('{"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}\n\n')
@@ -1029,13 +1030,14 @@ class ChatManager:
             limit = limit or int(settings.top_k)
             score_threshold = float(score_threshold if score_threshold is not None else settings.score_threshold)
             logger.debug("Qdrant search using limit=%s, score_threshold=%s", limit, score_threshold)
+            # Use HNSW for faster search and Exact = False for faster search
             results = self.qdrant_db.search_similar(
                 query=query,
                 limit=int(limit),
                 score_threshold=float(score_threshold),
                 with_vectors=False,
                 with_payload=True,
-                exact=True,
+                exact=getattr(settings, "exact_match", False),
             )
             logger.debug("Qdrant search returned %d results", len(results))
             if results:
@@ -1305,22 +1307,22 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         top_k = int(getattr(settings_obj, "top_k", 8))
         score_threshold = float(getattr(settings_obj, "score_threshold", 0.0))
 
-    # Stage: Query Rewrite
-    try:
-        logger.info("[PIPELINE] emit stage: Query Rewrite")
-        emit_stage(req_id, "Query Rewrite")
-    except Exception:
-        pass
+    # Stage: Query Rewrite 
     # --- Optional query rewrite (kept simple; only if both flag + heuristic)
     effective_query = message
     # Clarification control (may be set during rewrite decision)
     need_clarify = False
     clarify_reason = ""
     clarify_options: List[str] = []
-    if enable_query_rewrite:
+    # Rewrite only after first turn by checking history
+    if enable_query_rewrite and history:
+        try:
+            logger.info("[PIPELINE] emit stage: Query Rewrite")
+            emit_stage(req_id, "Query Rewrite")
+        except Exception:
+            pass
         try:
             heur = should_rewrite(message)
-            logger.debug("[REWRITE] (%s) enabled=%s should_rewrite=%s", log_origin, True, heur)
             if not heur:
                 try:
                     rewrite_display.update({"triggered": False, "accepted": False, "reason": "heuristic_false"})
@@ -1758,11 +1760,11 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     # --- Inference decode params
     temperature = _pick(params, ["temperature", "inference_temperature", "INFERENCE_TEMPERATURE"], getattr(settings_obj, "inference_temperature", 0.7))
-    max_out = _pick(params, ["max_output_tokens", "max_inference_output_tokens", "MAX_INFERENCE_OUTPUT_TOKENS"], getattr(settings_obj, "max_inference_output_tokens", 500))
+    max_out = _pick(params, ["max_output_tokens", "max_inference_output_tokens", "MAX_INFERENCE_OUTPUT_TOKENS"], getattr(settings_obj, "max_inference_output_tokens", 300))
     top_p = _pick(params, ["top_p", "inference_top_p", "INFERENCE_TOP_P"], getattr(settings_obj, "inference_top_p", None))
 
     # Stage: Inference API call
-    # --- Inference API call
+    # --- Inference API call - Orchestrater stage with Tool Calls
     logger.info("[PIPELINE] emit stage: Generating Response")
     emit_stage(req_id, "Generating Response")
     _kwargs_inf: Dict[str, Any] = {
@@ -1800,16 +1802,16 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         m.record_stage("inference", model=_kwargs_inf["model"], usage=usage_inf)
 
     # Stage: Tool Calls
-    # --- Tool Calls
+    # --- Tool Calls - Single pass thru all tools required
     # Optional tool loop (bounded for safety)
     
     answer_override: str | None = None
     used_tools: List[str] = []
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
-        logger.info("[PIPELINE] emit stage: Tool Calls")
+        
         emit_stage(req_id, "Tool Calls")
         try:
-            max_loops = 2
+            max_loops = getattr(settings_obj, "max_tool_passes", 2)
             loops = 0
             while loops < max_loops:
                 tool_calls = extract_tool_calls(resp_inf)
@@ -1820,6 +1822,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     name = call.get("name") or ""
                     call_id = call.get("id") or call.get("tool_call_id")
                     args = parse_tool_args(call.get("args"))
+                    logger.debug("[PIPELINE] emit stage: Tool Calls %s", name)
+                    emit_stage(req_id, f"Calling Tool: {name}")
                     executor = get_executor_fn(name)
                     if not executor:
                         result_text = f"Tool '{name}' is not available."
@@ -1858,9 +1862,10 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         _kwargs_synth = {
                             "model": getattr(settings_obj, "tools_synthesis_model", _kwargs_inf["model"]),
                             "input": synth_prompt,
-                            "max_output_tokens": int(getattr(settings_obj, "tools_synthesis_max_output_tokens", 256)),
-                            "temperature": float(getattr(settings_obj, "tools_synthesis_temperature", 0.2)),
+                            "max_output_tokens": int(max_out),
+                            "temperature": float(temperature),
                         }
+                        # Final Inference with Tools Synthesis (if tools are required for response)
                         resp_synth = get_client_fn().responses.create(**_kwargs_synth)
                         combined = _extract_text_from_responses(resp_synth).strip()
                         answer_override = combined if combined else (rag_draft + "\n\n--- Live data ---\n" + tools_text)

@@ -3,18 +3,19 @@ const DEFAULT_CONFIG = {
     html: {
         maxChunks: 0,
         skipSections: ["References", "External links", "See also", "Further reading"],
-        estimate: false,
+        estimate: true,
         forceDelete: false
     },
     pdf: {
         maxChunks: 0,
-        estimate: false,
+        skipSections: ["References", "External links", "Further reading", "Notes"],
+        estimate: true,
         forceDelete: false
     },
     mediawiki: {
         maxChunks: 0,
         skipSections: ["References", "External links", "See also", "Further reading"],
-        estimate: false,
+        estimate: true,
         forceDelete: false,
         apiUrl: "https://en.wikipedia.org/w/api.php",
         userAgent: "WebsiteChatAgent/0.1 (contact@example.com)"
@@ -25,7 +26,7 @@ const DEFAULT_CONFIG = {
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
 // Form element references
-let pdfUrlInput, pdfFileInput, pdfMaxChunksInput, pdfEstimateToggle, pdfForceDelete, pdfIndexBtn, pdfProgress;
+let pdfUrlInput, pdfFileInput, pdfMaxChunksInput, pdfSkipSectionsInput, pdfEstimateToggle, pdfForceDelete, pdfIndexBtn, pdfProgress;
 let mwUrlInput, mwMaxChunksInput, mwSkipSectionsInput, mwApiUrlInput, mwUAInput, mwEstimateToggle, mwForceDelete, mwIndexBtn, mwProgress;
 let htmlUrlInput, htmlMaxChunksInput, htmlSkipSectionsInput, htmlEstimateToggle, htmlForceDelete, htmlIndexBtn, htmlProgress;
 
@@ -35,6 +36,7 @@ function initializeElements() {
     pdfUrlInput = document.getElementById('pdfUrl');
     pdfFileInput = document.getElementById('pdfFile');
     pdfMaxChunksInput = document.getElementById('pdfMaxChunks');
+    pdfSkipSectionsInput = document.getElementById('pdfSkipSections');
     pdfEstimateToggle = document.getElementById('pdfEstimateToggle');
     pdfForceDelete = document.getElementById('pdfForceDelete');
     pdfIndexBtn = document.getElementById('pdfIndexBtn');
@@ -74,6 +76,9 @@ function applyConfigToUI() {
         
         // PDF Form
         if (pdfMaxChunksInput) pdfMaxChunksInput.value = appConfig.pdf.maxChunks;
+        if (pdfSkipSectionsInput && Array.isArray(appConfig.pdf.skipSections)) {
+            pdfSkipSectionsInput.value = appConfig.pdf.skipSections.join(', ');
+        }
         if (pdfEstimateToggle) pdfEstimateToggle.checked = appConfig.pdf.estimate;
         if (pdfForceDelete) pdfForceDelete.checked = appConfig.pdf.forceDelete;
         
@@ -150,12 +155,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             const maxChunks = parseInt(pdfMaxChunksInput?.value || '0', 10) || 0;
             const forceDelete = !!(pdfForceDelete && pdfForceDelete.checked);
             const estimate = !!(pdfEstimateToggle && pdfEstimateToggle.checked);
+            const skipRaw = (pdfSkipSectionsInput?.value || '').trim();
+            const skipSections = skipRaw ? skipRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
 
             if (!file && !url) {
                 alert('Provide either a PDF URL or upload a file.');
                 return;
             }
-
+           // if (file) {
+           //     alert(`PDF indexing started for file: ${file.name}`);
+           // }   else if (url) {
+           //      alert(`PDF indexing started for URL: ${url}`);
+           // }
+           
             // For file uploads, read as base64
             let fileBase64;
             if (file) {
@@ -170,9 +182,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const requestBody = {
                 url: url || undefined,
                 file: fileBase64,
+                filename: file ? file.name : undefined,
                 max_chunks: maxChunks,
                 force_delete: forceDelete,
-                estimate: estimate
+                estimate: estimate,
+                skip_sections: skipSections
             };
 
             const resp = await fetch('/pdf', {

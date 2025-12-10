@@ -164,7 +164,7 @@
       "skip_sections": []
     },
     {
-      "url": "file:///path/to/your/local/file.pdf",
+      "url": "file:///app/data/pdf-files-for-upload/your-file.pdf",
       "doc_type": "pdf",
       "skip_sections": []
     }
@@ -542,7 +542,9 @@
     }
 
     function toggleSample() {
-      sampleSection.classList.toggle('hidden');
+      const isHidden = sampleSection.classList.toggle('hidden');
+      const viewSampleBtn = document.getElementById('viewSampleBtn');
+      viewSampleBtn.textContent = isHidden ? 'View Sample' : 'Close Sample';
     }
 
     function copySampleToClipboard() {

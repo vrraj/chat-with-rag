@@ -721,8 +721,61 @@ These targets automatically connect to Qdrant using the configured `QDRANT_HOST`
 
 | Target | Description |
 | :--- | :--- |
+
+
 | `make qdrant-backup` | Creates a compressed archive (`.tar.gz`) of the local `qdrant_storage/` bind mount directory. |
 | `make my-ip` | Utility to retrieve the current machine's local IP address, useful for connecting to the application from other devices on the same network. |
+
+
+## Qdrant Operations CLI
+
+In addition to the Makefile targets, the repository includes a Python-based Qdrant operations CLI located at `qdrant_scripts/qdrant_ops.py`. This utility provides a simple administrative surface over the active collection and is useful for inspection, backup, and safe maintenance.
+
+Supported operations include:
+
+- **Inspect points and payloads** using filters (e.g., by `source` or `base_url`).
+- **List fields and titles** to understand the payload schema and document coverage.
+- **Count chunks** for a given base URL to see how many segments a document produced.
+- **Export a collection** to JSONL for backup or seeding into another environment.
+- **Truncate a collection** while preserving its configuration (distance, vector size, payload schema).
+- **Delete points** by id or by payload filter, with interactive confirmation for destructive actions.
+
+Example invocations:
+
+```bash
+# List distinct payload fields
+python qdrant_scripts/qdrant_ops.py list-fields
+
+# List document titles (with an optional limit)
+python qdrant_scripts/qdrant_ops.py list-titles --limit 50
+
+# Count chunks for a specific base URL
+python qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://en.wikipedia.org/wiki/Mont_Blanc"
+
+# Export the active collection to a JSONL file under data/
+python qdrant_scripts/qdrant_ops.py export -f docs-index-export.jsonl
+
+# Safely truncate the active collection (interactive confirmation)
+python qdrant_scripts/qdrant_ops.py truncate
+```
+
+This CLI complements the Makefile targets by providing more granular and scriptable control over the Qdrant collection, and it can be extended with additional commands as operational needs evolve.
+
+
+
+## Automated Quality Checks (CI Workflow)
+
+The repository includes a lightweight Continuous Integration (CI) workflow to provide fast feedback on code health without pulling in the full Docker/Qdrant stack.
+
+- **Workflow location:** `.github/workflows/python-ci.yml`
+- **Triggers:** Runs on every `push` and `pull_request` to the repository.
+- **Environment:** Uses `ubuntu-latest` with Python 3.10.
+- **Dependency caching:** Caches the pip directory based on the hash of `requirements.txt` to speed up repeated runs.
+- **Checks performed:**
+  - Installs dependencies via `pip install -r requirements.txt`.
+  - Runs `python -m compileall backend scripts qdrant_scripts` to perform a syntax-level compile of all project Python code.
+
+This CI workflow is intentionally minimal: it validates that dependencies install and that all Python modules compile successfully, while keeping runs fast and avoiding the need to start Docker, Qdrant, or external services. It serves as a basic quality gate and a foundation that teams can extend with additional tests, type checking, or linting as needed.
 
 
 ## Browser Compatibility: Secure Context Requirement

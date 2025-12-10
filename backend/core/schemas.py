@@ -105,6 +105,10 @@ class PDFInput(BaseModel):
         None,
         description="PDF file content (base64 encoded) for direct upload"
     )
+    filename: Optional[str] = Field(
+        None,
+        description="Original filename of the uploaded PDF"
+    )
     url: Optional[str] = Field(
         None,
         description="URL of the PDF to download and process"
@@ -120,6 +124,10 @@ class PDFInput(BaseModel):
     estimate: Optional[bool] = Field(
         False,
         description="If true, return planned chunk count without indexing"
+    )
+    skip_sections: List[str] = Field(
+        default_factory=lambda: ["References", "External Links", "Further reading", "Notes", "See Also"],
+        description="List of section titles to skip (case-insensitive)."
     )
 
 ## Consolidated PDF schema handled via /pdf endpoint with form fields; URL-only schema removed

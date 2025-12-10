@@ -38,8 +38,6 @@ def clean_mediawiki_text(text: str) -> str:
     text = re.sub(r'\{\|.*?\|\}', '', text, flags=re.DOTALL)
     # Remove MediaWiki magic words
     text = re.sub(r'__\w+__', '', text)
-    # Remove occurrences like 'thumb|...' that are not inside brackets or templates
-    text = re.sub(r'thumb\|[^\n]*', '', text)
     return text
 
 def _wiki_get(params: Dict, api_url: str, ua: str) -> Response:
@@ -116,7 +114,6 @@ class MediaWikiExtractor:
                 ".mw-references-wrap",
                 ".navbox",
                 ".infobox",
-                "table",
                 "figure",
                 "style",
                 "script",
@@ -132,6 +129,7 @@ class MediaWikiExtractor:
         wikicode = mwparserfromhell.parse(wikitext)
         payloads = []
         section_index = 0
+        subsection_index = 0  # Track subsection index
 
         _sections = wikicode.get_sections(include_lead=True, levels=[2])
         logger.debug("Wiki: top-level sections (incl lead)=%d", len(_sections))
@@ -141,6 +139,7 @@ class MediaWikiExtractor:
             section_title = None
             subsection_title = None
             subsubsection_title = None
+            subsection_index = 0  # Reset subsection index for each section
 
             for node in top_section.nodes:
                 if isinstance(node, mwparserfromhell.nodes.Heading):
@@ -157,9 +156,11 @@ class MediaWikiExtractor:
                             subsection_title = None
                             subsubsection_title = None
                             continue
+                        subsection_index = 0  # Reset subsection index for new section
                         subsection_title = None
                         subsubsection_title = None
                     elif level == 3:
+                        subsection_index += 1  # Increment for new subsection
                         subsection_title = title
                         subsubsection_title = None
                     elif level == 4:
@@ -168,11 +169,14 @@ class MediaWikiExtractor:
                     if current_text:
                         payloads.extend(self._chunk_payload(
                             " ".join(current_text), url,
-                            section_title, subsection_title, subsubsection_title, section_index
+                            section_title, subsection_title, subsubsection_title, 
+                            section_index, subsection_index if level >= 3 else 0
                         ))
                         current_text = []
                         if settings.debug_verbose:
-                            logger.debug("Wiki: flushed text at level=%d", level)
+                            logger.debug("Wiki: flushed text at level=%d, section=%s, subsection=%s, subsection_idx=%s", 
+                                      level, section_title, subsection_title, 
+                                      subsection_index if level >= 3 else 0)
                 else:
                     current_text.append(str(node))
             if settings.debug_verbose:
@@ -183,21 +187,69 @@ class MediaWikiExtractor:
             if current_text:
                 payloads.extend(self._chunk_payload(
                     "\n".join(current_text), url,
-                    section_title, subsection_title, subsubsection_title, section_index
+                    section_title, subsection_title, subsubsection_title, 
+                    section_index, subsection_index if subsection_title else 0
                 ))
             section_index += 1
 
         #logger.info("Wiki: parsed url=%s payloads=%d", url, len(payloads))
         return payloads
 
-    def _chunk_payload(self, text, url, section, subsection, subsubsection, section_index):
+    def _chunk_payload(self, text, url, section, subsection, subsubsection, section_index, subsection_index=0):
+        # DEBUG: trace the Surveys / *century* pipeline (temporary, safe to remove later)
+        is_surveys_century = (
+            settings.debug_verbose
+            and section is not None
+            and subsection is not None
+            and isinstance(section, str)
+            and isinstance(subsection, str)
+            and "surveys" in section.lower()
+            and "century" in subsection.lower()
+        )
+        if is_surveys_century:
+            preview_in = (text or "")[:200].replace("\n", " ")
+            logger.debug(
+                "Chunk DEBUG (raw) section=%r subsection=%r len=%d preview=%r",
+                section,
+                subsection,
+                len(text or ""),
+                preview_in,
+            )
+
+        # 1) Strip wikitext markup
         text = mwparserfromhell.parse(text).strip_code().strip()
+        if is_surveys_century:
+            preview_after_strip = (text or "")[:200].replace("\n", " ")
+            logger.debug(
+                "Chunk DEBUG (after strip_code) len=%d preview=%r",
+                len(text or ""),
+                preview_after_strip,
+            )
+
         if not text:
             return []
 
+        # 2) Clean mediawiki-specific noise (File:, refs, etc.)
         text = clean_mediawiki_text(text)
+        if is_surveys_century:
+            preview_after_clean = (text or "")[:200].replace("\n", " ")
+            logger.debug(
+                "Chunk DEBUG (after clean_mediawiki_text) len=%d preview=%r",
+                len(text or ""),
+                preview_after_clean,
+            )
+
+        # 3) Split into chunks
         chunks = self.splitter.split_text(text)
         total_chunks = len(chunks)
+        if is_surveys_century:
+            logger.debug(
+                "Chunk DEBUG (split) produced %d chunks for section=%r subsection=%r",
+                total_chunks,
+                section,
+                subsection,
+            )
+
         if section is None:
             section = "Lead"
             # logger.debug(f"[DEBUG] Assigning 'Lead' to section for URL: {url}")
@@ -215,7 +267,7 @@ class MediaWikiExtractor:
             "document_type": "mediawiki",  # New standard field
             "source": url,
             "section_index": section_index,
-            "subsection_index": None,
+            "subsection_index": subsection_index if subsection_index is not None else 0,
             "title": title,
             "description": description
         } for idx, chunk in enumerate(chunks)]
@@ -298,8 +350,7 @@ class MediaWikiExtractor:
         return r.text
 
     def _walk_parsoid_sections(self, html: str, base_url: str, skip_sections: Optional[List[str]]) -> List[Dict]:
-        """Walk Parsoid HTML, group content by h2/h3/h4, and emit payloads.
-        h2 → section, h3 → subsection, h4+ → subsubsection. Use heading ids for anchors.
+        """Walk Parsoid HTML, group content by section markers, and emit payloads.
         """
         #logger.debug("Wiki: walk parsoid sections start")
         soup = BeautifulSoup(html or "", "html.parser")
@@ -308,21 +359,41 @@ class MediaWikiExtractor:
         payloads: List[Dict] = []
         section_index_counter = 0  # Lead = 0; first h2 = 1
 
-        # Handle Lead: all content before the first h2
-        first_h2 = root.find("h2")
-        if first_h2:
-            lead_nodes = []
-            for sib in first_h2.find_previous_siblings():
-                # previous_siblings goes backwards; we actually want content before first h2
-                pass  # Parsoid rarely has significant prose before first h2 inside #mw-content-text
-            # Simpler: collect from start up to first_h2 by iterating next siblings of a fake cursor
-            cursor = root.contents[0] if root.contents else None
-            collected_html = []
-            for node in list(root.children):
-                if getattr(node, 'name', None) == 'h2':
-                    break
-                collected_html.append(str(node))
-            lead_text = self._html_to_text("".join(collected_html))
+        # Parsoid HTML is structured as <section data-mw-section-id="..."> blocks.
+        # We treat section-id 0 as Lead, and all subsequent section-ids as
+        # content sections keyed by their first heading (h2–h6).
+        sections = root.find_all("section", attrs={"data-mw-section-id": True})
+        if not sections:
+            # If Parsoid sections are not present, raise so the caller can fall
+            # back to the action_api flow.
+            raise RuntimeError("Parsoid HTML does not contain section markers")
+        # DEBUG: Parsoid section inventory (safe to remove after troubleshooting Everest/Surveys).
+        if settings.debug_verbose:
+            try:
+                logger.debug(
+                    "Wiki: parsoid found %d sections for base_url=%s",
+                    len(sections),
+                    base_url,
+                )
+                for sec in sections:
+                    sec_id_dbg = sec.get("data-mw-section-id")
+                    heading_dbg = sec.find(["h2", "h3", "h4", "h5", "h6"])
+                    heading_txt_dbg = (
+                        heading_dbg.get_text(" ").strip() if heading_dbg else "<no heading>"
+                    )
+                    logger.debug(
+                        "Wiki: parsoid section id=%s heading=%s",
+                        sec_id_dbg,
+                        heading_txt_dbg[:120],
+                    )
+            except Exception as dbg_exc:
+                logger.debug("Wiki: parsoid debug section inventory failed: %s", dbg_exc)
+
+        # Handle lead (data-mw-section-id="0") if present.
+        lead_section = root.find("section", attrs={"data-mw-section-id": "0"})
+        if lead_section is not None:
+            lead_html = "".join(str(child) for child in lead_section.contents)
+            lead_text = self._html_to_text(lead_html)
             if lead_text and (not skip_sections or not any(s.lower() == "lead" for s in skip_sections)):
                 payloads.extend(self._chunk_payload(
                     lead_text,
@@ -333,40 +404,96 @@ class MediaWikiExtractor:
                     section_index=0,
                 ))
 
-        # Iterate all h2/h3/h4 headings in order
         current_h2 = None
         current_h3 = None
+        subsection_index_counter = 0
+        current_subsection_index = None
+        current_level = None  # Track last explicit heading level for heading-less sections
 
-        for h in root.find_all(["h2", "h3", "h4"]):
-            level = int(h.name[1])  # 2, 3, or 4
-            title = h.get_text(" ").strip()
-            anchor = h.get("id") or ""
+        # Walk non-lead sections in order of their data-mw-section-id
+        def _section_id(sec) -> int:
+            try:
+                return int(sec.get("data-mw-section-id", "0"))
+            except ValueError:
+                return 0
 
-            # Skip filtered h2 sections (and implicitly their children)
+        for sec in sorted(sections, key=_section_id):
+            sec_id = sec.get("data-mw-section-id")
+            if sec_id == "0":
+                continue  # Lead already handled
+
+            # Detect heading inside this <section>
+            heading = sec.find(["h2", "h3", "h4", "h5", "h6"])
+            if heading is not None:
+                # Normal case: section starts with a heading
+                try:
+                    level = int(heading.name[1])
+                except (TypeError, ValueError):
+                    continue
+                title = heading.get_text(" ").strip()
+                anchor = heading.get("id") or sec.get("id") or ""
+                current_level = level  # Remember for heading-less continuation sections
+            else:
+                # Heading-less section: treat as continuation of previous heading
+                if current_h2 is None and current_h3 is None:
+                    continue  # No context to attach this to
+                level = current_level if current_level is not None else 2
+                title = current_h3 or current_h2 or ""
+                anchor = sec.get("id") or ""
+
+            # Skip filtered h2 sections
             if level == 2 and skip_sections and any(title.lower() == s.lower() for s in skip_sections):
-                current_h2 = None
-                current_h3 = None
-                # advance until the next h2 of same/higher level by just continuing; children won't be emitted
                 continue
 
+            # Update heading state
             if level == 2:
                 current_h2 = title
                 current_h3 = None
                 section_index_counter += 1
+                subsection_index_counter = 0
+                current_subsection_index = None
             elif level == 3:
                 current_h3 = title
-            # level >= 4 → subsubsection title is `title`
+                subsection_index_counter += 1
+                current_subsection_index = subsection_index_counter
+            else:
+                # deeper levels reuse current H2/H3 context
+                pass
 
-            # Collect content until the next heading of same or higher level
-            collected = []
-            for sib in h.next_siblings:
-                name = getattr(sib, 'name', None)
-                if name in ("h2", "h3", "h4"):
-                    # Stop at next heading
-                    break
-                collected.append(str(sib))
+            # Collect content for this section: everything inside the <section>
+            # except the heading node itself and any nested subsection <section>
+            # blocks (those have their own data-mw-section-id and will be
+            # processed separately).
+            collected_html = []
+            for child in sec.contents:
+                if child is heading:
+                    continue
+                # Skip nested subsection sections entirely to avoid duplicating
+                # their content under the parent heading.
+                if getattr(child, "name", None) == "section" and child.has_attr("data-mw-section-id"):
+                    continue
+                collected_html.append(str(child))
 
-            text = self._html_to_text("".join(collected))
+            text = self._html_to_text("".join(collected_html))
+
+            # DEBUG: show a snippet of extracted text for Surveys / *century* to
+            # understand why some subsections (e.g., "20th century") might be
+            # missing or empty. Safe to remove after troubleshooting.
+            if settings.debug_verbose and ("Surveys" in title or "century" in title):
+                preview = (text or "")[:200].replace("\n", " ")
+                logger.debug(
+                    "Wiki: parsoid DEBUG text preview for %s (sec_id=%s): %r",
+                    title,
+                    sec_id,
+                    preview,
+                )
+                if not text:
+                    logger.debug(
+                        "Wiki: parsoid DEBUG text is empty for %s (sec_id=%s); section will be skipped.",
+                        title,
+                        sec_id,
+                    )
+
             if not text:
                 continue
 
@@ -375,16 +502,19 @@ class MediaWikiExtractor:
                 sub_title = None
                 subsub_title = None
                 sec_index = section_index_counter
+                subsec_index = 0
             elif level == 3:
                 sec_title = current_h2
                 sub_title = current_h3
                 subsub_title = None
                 sec_index = section_index_counter
+                subsec_index = current_subsection_index
             else:  # level >= 4
                 sec_title = current_h2
                 sub_title = current_h3
                 subsub_title = title
                 sec_index = section_index_counter
+                subsec_index = current_subsection_index
 
             section_url = f"{base_url}#{anchor}" if anchor else base_url
             payloads.extend(self._chunk_payload(
@@ -394,6 +524,7 @@ class MediaWikiExtractor:
                 sub_title,
                 subsub_title,
                 sec_index,
+                subsec_index,
             ))
 
         logger.info("Wiki: parsoid sections payloads=%d", len(payloads))
@@ -431,10 +562,21 @@ class MediaWikiExtractor:
 
         # Dispatch by mode
         if self.wiki_mode == "parsoid":
-            html_doc = self._fetch_parsoid_html(self.page_title)
-            payloads = self._walk_parsoid_sections(html_doc, url, skip_sections)
-            logger.info("Wiki: parsed via parsoid url=%s payloads=%d", url, len(payloads))
-            return payloads
+            # Try Parsoid first; if it fails (e.g., REST not enabled on a corporate wiki),
+            # fall back to the existing action_api per-section behavior.
+            try:
+                html_doc = self._fetch_parsoid_html(self.page_title)
+                payloads = self._walk_parsoid_sections(html_doc, url, skip_sections)
+                logger.info("Wiki: parsed via parsoid url=%s payloads=%d", url, len(payloads))
+                return payloads
+            except Exception as e:
+                logger.warning(
+                    "Wiki: parsoid mode failed for title=%s url=%s; falling back to action_api. Error: %s",
+                    self.page_title,
+                    url,
+                    e,
+                )
+                # Continue into the action_api section tree flow below.
 
         # Default: action_api per-section flow (existing behavior)
         sections = self._fetch_section_tree(self.page_title)
@@ -457,6 +599,8 @@ class MediaWikiExtractor:
         current_h2 = None
         current_h3 = None
         section_index_counter = 0  # Lead = 0; first h2 = 1
+        subsection_index_counter = 0
+        current_subsection_index = None
 
         for sec in sections:
             try:
@@ -470,14 +614,20 @@ class MediaWikiExtractor:
             if level == 2 and skip_sections and any(line.lower() == s.lower() for s in skip_sections):
                 current_h2 = None
                 current_h3 = None
+                subsection_index_counter = 0
+                current_subsection_index = None
                 continue
 
             if level == 2:
                 current_h2 = line
                 current_h3 = None
                 section_index_counter += 1
+                subsection_index_counter = 0
+                current_subsection_index = None
             elif level == 3:
                 current_h3 = line
+                subsection_index_counter += 1
+                current_subsection_index = subsection_index_counter
             # level >= 4 → handled below
 
             if not idx:
@@ -492,16 +642,19 @@ class MediaWikiExtractor:
                 subsection_title = None
                 subsubsection_title = None
                 sec_index = section_index_counter
+                subsec_index = 0
             elif level == 3:
                 section_title = current_h2
                 subsection_title = current_h3
                 subsubsection_title = None
                 sec_index = section_index_counter
+                subsec_index = current_subsection_index
             else:  # >= 4
                 section_title = current_h2
                 subsection_title = current_h3
                 subsubsection_title = line
                 sec_index = section_index_counter
+                subsec_index = current_subsection_index
 
             section_url = f"{url}#{anchor}" if anchor else url
             payloads.extend(self._chunk_payload(
@@ -511,6 +664,7 @@ class MediaWikiExtractor:
                 subsection_title,
                 subsubsection_title,
                 sec_index,
+                subsec_index,
             ))
 
         #logger.info("Wiki: parsed via action_api url=%s payloads=%d", url, len(payloads))

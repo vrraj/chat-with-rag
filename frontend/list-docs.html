@@ -3,16 +3,50 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>View Documents in Database</title>
+  <title>List Documents in Database</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <!-- CSS for the copy button and URL cell -->
+<style>
+  .copy-btn {
+    display: none;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 2px 6px;
+    background: #7be936;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    z-index: 2;
+  }
+  .copy-btn:hover {
+    background: #d1d5db;
+  }
+  .url-cell {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding-right: 60px; /* Space for the copy button */
+  }
+  .url-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .url-cell:hover .copy-btn {
+    display: inline-block;
+  }
+</style>
 </head>
 <body class="bg-gray-100">
   <div class="container mx-auto px-4 py-8">
-    <h1 class="text-3xl font-bold mb-6">View Documents in Database</h1>
+    <h1 class="text-3xl font-bold mb-6">List Documents in Database</h1>
     <div class="bg-white rounded-lg shadow-md p-6 mb-6">
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div class="md:col-span-2">
-          <label class="block text-sm font-medium text-gray-700">Filter by URL (optional)</label>
+          <label class="block text-sm font-medium text-gray-700">Filter by URL (optional) - exact match</label>
           <input id="debugUrl" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://example.com/path" />
         </div>
         <div>
@@ -126,7 +160,7 @@
         // Header
         const thead = document.createElement('thead');
         const headerRow = document.createElement('tr');
-        ['Base URL', 'Title', 'Total Chunks', 'Updated At', 'Documents'].forEach(h => {
+        ['Base URL', 'Title', 'Chunks', 'Updated At'].forEach(h => {
           const th = document.createElement('th');
           th.textContent = h;
           th.style.textAlign = 'left';
@@ -146,19 +180,45 @@
         const tbody = document.createElement('tbody');
         aggregatedItems.slice(0, maxDisplay).forEach(d => {
           const tr = document.createElement('tr');
-          [d.base_url, d.title, d.total_chunks, d.updated_at, d.count].forEach(val => {
+          // Show the actual chunk count (d.count) in the Chunks column instead of total_chunks
+          [d.base_url, d.title, d.count, d.updated_at].forEach(val => {
             const td = document.createElement('td');
             td.textContent = val != null ? val : '';
             td.style.padding = '6px 8px';
             // Add title attribute for full URL on hover
-            if (val === d.base_url) {
-              td.title = d.base_url;
-              td.style.maxWidth = '500px';  // Increased from 300px to 500px
-              td.style.overflow = 'hidden';
-              td.style.textOverflow = 'ellipsis';
-              td.style.whiteSpace = 'nowrap';
-              td.style.width = 'auto';  // Allow column to grow
-            }
+            // Update the URL cell creation in the fetchDebug function
+if (val === d.base_url) {
+  const container = document.createElement('div');
+  container.className = 'url-cell';
+  container.style.maxWidth = '500px';
+  
+  const urlSpan = document.createElement('span');
+  urlSpan.className = 'url-text';
+  urlSpan.textContent = val != null ? val : '';
+  urlSpan.title = d.base_url;
+  container.appendChild(urlSpan);
+  
+  const copyBtn = document.createElement('span');
+  copyBtn.className = 'copy-btn';
+  copyBtn.textContent = 'Copy';
+  copyBtn.onclick = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(d.base_url).then(() => {
+      const originalText = copyBtn.textContent;
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => {
+        copyBtn.textContent = originalText;
+      }, 2000);
+    });
+  };
+  container.appendChild(copyBtn);
+  
+  td.textContent = '';
+  td.appendChild(container);
+  td.style.padding = '6px 8px';
+  td.style.position = 'relative';
+  td.style.overflow = 'hidden';
+}
             tr.appendChild(td);
           });
           tbody.appendChild(tr);

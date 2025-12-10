@@ -28,7 +28,7 @@ class HTMLConfig(BaseModel):
     """Configuration for HTML content indexing."""
     max_chunks: int = 0  # 0 means no limit
     skip_sections: List[str] = ["References", "External links", "See also", "Further reading"]
-    estimate: bool = False
+    estimate: bool = True
     force_delete: bool = False
     
     @field_validator('max_chunks')
@@ -40,7 +40,7 @@ class HTMLConfig(BaseModel):
 class PDFConfig(BaseModel):
     """Configuration for PDF content indexing."""
     max_chunks: int = 0
-    estimate: bool = False
+    estimate: bool = True
     force_delete: bool = False
     
     @field_validator('max_chunks')
@@ -53,7 +53,7 @@ class MediaWikiConfig(BaseModel):
     """Configuration for MediaWiki API interactions."""
     max_chunks: int = 0
     skip_sections: List[str] = ["References", "External links", "See also", "Further reading"]
-    estimate: bool = False
+    estimate: bool = True
     force_delete: bool = False
     api_url: str = "https://en.wikipedia.org/w/api.php"
     user_agent: str = "WebsiteChatAgent/0.1 (contact@example.com)"
@@ -100,9 +100,10 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333 # 
     vector_size: int = 1536  # use with text-embedding-3-small
+    exact_match: bool = False # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
     collection_name: str = "document_index"  # collection name
-    top_k: int = 15
-    score_threshold: float = .35
+    top_k: int = 8 # Recall: Number of documents to retrieve
+    score_threshold: float = .35 # Precision: Minimum vector similarity score
 
     # embedding_model: str = "text-embedding-3-large"  # use for higher-quality embeddings
     # vector_size: int = 3072  # use with text-embedding-3-large
@@ -143,8 +144,8 @@ class Settings(BaseSettings):
     # Summarizer model configuration
     summarizer_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
     # Cost configuration (USD per 1,000,000 tokens)
-    summarizer_max_input_tokens :int = 800  # set an int to limit input tokens
-    summarizer_max_output_tokens: int = 800
+    summarizer_max_input_tokens :int = 400  # set an int to limit input tokens
+    summarizer_max_output_tokens: int = 200 # set an int to limit output tokens
     summarizer_cost_per_MM_tokens_input: float = 0.15
     summarizer_cost_per_MM_tokens_output: float = 0.60
     summarizer_cost_per_MM_tokens_cached_input: float = 0.075
@@ -170,6 +171,7 @@ class Settings(BaseSettings):
     inference_reasoning_model: bool = False
     # Tool use (agent-style) default: off; UI can override per-turn
     enable_tools: bool = True
+    max_tool_passes: int = 2 # Maximum number of tool loops to be called from LLM generated output for a single turn. This it to prevent runaway tool calls
 
     # Maximum number of tokens from prior chat messages to retain when building
     # conversation context (used when trimming history in backend/main.py).
@@ -218,6 +220,8 @@ class Settings(BaseSettings):
     mediawiki_chunk_size: int = 500
     mediawiki_chunk_overlap: int = 100
     
+    # switch between legacy pymupdf extractor vs new pymupdf4llm extractor
+    pdf_use_pymupdf4llm: bool = True
 
     # Wikipedia / MediaWiki API configuration
     wiki_api_url: str = "https://en.wikipedia.org/w/api.php"

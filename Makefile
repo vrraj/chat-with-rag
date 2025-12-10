@@ -1,3 +1,5 @@
+.PHONY: start stop start-hybrid stop-hybrid bg-start-chat start-debug start-docker start-qdrant stop-qdrant qdrant-logs qdrant-restart qdrant-status qdrant-collections qdrant-info qdrant-info-json qdrant-indexes
+
 # Qdrant endpoint configuration. Prefer environment overrides; else fall back to backend Settings; else sensible defaults
 ifndef QDRANT_HOST	
 QDRANT_HOST := $(shell python3 -c "from backend.core.config import Settings; print(Settings().qdrant_host)" 2>/dev/null || echo localhost)
@@ -5,6 +7,7 @@ endif
 ifndef QDRANT_PORT
 QDRANT_PORT := $(shell python3 -c "from backend.core.config import Settings; print(Settings().qdrant_port)" 2>/dev/null || echo 6333)
 endif
+UNAME := $(shell uname)
 
 # Start the full application stack using Docker Compose
 # - Qdrant database runs in a Docker container
@@ -14,6 +17,31 @@ endif
 # Usage: make start
 start:
 	echo "Starting Qdrant and Chat application..."
+# Set the command based on the OS using Make directives
+
+	@echo "Detected OS: $(UNAME)"
+
+	# Use standard shell 'if' syntax within the indented recipe block
+	# Semicolons and backslashes are required to format the 'if' statement correctly on one logical line for make
+	@if [ "$(UNAME)" = "Darwin" ]; then \
+		echo "Opening Docker Desktop GUI on Mac."; \
+		open -a Docker || open -a "Docker Desktop"; \
+	else \
+		echo "No GUI launch command for non-Darwin OS."; \
+	fi
+
+# ---  WAIT LOOP to check of Docket is up  ---
+	@echo "Waiting for Docker daemon to become available..."
+	@TIMEOUT=30; while ! docker info >/dev/null 2>&1; do \
+		if [ $$TIMEOUT -le 0 ]; then \
+			echo "Error: Docker daemon did not start within 30 seconds. Please check Docker Desktop application."; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+		TIMEOUT=$$(($$TIMEOUT - 1)); \
+	done
+	@echo "Docker daemon is running. Proceeding with compose."
+
 	@if ! (ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | grep -q "$(QDRANT_HOST)" || [ "$(QDRANT_HOST)" = "localhost" ]); then \
 		echo "Error: QDRANT_HOST ($(QDRANT_HOST)) does not resolve to this machine. Please set QDRANT_HOST to this machine's IP address."; \
 		exit 1; \

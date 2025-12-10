@@ -14,38 +14,43 @@
 
         <!-- Quick Links (moved to top) -->
         <div class="bg-white rounded-lg shadow-md p-6 mb-8">
-            <div class="flex gap-4">
-                <button 
-                    id="openChatBtn" 
-                    class="px-4 py-2 rounded-md text-white bg-purple-600 hover:bg-purple-700 w-fit whitespace-nowrap"
-                    title="Interactive Q&A using retrieved documents assisted with tool calling">
-                    Chat with your data (RAG)
-                </button>
-                <div class="h-8 w-px bg-gray-300 mx-2 self-center"></div>
-                <button 
-                    id="openListDocsBtn" 
-                    class="px-4 py-2 rounded-md text-white bg-yellow-500 hover:bg-yellow-600 w-fit whitespace-nowrap"
-                    title="See indexed / embedded documents with chunk counts. The RAG chat is related to documents retrieved from this database">
-                    View Documents in Database
-                </button>
-                <button 
-                    id="openSearchBtn" 
-                    class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700 w-fit whitespace-nowrap"
-                    title="Search documents using semantic similarity">
-                    Document Search - Vector Similarity
-                </button>
-                <button 
-                    id="openDebugBtn" 
-                    class="px-4 py-2 rounded-md text-white bg-yellow-600 hover:bg-yellow-700 w-fit whitespace-nowrap"
-                    title="View raw document payloads and metadata. Inspect document structure and content">
-                    View Document Payload JSON
-                </button>
-                <button
-                    id="openDeleteIndexBtn"
-                    class="px-4 py-2 rounded-md text-white bg-red-600 hover:bg-red-700 w-fit whitespace-nowrap"
-                    title="Preview and delete indexed chunks for a given document URL (matches base_url_lower)">
-                    Delete Documents by URL
-                </button>
+            <div class="flex flex-nowrap gap-2 md:gap-4 items-center overflow-x-auto pb-2">
+                <div class="flex items-center gap-2 md:gap-4 shrink-0">
+                    <button 
+                        id="openChatBtn" 
+                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-purple-600 hover:bg-purple-700 whitespace-nowrap"
+                        title="Interactive Q&A using retrieved documents assisted with tool calling">
+                        Chat with your data (RAG)
+                    </button>
+                    <div class="h-10 w-px bg-gray-700 hidden md:block"></div>
+                </div>
+                <div class="flex items-center gap-2 md:gap-4 shrink-0">
+                    <button 
+                        id="openListDocsBtn" 
+                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-yellow-500 hover:bg-yellow-600 whitespace-nowrap"
+                        title="See indexed / embedded documents with chunk counts. The RAG chat is related to documents retrieved from this database">
+                        List Documents
+                    </button>
+                    <button 
+                        id="openSearchBtn" 
+                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-green-600 hover:bg-green-700 whitespace-nowrap"
+                        title="Search documents using semantic similarity">
+                        Search Documents
+                    </button>
+                    <button 
+                        id="openDebugBtn" 
+                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-yellow-600 hover:bg-yellow-700 whitespace-nowrap"
+                        title="View raw document payloads and metadata. Inspect document structure and content">
+                        View Metadata
+                    </button>
+                    <div class="h-10 w-px bg-gray-700 hidden md:block"></div>
+                    <button
+                        id="openDeleteIndexBtn"
+                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-red-600 hover:bg-red-700 whitespace-nowrap"
+                        title="Preview and delete indexed chunks for a given document URL (matches base_url_lower)">
+                        Delete Documents
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -74,14 +79,14 @@
             <!-- PDF Input Section (URL or Upload) -->
             <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
                 <div>
-                    <h2 class="text-2xl font-semibold mb-4">Index PDF (URL or Upload)</h2>
+                    <h2 class="text-2xl font-semibold mb-4">Index PDF (url or file upload)</h2>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700">PDF URL</label>
                             <input type="text" id="pdfUrl" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="https://example.com/file.pdf">
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700">Or upload PDF</label>
+                            <label class="block text-sm font-bol text-gray-700">Or upload PDF</label>
                             <input type="file" id="pdfFile" accept="application/pdf" class="mt-1 block w-full text-sm text-gray-700" />
                         </div>
                         <div>
@@ -89,10 +94,14 @@
                             <input type="number" id="pdfMaxChunks" value="0" min="0" class="mt-1 w-28 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
                             <p class="text-xs text-gray-500 mt-1">0 = no user limit</p>
                         </div>
+                        <div class="md:col-span-2">
+                            <label class="block text-sm font-medium text-gray-700">Skip sections (comma-separated)</label>
+                            <input type="text" id="pdfSkipSections" value="References, External Links, Further reading, Notes" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                        </div>
                     </div>
                     <div class="mt-4 flex items-center gap-8">
                         <label class="inline-flex items-center">
-                            <input type="checkbox" id="pdfEstimateToggle" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                            <input type="checkbox" id="pdfEstimateToggle" checked class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                             <span class="ml-2 text-sm text-gray-700">Estimate only (no indexing)</span>
                         </label>
                         <label class="inline-flex items-center">
@@ -110,7 +119,7 @@
             <!-- MediaWiki Index Section -->
             <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
                 <div>
-                    <h2 class="text-2xl font-semibold mb-4">Index MediaWiki Page (e.g., Wikipedia)</h2>
+                    <h2 class="text-2xl font-semibold mb-4">Index MediaWiki Content (e.g., Wikipedia)</h2>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700">MediaWiki URL</label>
@@ -136,7 +145,7 @@
                     </div>
                     <div class="mt-4 flex items-center gap-8">
                         <label class="inline-flex items-center">
-                            <input type="checkbox" id="mwEstimateToggle" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            <input type="checkbox" id="mwEstimateToggle" checked class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                             <span class="ml-2 text-sm text-gray-700">Estimate only (no indexing)</span>
                         </label>
                         <label class="inline-flex items-center">
@@ -154,7 +163,7 @@
             <!-- HTML Index Section (single URL) -->
             <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
                 <div>
-                    <h2 class="text-2xl font-semibold mb-4">Index HTML Page</h2>
+                    <h2 class="text-2xl font-semibold mb-4">Index HTML Content</h2>
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div class="md:col-span-2">
                             <label class="block text-sm font-medium text-gray-700">Page URL</label>
@@ -173,7 +182,7 @@
                     </div>
                     <div class="mt-4 flex items-center gap-8">
                         <label class="inline-flex items-center">
-                            <input type="checkbox" id="htmlEstimateToggle" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            <input type="checkbox" id="htmlEstimateToggle" checked class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                             <span class="ml-2 text-sm text-gray-700">Estimate only (no indexing)</span>
                         </label>
                         <label class="inline-flex items-center">
