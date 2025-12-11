@@ -40,6 +40,9 @@ class HTMLConfig(BaseModel):
 class PDFConfig(BaseModel):
     """Configuration for PDF content indexing."""
     max_chunks: int = 0
+    # Default sections to skip when indexing PDFs, kept in sync with frontend defaults
+    # and PDFInput schema where possible.
+    skip_sections: List[str] = ["References", "External links", "Further reading", "Notes", "See Also", "Acknowledgements"]
     estimate: bool = True
     force_delete: bool = False
     
@@ -222,6 +225,7 @@ class Settings(BaseSettings):
     
     # switch between legacy pymupdf extractor vs new pymupdf4llm extractor
     pdf_use_pymupdf4llm: bool = True
+    header_footer_filter: bool = True
 
     # Wikipedia / MediaWiki API configuration
     wiki_api_url: str = "https://en.wikipedia.org/w/api.php"

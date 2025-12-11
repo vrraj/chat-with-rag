@@ -234,7 +234,7 @@ class PDFExtractor:
             logger.exception("PDF: fetch failed for %s: %s", url, e)
             raise
 
-    def _read_pages_pymupdf(self, pdf_bytes: bytes) -> Tuple[Optional[str], List[Tuple[int, List[Dict]]]]:
+    def _read_pages_pymupdf(self, pdf_bytes: bytes) -> Tuple[Optional[str], List[Tuple[int, List[Dict]]], List[str], List[str]]:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         title = doc.metadata.get("title") if doc.metadata else None
         #logger.debug("PDF: opened via PyMuPDF pages=%d title=%s", len(doc), title)
@@ -300,7 +300,198 @@ class PDFExtractor:
                     is_bold = any((s.get("flags", 0) & 2) != 0 for s in filtered)  # flag 2 indicates bold in many cases
                     lines.append({"text": text, "size": max_size, "bold": is_bold, "infobox": is_infobox_block})
             pages.append((i + 1, lines))
-        return title, pages
+
+        header_meta: List[str] = []
+        footer_meta: List[str] = []
+
+        # Optionally detect and scrub repeating header/footer lines across pages.
+        if self.header_footer_filter and pages:
+            header_patterns, footer_patterns = self._detect_header_footer_patterns(pages)
+            pages, header_meta, footer_meta = self._filter_header_footer_lines(pages, header_patterns, footer_patterns)
+
+        return title, pages, header_meta, footer_meta
+
+    def _normalize_header_footer_text(self, text: str) -> str:
+        """Normalize header/footer candidate text for stable comparison.
+
+        We collapse whitespace and strip the result so that minor spacing
+        differences across pages do not block detection.
+        """
+        return re.sub(r"\s+", " ", (text or "")).strip()
+
+    def _detect_header_footer_patterns(
+        self,
+        pages: List[Tuple[int, List[Dict]]],
+        max_lines: int = 3,
+    ) -> Tuple[set, set]:
+        """Detect repeating header/footer lines across pages.
+
+        Strategy:
+        - For each page, take the first/last few non-empty lines as candidates.
+        - Normalize their text and count occurrences.
+        - Any candidate that appears on a majority of pages (or at least twice)
+          is treated as a header/footer pattern.
+        """
+        header_counts: Dict[str, int] = {}
+        footer_counts: Dict[str, int] = {}
+        total_pages = len(pages)
+
+        for _, lines in pages:
+            # Collect indices of non-empty lines for this page.
+            nonempty_indices = [i for i, l in enumerate(lines) if (l.get("text") or "").strip()]
+            if not nonempty_indices:
+                continue
+            # First / last few non-empty lines are candidates.
+            header_idxs = nonempty_indices[:max_lines]
+            footer_idxs = nonempty_indices[-max_lines:]
+
+            for idx in header_idxs:
+                txt = (lines[idx].get("text") or "").strip()
+                norm = self._normalize_header_footer_text(txt)
+                # Skip very short candidates (likely just bare page numbers).
+                if len(norm) < 5:
+                    continue
+                header_counts[norm] = header_counts.get(norm, 0) + 1
+
+            for idx in footer_idxs:
+                txt = (lines[idx].get("text") or "").strip()
+                norm = self._normalize_header_footer_text(txt)
+                if len(norm) < 5:
+                    continue
+                footer_counts[norm] = footer_counts.get(norm, 0) + 1
+
+        # Consider a line a true header/footer if it occurs on most pages, or at least twice.
+        min_pages = max(2, int(0.6 * total_pages)) if total_pages else 0
+        header_patterns = {t for t, c in header_counts.items() if c >= min_pages}
+        footer_patterns = {t for t, c in footer_counts.items() if c >= min_pages}
+        return header_patterns, footer_patterns
+
+    def _filter_header_footer_lines(
+        self,
+        pages: List[Tuple[int, List[Dict]]],
+        header_patterns: set,
+        footer_patterns: set,
+        max_lines: int = 3,
+    ) -> Tuple[List[Tuple[int, List[Dict]]], List[str], List[str]]:
+        """Remove repeating header/footer lines from pages, but keep one copy.
+
+        We:
+        - Identify header/footer candidate lines per page (first/last few).
+        - If a candidate's normalized text matches a detected pattern, we keep
+          it the first time we see it and drop subsequent occurrences.
+        - Return the filtered pages and the list of header/footer texts we kept,
+          which can be stored in payload metadata.
+        """
+        seen_headers: set = set()
+        seen_footers: set = set()
+        header_meta: List[str] = []
+        footer_meta: List[str] = []
+        new_pages: List[Tuple[int, List[Dict]]] = []
+
+        for _, (page_num, lines) in enumerate(pages):
+            # Determine non-empty line indices for this page.
+            nonempty_indices = [i for i, l in enumerate(lines) if (l.get("text") or "").strip()]
+            header_idxs = set(nonempty_indices[:max_lines])
+            footer_idxs = set(nonempty_indices[-max_lines:])
+            filtered_lines: List[Dict] = []
+
+            for idx, line in enumerate(lines):
+                txt = (line.get("text") or "").strip()
+                if not txt:
+                    filtered_lines.append(line)
+                    continue
+
+                norm = self._normalize_header_footer_text(txt)
+
+                # Header candidate
+                if idx in header_idxs and norm in header_patterns:
+                    if norm in seen_headers:
+                        # Drop repeated header line on later pages.
+                        continue
+                    seen_headers.add(norm)
+                    header_meta.append(txt)
+                    filtered_lines.append(line)
+                    continue
+
+                # Footer candidate
+                if idx in footer_idxs and norm in footer_patterns:
+                    if norm in seen_footers:
+                        # Drop repeated footer line on later pages.
+                        continue
+                    seen_footers.add(norm)
+                    footer_meta.append(txt)
+                    filtered_lines.append(line)
+                    continue
+
+                # Regular content line
+                filtered_lines.append(line)
+
+            new_pages.append((page_num, filtered_lines))
+
+        return new_pages, header_meta, footer_meta
+
+    def _looks_like_header_or_footer(
+        self,
+        text: str,
+        header_meta: Optional[List[str]] = None,
+        footer_meta: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Heuristic check to decide if a small markdown block is really just a
+        repeating header / footer instead of real content.
+
+        We deliberately keep this conservative so we don't drop legitimate text:
+        - very short, no sentence-ending punctuation;
+        - contains one of the known header/footer patterns; OR
+        - looks like a doc-id + page-number line (e.g., 'NIR-SiPMs-AN100 3').
+        """
+        if not text:
+            return False
+
+        raw = text.strip()
+        if not raw:
+            return False
+
+        # Normalize whitespace
+        norm = re.sub(r"\s+", " ", raw)
+
+        # If it has sentence punctuation, assume it's real content
+        if any(ch in norm for ch in (".", "?", "!")):
+            return False
+
+        # Very long lines are unlikely to be pure headers/footers
+        if len(norm) > 120:
+            return False
+
+        patterns: List[str] = []
+        if header_meta:
+            patterns.extend([p for p in header_meta if isinstance(p, str)])
+        if footer_meta:
+            patterns.extend([p for p in footer_meta if isinstance(p, str)])
+
+        lowered = norm.lower()
+        for pat in patterns:
+            p = str(pat).strip()
+            if not p:
+                continue
+            pl = p.lower()
+
+            # Exact match to a known header/footer token
+            if lowered == pl:
+                return True
+
+            # Common case: "DocId 3" style footer, or "DocId - 3"
+            if lowered.startswith(pl + " "):
+                tail = lowered[len(pl):].strip()
+                # Very short numeric / rev suffix
+                if len(tail) <= 8 and re.fullmatch(r"[\d\-–rev ]+", tail):
+                    return True
+
+        # Generic "DOCID page-number" pattern without relying on meta text
+        if re.fullmatch(r"[A-Za-z0-9\-_.]+ \d{1,3}", norm):
+            return True
+
+        return False
 
     def _read_pages_pypdf2(self, pdf_bytes: bytes) -> Tuple[Optional[str], List[Tuple[int, List[Dict]]]]:
         reader = PdfReader(BytesIO(pdf_bytes))
@@ -324,7 +515,7 @@ class PDFExtractor:
             pages.append((i + 1, lines))
         return title, pages
 
-    def _read_pages(self, pdf_bytes: bytes) -> Tuple[Optional[str], List[Tuple[int, List[Dict]]]]:
+    def _read_pages(self, pdf_bytes: bytes) -> Tuple[Optional[str], List[Tuple[int, List[Dict]]], List[str], List[str]]:
         return self._read_pages_pymupdf(pdf_bytes)
 
     def _is_heading(self, line: Dict, median_size: float) -> Tuple[int, Optional[str]]:
@@ -352,16 +543,25 @@ class PDFExtractor:
             return 1, s.title()
         return 0, None
 
-    def _chunk_payload(self, text: str, url: str, section: Optional[str], subsection: Optional[str], subsubsection: Optional[str], section_index: int, subsection_index: Optional[int], page_number: Optional[int], doc_title: Optional[str]) -> List[Dict]:
+    def _chunk_payload(
+        self,
+        text: str,
+        url: str,
+        section: Optional[str],
+        subsection: Optional[str],
+        subsubsection: Optional[str],
+        section_index: int,
+        subsection_index: Optional[int],
+        page_number: Optional[int],
+        doc_title: Optional[str],
+        header_meta: Optional[List[str]] = None,
+        footer_meta: Optional[List[str]] = None,
+    ) -> List[Dict]:
         chunks = self.splitter.split_text(text)
         total_chunks = len(chunks)
-        #logger.debug(
-        #    "PDF: chunked section=%s subsection=%s subsub=%s page=%s chunks=%d",
-        #    section or "Lead", subsection, subsubsection, page_number, total_chunks,
-        #)
         payloads = []
         for idx, chunk in enumerate(chunks):
-            payloads.append({
+            payload: Dict[str, object] = {
                 "text": chunk,
                 "section": section or "Lead",
                 "subsection": subsection,
@@ -376,8 +576,27 @@ class PDFExtractor:
                 "title": doc_title,
                 "description": "",
                 "page_number": page_number,
-            })
+            }
+            # Stash document-level header/footer metadata once per payload so that
+            # downstream consumers can inspect it without re-scanning the PDF.
+            if header_meta:
+                payload["document_headers"] = header_meta
+            if footer_meta:
+                payload["document_footers"] = footer_meta
+            payloads.append(payload)
         return payloads
+
+    def _strip_markdown_links(self, text: str) -> str:
+        """
+        Remove inline markdown hyperlinks of the form [label](url) → label.
+        This keeps the human‑readable text while removing noisy URLs that
+        do not help embeddings or retrieval.
+
+        Example:
+            "[Mount Whitney](https://example.com)" → "Mount Whitney"
+        """
+        # Regex: capture [label](url) and replace with label only.
+        return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
 
     def _normalize_text(self, raw: str) -> str:
         """Normalize PDF-extracted text:
@@ -409,6 +628,10 @@ class PDFExtractor:
             }
             for k, v in trans_map.items():
                 raw = raw.replace(k, v)
+
+        # Remove markdown-style inline links (label-only keeps semantics)
+        text_before_strip = raw
+        raw = self._strip_markdown_links(raw)
 
         # Split into paragraphs on blank lines (2+ newlines)
         paragraphs = re.split(r"\n{2,}", raw)
@@ -456,7 +679,7 @@ class PDFExtractor:
 
     def _parse_with_pymupdf(self, url: str, pdf_bytes: bytes) -> List[Dict]:
         #logger.debug("PDF: parsing url=%s", url)
-        doc_title, pages = self._read_pages(pdf_bytes)
+        doc_title, pages, header_meta, footer_meta = self._read_pages(pdf_bytes)
         payloads: List[Dict] = []
         section_index = 0
         subsection_index = 0
@@ -486,6 +709,8 @@ class PDFExtractor:
                             subsection_index if current_subsection else None,
                             current_page,
                             doc_title,
+                            header_meta,
+                            footer_meta,
                         )
                     )
             buffer = []
@@ -556,6 +781,10 @@ class PDFExtractor:
                     "page_number": 1,
                     "infobox": infobox_kv,
                 }
+                if header_meta:
+                    info_payload["document_headers"] = header_meta
+                if footer_meta:
+                    info_payload["document_footers"] = footer_meta
                 payloads.append(info_payload)
                 have_infobox = True
 
@@ -584,6 +813,10 @@ class PDFExtractor:
                         info_p["chunk_index"] = 0
                         info_p["total_chunks"] = 1
                         info_p["infobox"] = infobox_kv
+                        if header_meta:
+                            info_p["document_headers"] = header_meta
+                        if footer_meta:
+                            info_p["document_footers"] = footer_meta
                         infobox_payloads.append(info_p)
                 updated_payloads.append(p)
 
@@ -604,8 +837,10 @@ class PDFExtractor:
         # --- Geometry-based infobox extraction using PyMuPDF ---
         geom_infobox_payload = None
         doc_title = None
+        header_meta: List[str] = []
+        footer_meta: List[str] = []
         try:
-            doc_title, pages = self._read_pages_pymupdf(pdf_bytes)
+            doc_title, pages, header_meta, footer_meta = self._read_pages_pymupdf(pdf_bytes)
             # Collect infobox lines from page 1 (page_num == 1 and line.get("infobox"))
             infobox_lines = []
             for page_num, lines in pages:
@@ -638,6 +873,10 @@ class PDFExtractor:
                     }
                     if infobox_kv:
                         info_payload["infobox"] = infobox_kv
+                    if header_meta:
+                        info_payload["document_headers"] = header_meta
+                    if footer_meta:
+                        info_payload["document_footers"] = footer_meta
                     geom_infobox_payload = info_payload
         except Exception:
             doc_title = None
@@ -709,7 +948,9 @@ class PDFExtractor:
                         section_index,
                         subsection_index if current_subsection else None,
                         page,
-                        doc_title,  # wire doc_title through
+                        doc_title,
+                        header_meta,
+                        footer_meta,
                     )
                 )
 
@@ -719,6 +960,16 @@ class PDFExtractor:
                 # Preserve blank lines inside the local buffer for paragraph detection.
                 if not stripped:
                     local_buffer.append("")
+                    continue
+
+                # Drop header/footer-only lines when filtering is enabled.
+                if self.header_footer_filter and self._looks_like_header_or_footer(
+                    stripped,
+                    header_meta=header_meta,
+                    footer_meta=footer_meta,
+                ):
+                    # We still keep these strings in document_headers / document_footers
+                    # via header_meta/footer_meta, but they don't become content chunks.
                     continue
 
                 # Markdown heading detection (e.g., "# Title", "## Section", "### Subsection").
@@ -827,6 +1078,10 @@ class PDFExtractor:
                 if is_infobox:
                     tbl_payload["infobox"] = infobox_kv
 
+                if header_meta:
+                    tbl_payload["document_headers"] = header_meta
+                if footer_meta:
+                    tbl_payload["document_footers"] = footer_meta
                 payloads.append(tbl_payload)
 
         # At the end, append geometry-based INFOBOX payload if no INFOBOX already present via table extraction

@@ -171,11 +171,22 @@ Each of these stages is implemented as a separate component so that they can evo
 - Does not perform parsing; it only defines the set of inputs that flow into extraction.
 - Can be extended in the future to support automated discovery such as crawling, category-based wiki selection, or file-system monitoring.
 
+
 ### 5. Extraction
 
 - Uses specialized extractors per source type (MediaWiki, HTML, PDF)
 - Normalizes output into a common internal structure (text + structural metadata)
 - Preserves important layout information where possible (headings, sections, paragraphs)
+
+#### 5.1 Source-Specific Extraction Behavior
+
+Although all extractors normalize into the same internal representation, each source type has additional behavior to preserve as much context as possible:
+
+- **MediaWiki pages** – When a Parsoid endpoint is available, the extractor uses it first and falls back to the Action API only when necessary. The ingestion preserves the lead section, heading hierarchy (H1/H2/H3+ mapped into `section` / `subsection` fields), and infobox content. This ensures that wiki pages retain their full structure so that retrieval can reason over specific sections (e.g., Geography → Hydrology) without losing context.
+
+- **PDF documents** – The PDF extractor is layout-aware and attempts to reconstruct headings, sections, tables, and sidebar “infobox”-style panels (such as summary boxes with elevation, prominence, or key parameters). These are mapped into the same `section` / `subsection` schema used for MediaWiki, so mixed corpora of wiki pages and PDFs behave consistently at retrieval time. Where possible, table and infobox content is kept as structured text rather than discarded.
+
+- **HTML pages** – The HTML extractor uses headings and container structure to infer sections and subsections and makes a best effort to capture key information such as hero text, product cards, infobox-style side panels, and tables. The quality of this structure depends on the source HTML following basic best practices (semantic headings, actual text instead of text baked into images, minimal reliance on JavaScript-only rendering). Poorly structured pages are still ingested, but may appear as flatter “Lead-only” documents with less granular section metadata.
 
 ### 6. Chunking & Metadata
 

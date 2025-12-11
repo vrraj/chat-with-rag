@@ -522,22 +522,58 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const chunks = data.chunks_planned ?? 0;
                     const tokens = data.tokens_used ?? 0;
                     const estimatedCost = (tokens * 0.0000001).toFixed(8); // $0.10 per 1M tokens
-                    
+
+                    // Build optional error details from backend (e.g., crawler HTTP errors)
+                    let errorHtml = '';
+                    if (Array.isArray(data.errors) && data.errors.length > 0) {
+                        const items = data.errors.map(err => {
+                            const url = err.url || 'Unknown URL';
+                            const status = (err.status !== undefined && err.status !== null) ? `HTTP ${err.status}` : 'Error';
+                            const msg = err.message || '';
+                            return `<li><span class="font-medium">${url}</span> \u2192 <span class="text-gray-800">${status}</span>${msg ? ` \u2014 ${msg}` : ''}</li>`;
+                        }).join('');
+                        errorHtml = `
+                            <div class="mt-2 text-sm text-red-700">
+                                <div class="font-semibold">Some sources failed during indexing:</div>
+                                <ul class="list-disc ml-5 mt-1">${items}</ul>
+                            </div>
+                        `;
+                    }
+
                     htmlProgress.innerHTML = `
                         <div class="font-semibold text-gray-900">
                             Estimated: ${chunks} chunks | 
                             ~${tokens.toLocaleString()} tokens | 
                             Cost: ~$${estimatedCost}
                         </div>
+                        ${errorHtml}
                     `;
                 }
             } else {
                 const cost = (data.embedding_cost ?? 0);
                 if (htmlProgress) {
+                    // Build optional error details from backend (e.g., crawler HTTP errors)
+                    let errorHtml = '';
+                    if (Array.isArray(data.errors) && data.errors.length > 0) {
+                        const items = data.errors.map(err => {
+                            const url = err.url || 'Unknown URL';
+                            const status = (err.status !== undefined && err.status !== null) ? `HTTP ${err.status}` : 'Error';
+                            const msg = err.message || '';
+                            return `<li><span class="font-medium">${url}</span> \u2192 <span class="text-gray-800">${status}</span>${msg ? ` \u2014 ${msg}` : ''}</li>`;
+                        }).join('');
+                        errorHtml = `
+                            <div class="mt-2 text-sm text-red-700">
+                                <div class="font-semibold">Some sources failed during indexing:</div>
+                                <ul class="list-disc ml-5 mt-1">${items}</ul>
+                            </div>
+                        `;
+                    }
+
                     htmlProgress.innerHTML = `
                         <div class="font-semibold text-gray-900">
                             Done. Vectors: ${data.vectors_indexed ?? 0} | Tokens: ${data.tokens_used ?? 0} | Cost: $${Number(cost).toFixed(6)}
                         </div>
+                        ${errorHtml}
                     `;
                 }
             }

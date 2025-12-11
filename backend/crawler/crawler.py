@@ -27,6 +27,10 @@ class WebCrawler:
             transport=httpx.AsyncHTTPTransport(http2=True)
         )
 
+        # Collect non-fatal per-URL errors (e.g., HTTP 4xx/5xx, request failures)
+        # so callers (like the /index endpoint) can surface them in the UI.
+        self.errors: List[Dict] = []
+
     async def fetch_page(self, url: str) -> str:
         """Fetch a single page content"""
         if not self.force_crawl and url in self.visited_urls:
@@ -57,9 +61,27 @@ class WebCrawler:
             logger.info("Crawler: fetched %s (len=%d)", url, len(response.text or ""))
             return response.text
         except httpx.HTTPStatusError as e:
+            try:
+                status_code = e.response.status_code
+                reason = getattr(e.response, "reason_phrase", str(e))
+            except Exception:
+                status_code = None
+                reason = str(e)
+
+            self.errors.append({
+                "url": url,
+                "status": status_code,
+                "message": reason,
+            })
             logger.warning("Crawler: HTTP error on %s: %s", url, e)
             return ""
         except httpx.RequestError as e:
+            # Network / connection / DNS level errors without an HTTP response
+            self.errors.append({
+                "url": url,
+                "status": None,
+                "message": str(e),
+            })
             logger.error("Crawler: request error on %s: %s", url, e, exc_info=True)
             return ""
 

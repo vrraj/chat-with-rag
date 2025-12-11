@@ -7,7 +7,7 @@ import html as _html
 import trafilatura
 import logging
 from backend.core.config import settings
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from .splitters import TextSplitter
 
 logger = logging.getLogger(__name__)
@@ -82,8 +82,18 @@ class HTMLExtractor:
         )
         self.html_mode = html_mode
         self.drop_selectors = drop_selectors if drop_selectors is not None else [
-            "nav","footer","header",".sidebar",".toc",".infobox",".reference",".references",
-            "table","figure","script","style",
+            "nav",
+            "footer",
+            "header",
+            ".sidebar",
+            ".toc",
+            ".infobox",
+            ".reference",
+            ".references",
+            ".mw-editsection",  # drop inline edit controls (Wikipedia-style) without affecting generic HTML
+            "figure",
+            "script",
+            "style",
         ]
         self.preserve_paragraphs = preserve_paragraphs
         self.normalize_quotes = normalize_quotes
@@ -290,10 +300,51 @@ class HTMLExtractor:
     def _parse_dom(self, html_content: str, url: str, page_title: str, description: str, skip_sections: Optional[List[str]]) -> List[Dict]:
         logger.debug("HTML: parse_dom start")
         soup = BeautifulSoup(html_content, 'html.parser')
+
+        payloads: List[Dict] = []
+        global_idx = 0
+        section_index = 0
+
+        # First, try to extract a generic "infobox" block if present.
+        # This mirrors the behavior of the MediaWiki/PDF extractors by emitting a
+        # dedicated INFOBOX section for high-value summary data (e.g., elevation,
+        # prominence, coordinates). We keep this logic generic so that any element
+        # with class "infobox" (commonly a <table class="infobox">) can be captured,
+        # regardless of the specific page or domain.
+        try:
+            infobox_el = soup.select_one("table.infobox, .infobox")
+        except Exception:
+            infobox_el = None
+
+        if infobox_el is not None:
+            try:
+                raw_infobox_text = infobox_el.get_text(" ", strip=True)
+            except Exception:
+                raw_infobox_text = ""
+            infobox_text = self._normalize(raw_infobox_text)
+            if infobox_text:
+                info_chunks = self._chunk_payload(
+                    infobox_text,
+                    url,
+                    "INFOBOX",
+                    None,
+                    None,
+                    0,
+                    page_title,
+                    description,
+                    global_idx,
+                )
+                payloads.extend(info_chunks)
+                logger.debug("HTML: INFOBOX chunks added=%d", len(info_chunks))
+                global_idx += len(info_chunks)
+
+        # Now apply drop_selectors to remove navigation, footers, and other chrome
+        # (including the infobox itself, which we've already captured above).
         for sel in self.drop_selectors:
             for el in soup.select(sel):
                 el.decompose()
         logger.debug("HTML: drop_selectors applied count=%d selectors", len(self.drop_selectors))
+
         root = (
             soup.select_one(
                 "article,[role=article],main .prose,main .content,main .post,main .article,.article-content,.post-content"
@@ -301,27 +352,39 @@ class HTMLExtractor:
             or soup
         )
 
-        payloads: List[Dict] = []
-        global_idx = 0
-        section_index = 0
-
-        # Lead: gather only "texty" nodes before first h2 to avoid hero/nav chrome
-        first_h2 = root.find('h2')
+        # Lead: gather only "texty" nodes before the first h2 within the chosen root.
+        # This works even when the main content is nested (e.g., Wikipedia-style),
+        # without relying on site-specific classes like `.mw-parser-output`.
+        first_h2 = root.find("h2")
         logger.debug("HTML: first_h2 found=%s", bool(first_h2))
         if first_h2:
-            collected = []
-            allowed = 'p, ul, ol, blockquote, pre, code'
-            for node in list(root.children):
-                if getattr(node, 'name', None) == 'h2':
+            collected: List[str] = []
+            # Treat headings as part of the lead as well so hero titles / taglines
+            # (often marked up with h1/h2/h3) are not silently dropped.
+            allowed_names = {"p", "ul", "ol", "blockquote", "pre", "code", "h1", "h2", "h3"}
+            for el in root.descendants:
+                # Stop as soon as we reach the first h2 in document order
+                if el is first_h2:
                     break
-                # From each pre-h2 sibling, only take text from allowed tags beneath it
-                if hasattr(node, 'select'):
-                    parts = [el.get_text(" ") for el in node.select(allowed)]
-                    if parts:
-                        collected.append(" ".join(parts))
+                name = getattr(el, "name", None)
+                if name in allowed_names:
+                    try:
+                        collected.append(el.get_text(" "))
+                    except Exception:
+                        continue
             lead_text = self._normalize(" ".join(collected))
             if lead_text:
-                chunks = self._chunk_payload(lead_text, url, "Lead", None, None, 0, page_title, description, global_idx)
+                chunks = self._chunk_payload(
+                    lead_text,
+                    url,
+                    "Lead",
+                    None,
+                    None,
+                    0,
+                    page_title,
+                    description,
+                    global_idx,
+                )
                 payloads.extend(chunks)
                 logger.debug("HTML: lead chunks added=%d", len(chunks))
                 global_idx += len(chunks)
@@ -347,14 +410,89 @@ class HTMLExtractor:
                 current_h3 = ttl
                 subsection_counts[section_index] = subsection_counts.get(section_index, 0) + 1
 
-            # collect content until next heading of same/higher level
-            collected_nodes = []
-            for sib in h.next_siblings:
-                nm = getattr(sib, 'name', None)
-                if nm in ('h2','h3','h4'):
-                    break
-                collected_nodes.append(sib.get_text(" ") if hasattr(sib, 'get_text') else str(sib))
+            # collect content until the next heading "block" of same/higher level.
+            # On many sites (including MediaWiki skins), the <h2>/<h3>/<h4> is wrapped
+            # in a container <div> that also holds edit controls. In that case, the
+            # real section paragraphs are siblings of the wrapper, not the <h*> itself.
+            heading_container = h
+            parent = h.parent
+            try:
+                if (
+                    isinstance(parent, Tag)
+                    and parent is not root
+                    and getattr(parent, "name", None) in ("div", "section", "header")
+                ):
+                    # If the parent has exactly this one heading child at this level,
+                    # treat the parent as the logical "heading block" whose siblings
+                    # constitute the section body.
+                    direct_headings = [
+                        child for child in parent.children
+                        if isinstance(child, Tag) and child.name in ("h2", "h3", "h4")
+                    ]
+                    if len(direct_headings) == 1 and direct_headings[0] is h:
+                        heading_container = parent
+            except Exception:
+                # If anything goes wrong, fall back to using the heading itself.
+                heading_container = h
+
+            collected_nodes: List[str] = []
+            for sib in heading_container.next_siblings:
+                # Stop when we reach the next heading container: either a direct
+                # heading tag or any sibling that itself contains an h2/h3/h4.
+                if isinstance(sib, Tag):
+                    nm = getattr(sib, "name", None)
+                    if nm in ("h2", "h3", "h4"):
+                        break
+                    if sib.find(["h2", "h3", "h4"]):
+                        break
+                    try:
+                        collected_nodes.append(sib.get_text(" "))
+                    except Exception:
+                        continue
+                else:
+                    # Text node: keep only non-empty text; whitespace will be
+                    # cleaned up by _normalize().
+                    txt_node = str(sib)
+                    if txt_node.strip():
+                        collected_nodes.append(txt_node)
+
             txt = self._normalize(" ".join(collected_nodes))
+
+            # Fallback: some sites wrap a heading and its body inside a single
+            # container like <div><h3>Title</h3><p>Body...</p></div>. In those
+            # cases, the body is not a sibling of the heading container but a
+            # child. If we failed to collect any text from siblings, try
+            # gathering text from children that appear after the heading.
+            if not txt:
+                inner_nodes: List[str] = []
+                try:
+                    started = False
+                    for child in getattr(heading_container, "children", []):
+                        if child is h:
+                            started = True
+                            continue
+                        if not started:
+                            continue
+                        if isinstance(child, Tag):
+                            nm = getattr(child, "name", None)
+                            if nm in ("h2", "h3", "h4"):
+                                break
+                            if child.find(["h2", "h3", "h4"]):
+                                break
+                            try:
+                                inner_nodes.append(child.get_text(" "))
+                            except Exception:
+                                continue
+                        else:
+                            txt_node = str(child)
+                            if txt_node.strip():
+                                inner_nodes.append(txt_node)
+                except Exception:
+                    inner_nodes = []
+
+                if inner_nodes:
+                    txt = self._normalize(" ".join(inner_nodes))
+
             if settings.debug_verbose:
                 logger.debug("HTML: heading lvl=%d title='%s' text_len=%d", lvl, ttl, len(txt))
             if not txt:

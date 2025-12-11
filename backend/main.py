@@ -281,7 +281,7 @@ async def index_mediawiki_url(
             chunk_overlap=settings.html_chunk_overlap,
             api_url=mediawiki_input.api_url,
             user_agent=mediawiki_input.user_agent,
-            wiki_mode="parsoid" # enable Parsoid first behavior with fallback to Action API
+            wiki_mode="parsoid",  # <- switch from "parsoid" to "action_api". Prioritize Parsoid first behavior with fallback to Action API
         )
         #logger.info("TRACE MW: MediaWikiExtractor init done")
         url = mediawiki_input.url
@@ -453,6 +453,7 @@ async def index_pdf(
             chunk_size=settings.html_chunk_size,
             chunk_overlap=settings.html_chunk_overlap,
             skip_sections=skip_sections,
+            header_footer_filter=getattr(settings, 'header_footer_filter', True),
         )
         # for PDF file upload
         if pdf_input.file:
@@ -730,6 +731,7 @@ async def index_content(url_input: URLInput):
         # Process each URL
         planned_chunks_total = 0
         tokens_total = 0
+        all_errors: List[Dict[str, Any]] = []  # Aggregate non-fatal errors per-URL (e.g., crawler HTTP errors)
         for url in url_input.urls:
             if url_input.doc_type.lower() == "html":
                 crawler = WebCrawler(
@@ -737,6 +739,10 @@ async def index_content(url_input: URLInput):
                     force_crawl=url_input.force_crawl
                 )
                 pages = await crawler.crawl(url, 1)  # Depth 1 for now
+                # Best-effort: if the crawler exposes a collected errors list, merge it into all_errors
+                crawl_errors = getattr(crawler, "errors", None)
+                if isinstance(crawl_errors, list) and crawl_errors:
+                    all_errors.extend(crawl_errors)
                 # logger.debug("Crawled %d page(s) from %s", len(pages), url)
 
                 for page in pages:
@@ -897,14 +903,16 @@ async def index_content(url_input: URLInput):
                 "message": "Estimate only", 
                 "chunks_planned": planned_chunks_total,
                 "tokens_used": tokens_total,
-                "embedding_cost": round(estimated_cost, 8)
+                "embedding_cost": round(estimated_cost, 8),
+                "errors": all_errors,
             }
         embedding_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
         return {
             "message": "Content indexed successfully",
             "vectors_indexed": planned_chunks_total,
             "tokens_used": tokens_total,
-            "embedding_cost": round(embedding_cost, 8)
+            "embedding_cost": round(embedding_cost, 8),
+            "errors": all_errors,
         }
         
     except Exception as e:

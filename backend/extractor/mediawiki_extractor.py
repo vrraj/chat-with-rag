@@ -89,7 +89,7 @@ class MediaWikiExtractor:
         user_agent: Optional[str] = None,
         *,
         # --- MediaWiki toggles ---
-        wiki_mode: str = "action_api",  # or "parsoid"
+        wiki_mode: str = "parsoid",  # or "action_api" . Set in MediaWikiExtractor instance in main.py
         wiki_drop_selectors: Optional[List[str]] = None,
         wiki_preserve_paragraphs: bool = True,
     ):
@@ -105,6 +105,14 @@ class MediaWikiExtractor:
         # wiki_drop_selectors: CSS selectors removed before text extraction
         # wiki_preserve_paragraphs: keep \n\n paragraph breaks (True) vs flatten (False)
         # Toggle defaults
+        # IMPORTANT:
+        # Intentionally drop `.infobox` from the main HTML-to-text extraction.
+        # The MediaWiki extractor now pulls the infobox separately using `_infobox_html_to_text()` and emits a dedicated `section="INFOBOX"` payload.
+        # Leaving `.infobox` here prevents the raw table HTML from leaking into the
+        # Lead section or other prose sections, which would create duplication:
+        #   - INFOBOX chunk (clean key/value format)
+        #   - PLUS the messy table text again in the Lead/prose (undesired)
+        # Do NOT remove `.infobox` unless you explicitly want the infobox table embedded in the prose — which will break current RAG assumptions.
         self.wiki_mode = wiki_mode
         self.wiki_drop_selectors = (
             wiki_drop_selectors
@@ -330,6 +338,92 @@ class MediaWikiExtractor:
             logger.debug("Wiki: html_to_text len=%d", len(text.strip()))
         return text.strip()
 
+    def _infobox_html_to_text(self, infobox) -> str:
+        """
+        Convert a MediaWiki infobox <table> into a compact key/value style text block.
+
+        This is used only for a dedicated INFOBOX section so that we preserve
+        structured summary data (e.g., Elevation, Prominence, Location) without
+        polluting the main section prose. The regular _html_to_text() path
+        still drops .infobox elements via self.wiki_drop_selectors.
+        """
+        if infobox is None:
+            return ""
+
+        lines: List[str] = []
+
+        try:
+            # Many infoboxes have a title in a <caption> or in a top-level <th>.
+            caption = infobox.find("caption")
+            if caption:
+                title_text = caption.get_text(" ", strip=True)
+                if title_text:
+                    lines.append(title_text)
+
+            # Walk table rows and extract simple "Label: Value" pairs.
+            for row in infobox.find_all("tr"):
+                header = row.find("th")
+                data = row.find("td")
+                # Title-only rows may have just <th> without <td>.
+                if header and not data:
+                    title_text = header.get_text(" ", strip=True)
+                    if title_text:
+                        lines.append(title_text)
+                    continue
+
+                if header and data:
+                    label = header.get_text(" ", strip=True)
+                    value = data.get_text(" ", strip=True)
+                    if label and value:
+                        lines.append(f"{label}: {value}")
+                    continue
+        except Exception as exc:
+            # On any parsing error, fall back to plain text extraction.
+            raw = infobox.get_text(" ", strip=True)
+            raw = re.sub(r"\u00a0", " ", raw)
+            raw = re.sub(r"[\t ]+", " ", raw)
+            return raw.strip()
+
+        text = "\n".join(lines)
+        text = re.sub(r"\u00a0", " ", text)
+        text = re.sub(r"[\t ]+", " ", text)
+        return text.strip()
+
+    def _truncate_html_at_first_subheading(self, html: str, max_level: int = 2) -> str:
+        """
+        In Action API mode, the HTML for a given section level (e.g. an h2 section)
+        often includes the full content of its deeper subsections (h3, h4, ...).
+        This helper trims the HTML at the first heading deeper than `max_level`,
+        so that parent sections don't "consume" the text of their child sections.
+
+        For example:
+          - max_level=2 → keep only content up to the first h3/h4/h5/h6.
+          - max_level=3 → keep only content up to the first h4/h5/h6.
+        """
+        if not html:
+            return html
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            # If parsing fails for any reason, fall back to the original HTML.
+            return html
+
+        # Headings deeper than max_level, e.g. ["h3", "h4", "h5", "h6"] for max_level=2.
+        deeper_tags = [f"h{lvl}" for lvl in range(max_level + 1, 7)]
+        first_sub = soup.find(deeper_tags)
+        if not first_sub:
+            # No deeper heading present; nothing to trim.
+            return html
+
+        # Remove the first deeper heading and everything that follows it at the same
+        # root level. This preserves the parent section's own intro content while
+        # allowing child sections to be fetched and chunked separately.
+        for sib in list(first_sub.next_siblings):
+            sib.extract()
+        first_sub.extract()
+
+        return str(soup)
+
     def _rest_base_from_api_url(self) -> str:
         """Derive REST base (scheme://host) from the configured Action API URL."""
         try:
@@ -358,6 +452,29 @@ class MediaWikiExtractor:
 
         payloads: List[Dict] = []
         section_index_counter = 0  # Lead = 0; first h2 = 1
+
+        # Optional: extract the first infobox as a dedicated INFOBOX section.
+        # We do this BEFORE the main section walk, so that the regular prose
+        # extraction can still safely drop `.infobox` via self.wiki_drop_selectors
+        # without losing the structured summary.
+        try:
+            infobox_chunks: List[Dict] = []
+            infobox = root.select_one(".infobox")
+            if infobox is not None:
+                infobox_text = self._infobox_html_to_text(infobox)
+                if infobox_text:
+                    infobox_chunks = self._chunk_payload(
+                        infobox_text,
+                        base_url,
+                        section="INFOBOX",
+                        subsection=None,
+                        subsubsection=None,
+                        section_index=0,
+                        subsection_index=0,
+                    )
+        except Exception as infobox_exc:
+            logger.debug("Wiki: failed to extract INFOBOX via parsoid: %s", infobox_exc)
+            infobox_chunks = []
 
         # Parsoid HTML is structured as <section data-mw-section-id="..."> blocks.
         # We treat section-id 0 as Lead, and all subsequent section-ids as
@@ -403,6 +520,9 @@ class MediaWikiExtractor:
                     subsubsection=None,
                     section_index=0,
                 ))
+        # Attach INFOBOX payloads (if any) after Lead, but before other sections.
+        if "infobox_chunks" in locals() and infobox_chunks:
+            payloads.extend(infobox_chunks)
 
         current_h2 = None
         current_h3 = None
@@ -565,6 +685,7 @@ class MediaWikiExtractor:
             # Try Parsoid first; if it fails (e.g., REST not enabled on a corporate wiki),
             # fall back to the existing action_api per-section behavior.
             try:
+                logger.debug("Wiki: fetching parsoid HTML for title=%s url=%s", self.page_title, url)
                 html_doc = self._fetch_parsoid_html(self.page_title)
                 payloads = self._walk_parsoid_sections(html_doc, url, skip_sections)
                 logger.info("Wiki: parsed via parsoid url=%s payloads=%d", url, len(payloads))
@@ -583,8 +704,38 @@ class MediaWikiExtractor:
         #logger.debug("Wiki: fetched %d sections via action_api for %s", len(sections), self.page_title)
 
         payloads: List[Dict] = []
-        # Lead content (section=0)
+
+        # Lead content (section=0) + optional INFOBOX extraction from the lead HTML.
+        infobox_chunks: List[Dict] = []
         lead_html = self._fetch_section_html(self.page_title, 0)
+        try:
+            # Attempt to extract the first infobox from the lead HTML as a dedicated INFOBOX section.
+            soup_lead = BeautifulSoup(lead_html or "", "html.parser")
+            infobox = soup_lead.select_one(".infobox")
+            if infobox is not None:
+                infobox_text = self._infobox_html_to_text(infobox)
+                if infobox_text:
+                    infobox_chunks = self._chunk_payload(
+                        infobox_text,
+                        url,
+                        section="INFOBOX",
+                        subsection=None,
+                        subsubsection=None,
+                        section_index=0,
+                        subsection_index=0,
+                    )
+                # Remove the infobox from the lead HTML so it is not duplicated in the main Lead text.
+                infobox.decompose()
+                lead_html = str(soup_lead)
+        except Exception as infobox_exc:
+            logger.debug(
+                "Wiki: failed to extract INFOBOX via action_api lead for title=%s url=%s: %s",
+                self.page_title,
+                url,
+                infobox_exc,
+            )
+            infobox_chunks = []
+
         lead_text = self._html_to_text(lead_html)
         if lead_text and (not skip_sections or not any(s.lower() == "lead" for s in skip_sections)):
             payloads.extend(self._chunk_payload(
@@ -595,6 +746,16 @@ class MediaWikiExtractor:
                 subsubsection=None,
                 section_index=0,
             ))
+
+        # Attach INFOBOX payloads (if any) after Lead, but before other sections.
+        if infobox_chunks:
+            payloads.extend(infobox_chunks)
+
+        # Collect per-section text entries first; we'll de-duplicate parent/child
+        # overlaps (e.g., Geography vs. Hydrology) in a second pass before
+        # chunking. This keeps h2 sections from "swallowing" their h3+ children
+        # when the Action API returns overlapping prose.
+        section_entries: List[Dict] = []
 
         current_h2 = None
         current_h3 = None
@@ -633,6 +794,16 @@ class MediaWikiExtractor:
             if not idx:
                 continue
             html = self._fetch_section_html(self.page_title, int(idx))
+
+            # In Action API mode, an h2 section's HTML typically includes the full
+            # content of its h3+ subsections. To mirror Parsoid behavior (where we
+            # do not duplicate child content under the parent), trim the HTML at
+            # the first deeper heading for h2 and h3 levels.
+            if level == 2:
+                html = self._truncate_html_at_first_subheading(html, max_level=2)
+            elif level == 3:
+                html = self._truncate_html_at_first_subheading(html, max_level=3)
+
             text = self._html_to_text(html)
             if not text:
                 continue
@@ -657,15 +828,124 @@ class MediaWikiExtractor:
                 subsec_index = current_subsection_index
 
             section_url = f"{url}#{anchor}" if anchor else url
-            payloads.extend(self._chunk_payload(
-                text,
-                section_url,
-                section_title,
-                subsection_title,
-                subsubsection_title,
-                sec_index,
-                subsec_index,
-            ))
+            section_entries.append(
+                {
+                    "level": level,
+                    "text": text,
+                    "url": section_url,
+                    "section_title": section_title,
+                    "subsection_title": subsection_title,
+                    "subsubsection_title": subsubsection_title,
+                    "section_index": sec_index,
+                    "subsection_index": subsec_index,
+                }
+            )
+
+        # Second pass: remove child subsection text from their parent sections
+        # when the Action API has returned overlapping prose. For example, this
+        # keeps the h2 "Geography" section from also containing the full text
+        # of its h3 "Hydrology" subsection.
+        for parent in section_entries:
+            parent_level = parent.get("level", 0)
+            if parent_level not in (2, 3):
+                continue
+            for child in section_entries:
+                if child is parent:
+                    continue
+                if child.get("section_index") != parent.get("section_index"):
+                    continue
+                child_level = child.get("level", 0)
+                if child_level <= parent_level:
+                    continue
+                child_text = (child.get("text") or "").strip()
+                if not child_text:
+                    continue
+                parent_text = parent.get("text") or ""
+                if not parent_text:
+                    continue
+
+                # Many Action API sections for h2 headings (e.g. "Geography")
+                # contain the full body of their h3 children (e.g. "Hydrology")
+                # *without* the child heading, while the child section's text
+                # includes the heading label (e.g. "Hydrology [ edit ] ...").
+                # This means `child_text` will not be an exact substring of the
+                # parent, even though most of the body is duplicated.
+                #
+                # To handle this, we:
+                #   1) Try an exact match on the full child text.
+                #   2) Try a "body" variant with any leading "Heading [ edit ]"
+                #      prefix stripped off.
+                #   3) As a last resort, try matching the tail of the body
+                #      (last N chars), which is usually enough to uniquely
+                #      identify the duplicated prose within the parent.
+                #
+                # Each match simply removes the duplicated span from the parent
+                # text; any surrounding whitespace clean-up is handled later by
+                # the splitter / normalisation.
+                def _strip_leading_heading_prefix(text: str, child_dict: Dict) -> str:
+                    t = text.lstrip()
+                    sub = (child_dict.get("subsection_title") or "").strip()
+                    if sub and t.startswith(sub):
+                        # Remove the leading subsection title and any trailing
+                        # "[ edit ]" boilerplate if present.
+                        t = t[len(sub):].lstrip()
+                        if t.startswith("[ edit ]"):
+                            t = t[len("[ edit ]"):].lstrip()
+                    return t
+
+                replaced = False
+
+                # 1) Exact full-text match
+                if child_text and child_text in parent_text:
+                    parent["text"] = parent_text.replace(child_text, " ")
+                    replaced = True
+                else:
+                    # 2) Try the body-only variant without heading prefix
+                    body = _strip_leading_heading_prefix(child_text, child)
+                    if body and body in parent_text:
+                        parent["text"] = parent_text.replace(body, " ")
+                        replaced = True
+                    else:
+                        # 3) Tail heuristic: use the last N characters of the body
+                        # (typically enough to capture the main duplicated prose
+                        # while being robust to minor leading differences).
+                        if body:
+                            candidate = body
+                        else:
+                            candidate = child_text
+                        tail_len = 400
+                        if len(candidate) > 80:  # avoid ultra-short, noisy matches
+                            tail = candidate[-min(tail_len, len(candidate)):]
+                            if tail in parent_text:
+                                parent["text"] = parent_text.replace(tail, " ")
+                                replaced = True
+
+                if settings.debug_verbose and replaced:
+                    logger.debug(
+                        "Wiki: action_api de-duplicated child level=%s (%r) from parent level=%s (%r) for section_index=%s",
+                        child_level,
+                        child.get("subsection_title") or child.get("section_title"),
+                        parent_level,
+                        parent.get("subsection_title") or parent.get("section_title"),
+                        parent.get("section_index"),
+                    )
+
+        # Now chunk all section entries into payloads.
+        for entry in section_entries:
+            text = (entry.get("text") or "").strip()
+            if not text:
+                continue
+            payloads.extend(
+                self._chunk_payload(
+                    text,
+                    entry.get("url") or url,
+                    entry.get("section_title"),
+                    entry.get("subsection_title"),
+                    entry.get("subsubsection_title"),
+                    entry.get("section_index", 0),
+                    entry.get("subsection_index", 0),
+                )
+            )
 
         #logger.info("Wiki: parsed via action_api url=%s payloads=%d", url, len(payloads))
         return payloads
@@ -675,6 +955,7 @@ class MediaWikiExtractor:
         Extract the page title from a Wikipedia URL and parse the page.
         """
         #logger.debug("Wiki: parse_from_url %s", url)
+        logger.debug("Wiki: parse_from_url mode=%s", self.wiki_mode)
         parsed_url = urlparse(url)
         path = parsed_url.path
         if not path.startswith("/wiki/"):
