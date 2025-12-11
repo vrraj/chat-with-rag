@@ -1715,11 +1715,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # --- Prompt build
     emit_stage(req_id, "Inference Prompt Build")
     system_prompt = (
-        "You are a helpful assistant. Use the provided context to answer the user's question.\n"
-        "If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
-        "Do not fabricate sources. If no source supports the answer, say so clearly.\n"
-        "If a source URL is available (shown in the final 'Sources' section), consider referencing it by its tag like [1]."
-    )
+         "You are a helpful assistant. Use the provided context to answer the user's question.\n"
+         "If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
+         "Do not fabricate sources. If no source supports the answer, say so clearly with a text: NO_SUPPORTED_SOURCES.\n"
+         "If a source URL is available (shown in the final 'Sources' section), consider referencing it by its tag like [1]."
+     )
+    
     prompt_input = None  # what we pass as `input` to Responses
     if style == "messages":
         messages = [{"role": "system", "content": system_prompt}]
@@ -1880,6 +1881,27 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # --- Final answer and packing
     answer = (answer_override or _extract_text_from_responses(resp_inf) or "")
     sources = (reranked or []) + (web_context or [])
+    # Sentinel detection: if the model indicates no supported sources, suppress Sources section and returned sources.
+    _ans = (answer or "").rstrip()
+    if _ans.endswith("NO_SUPPORTED_SOURCES"):
+        # Remove sentinel from final answer text
+        if "\n" in _ans:
+            _ans = _ans.rsplit("\n", 1)[0].rstrip()
+        answer = _ans
+        sources = []  # JSON: no sources returned
+        sources_section = ""  # No sources block appended
+   
+    # Heuristic: if the model indicates lack of supporting context, even without sentinel
+    lower_ans = _ans.lower()
+    if (
+        "the provided context does not contain" in lower_ans
+        or "the context provided does not contain" in lower_ans
+        or "provided context does not" in lower_ans
+        or "context does not" in lower_ans
+    ):
+        answer = _ans
+        sources = []
+        sources_section = ""
     try:
         m.finalize_turn()
         turn_metrics, convo_snapshot = m.snapshot()

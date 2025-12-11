@@ -49,7 +49,7 @@
                         <label class="block text-sm font-medium text-gray-700">Exact Match</label>
                         <select id="exactMatch" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
                             <option value="true">Yes</option>
-                            <option value="false">No</option>
+                            <option value="false" selected>No</option>
                         </select>
                     </div>
                     <div>
@@ -74,6 +74,26 @@
     </div>
 
     <script src="/static/search.js"></script>
+    <script>
+        // Set default values from config when the page loads
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const response = await fetch('/api/config/api-defaults');
+                if (response.ok) {
+                    const config = await response.json();
+                    // Set exact match default if available in config
+                    if (config.search?.exact_match !== undefined) {
+                        const exactMatchSelect = document.getElementById('exactMatch');
+                        if (exactMatchSelect) {
+                            exactMatchSelect.value = config.search.exact_match ? 'true' : 'false';
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading config:', error);
+            }
+        });
+    </script>
 <footer class="text-center text-xs text-gray-500 mt-8">
   <p>
     Optional seed data derived from 

@@ -7,7 +7,7 @@ Activate venv using:
 
 qdrant_ops.py — Utility operations for a local Qdrant instance.
 
-Functions (selected by CLI flags):
+Functions (selected by CLI subcommands):
   1) Retrieve points by payload field/value and display `point_id` + `url_lower`.
   1b) Retrieve all points (optionally with a limit).
   2) Display payload field names (using the first point as reference).
@@ -20,31 +20,31 @@ fallbacks to localhost:6333 and collection "document_index" if import fails.
 
 Examples:
   # 1) Retrieve by payload field/value
-  python qdrant_scripts/qdrant_ops.py --get --field source --value wikipedia --limit 50
+  python qdrant_scripts/qdrant_ops.py get --field source --value wikipedia --limit 50
 
   # 1b) Retrieve all points (optionally with a limit)
-  python qdrant_scripts/qdrant_ops.py --get --limit 100
+  python qdrant_scripts/qdrant_ops.py get --limit 100
 
   # 2) List payload field names (from first point)
-  python qdrant_scripts/qdrant_ops.py --list-fields
+  python qdrant_scripts/qdrant_ops.py list-fields
 
   # 2b) List unique URLs with titles (30-char max)
-  python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
+  python qdrant_scripts/qdrant_ops.py list-titles --limit 100
 
   # 3) Count chunks for a specific base URL
   python qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://example.com"
 
   # 4a) Delete by payload field/value (asks for confirmation)
-  python qdrant_scripts/qdrant_ops.py --delete --field doc_id --value 123
+  python qdrant_scripts/qdrant_ops.py delete --field doc_id --value 123
 
   # 4b) Delete by payload field/value (skip confirmation)
-  python qdrant_scripts/qdrant_ops.py --delete --field doc_id --value 123 --yes
+  python qdrant_scripts/qdrant_ops.py delete --field doc_id --value 123 --yes
 
   # 4c) Delete by explicit point IDs (skip confirmation)
-  python qdrant_scripts/qdrant_ops.py --delete --ids 10 11 12 --yes
+  python qdrant_scripts/qdrant_ops.py delete --ids 10 11 12 --yes
 
   # 4d) Delete all points from a given source (interactive confirmation)
-  python qdrant_scripts/qdrant_ops.py --delete --field source --value wikipedia
+  python qdrant_scripts/qdrant_ops.py delete --field source --value wikipedia
 """
 from __future__ import annotations
 import argparse
@@ -73,6 +73,7 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
 )
+from qdrant_client.http import models as rest
 
 
 def build_client(host: str, port: int) -> QdrantClient:
@@ -343,9 +344,11 @@ def cmd_truncate(args) -> int:
         print("Collection name did not match. Aborting without deleting anything.")
         return 0
 
-    # Delete all points but keep collection config: empty filter matches everything
-    flt = Filter(must=[])
-    client.delete(collection_name=args.collection, points_selector=flt)
+    # Delete all points but keep collection config: use All() selector
+    client.delete(
+        collection_name=args.collection,
+        points_selector=rest.All(),
+    )
 
     print(f"Truncated collection '{args.collection}'; deleted {points_count} point(s).")
     return 0
@@ -446,6 +449,12 @@ def build_parser() -> argparse.ArgumentParser:
     get_parser.add_argument("--field", type=str, help="Payload field to filter on")
     get_parser.add_argument("--value", type=str, help="Value to match in the specified field")
     get_parser.add_argument("--limit", type=int, default=10, help="Maximum number of points to return")
+    get_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=256,
+        help="Scroll page size for fetching points (default: 256)",
+    )
     get_parser.set_defaults(func=cmd_get)
     
     # List fields command
@@ -455,13 +464,23 @@ def build_parser() -> argparse.ArgumentParser:
     # List titles command
     list_titles_parser = subparsers.add_parser("list-titles", help="List unique URLs with titles")
     list_titles_parser.add_argument("--limit", type=int, default=50, help="Maximum number of URLs to return")
+    list_titles_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=256,
+        help="Scroll page size for fetching points (default: 256)",
+    )
     list_titles_parser.set_defaults(func=cmd_list_titles)
     
     # Count chunks by base_url command
     count_parser = subparsers.add_parser("count-chunks", help="Count chunks by base URL (case-insensitive)")
-    count_parser.add_argument("--base-url-lower", type=str, required=True, 
-                            dest="base_url",  # Store in args.base_url for backward compatibility
-                            help="Base URL to count chunks for (will be converted to lowercase)")
+    count_parser.add_argument(
+        "--base-url",
+        type=str,
+        required=True,
+        dest="base_url",  # Store in args.base_url for backward compatibility
+        help="Base URL to count chunks for (will be converted to lowercase)",
+    )
     count_parser.set_defaults(func=count_chunks_by_base_url)
     
     # Export command

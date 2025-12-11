@@ -12,6 +12,10 @@
     <!-- App layout: sidebar (controls), main (metrics + history + input) -->
     <div id="app">
       <aside id="sidebar" aria-label="Parameters Sidebar">
+        <div class="button-group" style="margin-bottom: 1rem; display: flex; gap: 8px;">
+          <button id="clear_chat_btn" type="button" class="action-button">Clear Chat</button>
+          <button id="reset_params_btn" type="button" class="action-button">Reset Params</button>
+        </div>
         <h2 class="section-title">Parameters</h2>
         <form id="params_form" autocomplete="off">
           <!-- Retrieval group -->
@@ -103,10 +107,7 @@
             </div>
           </div>
 
-          <div>
-            <button id="clear_chat_btn" type="button" title="Clear chat">Clear chat</button>
-            <button id="reset_params_btn" type="button" title="Reset all parameters to server defaults" style="margin-left:8px;">Reset Params</button>
-          </div>
+          <!-- Buttons moved to top of sidebar -->
 
           <!-- Models Information -->
           <div class="group-box ux-11px" id="models_section">

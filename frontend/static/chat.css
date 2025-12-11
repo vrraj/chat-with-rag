@@ -278,6 +278,36 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
   font-size: 12px;
 }
 
+/* Action Buttons */
+.action-button {
+  padding: 6px 12px;
+  border: 1px solid #93c5fd;
+  background-color: #dbeafe;
+  color: #1e40af;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.action-button:hover {
+  background-color: #bfdbfe;
+  border-color: #60a5fa;
+}
+
+.action-button:active {
+  background-color: #93c5fd;
+  transform: translateY(1px);
+}
+
+/* Button group for action buttons */
+.button-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 1rem;
+}
+
 /* Input bar */
 #input_bar {
   display: flex;
