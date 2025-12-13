@@ -769,6 +769,7 @@
             summarizer_max_output_tokens: 'summarizer_max_output_tokens',
             inference_temperature: 'temperature',
             inference_top_p: 'top_p',
+            inference_context_rows: 'inference_context_rows',
             chat_history_window_turns: 'chat_history_window_turns',
             raw_tail_turns: 'raw_tail_turns',
             max_inference_output_tokens: 'max_output_tokens',

@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     re_ranker_cost_per_MM_tokens_input: float = 0.15
     re_ranker_cost_per_MM_tokens_output: float = 0.60
     re_ranker_cost_per_MM_tokens_cached_input: float = 0.075
-    re_ranker_max_output_tokens: int = 128
+    re_ranker_max_output_tokens: int = 50
     re_ranker_input_rows: int = 5
     re_ranker_temperature: float = 0.3
 
@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # Criteria to skip rerank when there is a clear winner by vector score.
     # If top1 score is at least this value AND the margin (top1 - top5) is
     # at least rerank_clear_winner_min_delta, skip rerank.
-    rerank_clear_winner_min_top1: float = 0.65
+    rerank_clear_winner_min_top1: float = 0.60
     rerank_clear_winner_min_delta: float = 0.15
 
     # Optional exact-match fast path (string/ID/hash style queries) — if your
@@ -153,16 +153,20 @@ class Settings(BaseSettings):
     summarizer_cost_per_MM_tokens_output: float = 0.60
     summarizer_cost_per_MM_tokens_cached_input: float = 0.075
     summarizer_temperature: float = 0.3
+
     # Inference Model Configurations
     inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
     # Inference decoding parameters
     inference_temperature: float = 0.4
-    inference_top_p: float = 0.9
+    inference_top_p: float = 0.7
+    
+    # --- Inference context control --- Number of reranked rows (retrieved) to include in inference  prompt as input context
+    inference_context_rows: int = 4
 
     # Debug / logging controls
     debug_verbose: bool = True            # gates noisy logs (prompts, raw outputs)
     debug_log_keys: bool = False         # gates any API key suffix logging
-    debug_log_truncate_chars: int = 4000  # max chars to print when debug_verbose is True
+    debug_log_truncate_chars: int = 200  # max chars to print when debug_verbose is True
 
 
     # Cost configuration (USD per 1,000,000 tokens)
@@ -175,7 +179,14 @@ class Settings(BaseSettings):
     # Tool use (agent-style) default: off; UI can override per-turn
     enable_tools: bool = True
     max_tool_passes: int = 2 # Maximum number of tool loops to be called from LLM generated output for a single turn. This it to prevent runaway tool calls
-
+    # Tools that should receive document snippets (reranked context) as `existing_context`.
+    # Most tools (e.g., get_weather, closest_airports) should NOT be listed here.
+    tools_with_document_context: list[str] = [
+        # "quote_from_docs",
+        # "find_in_sources",
+        # "cite_sources",
+]
+    
     # Maximum number of tokens from prior chat messages to retain when building
     # conversation context (used when trimming history in backend/main.py).
     max_history_tokens: int = 4000
@@ -185,7 +196,7 @@ class Settings(BaseSettings):
     # - raw_tail_turns: How many **most-recent** turns to include verbatim in the prompt
     #   (preserves nuance like pronouns and references). This setting only changes behavior once
     #   the handler is wired to use it; safe to keep as a no-op until then.
-    chat_history_window_turns: int = 5
+    chat_history_window_turns: int = 2
     raw_tail_turns: int = 2
 
     # --- Query rewrite (for retrieval) ---

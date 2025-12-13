@@ -8,7 +8,7 @@
 </head>
 <body class="bg-gray-100">
   <div class="container mx-auto px-4 py-8">
-    <h1 class="text-3xl font-bold mb-6">Delete Document from Qdrant</h1>
+    <h1 class="text-3xl font-semibold mb-6">Delete Document from Qdrant</h1>
     <p class="text-sm text-gray-700 mb-6">This delete operation is <b>non-recoverable</b>. You will lose the document chunks indexed by provided URL. </p>
 
     <div class="bg-white rounded-lg shadow-md p-6 mb-6">
@@ -24,7 +24,7 @@
           <p class="text-xs text-gray-500 mt-1">How many document chunks to preview before deleting.</p>
         </div>
         <div class="flex items-end space-x-2">
-          <button id="fetchPreviewBtn" class="px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700">Fetch</button>
+          <button id="fetchPreviewBtn" class="px-4 py-2 rounded-md text-white bg-blue-600 hover:bg-blue-700">Fetch</button>
           <button id="confirmDeleteBtn" class="px-4 py-2 rounded-md text-white bg-red-600 hover:bg-red-700 opacity-50 cursor-not-allowed" disabled>Confirm Delete</button>
         </div>
       </div>
@@ -33,7 +33,7 @@
     <div class="bg-white rounded-lg shadow-md p-6">
       <div class="flex justify-between items-center mb-4">
         <div>
-          <h2 class="text-xl font-semibold inline">Preview Chunks</h2>
+          <h2 class="text-xl inline">Preview Chunks</h2>
           <span id="previewSummary" class="ml-2 text-sm text-gray-500"></span>
         </div>
       </div>

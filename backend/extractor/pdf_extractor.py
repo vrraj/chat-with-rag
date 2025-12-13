@@ -760,10 +760,44 @@ class PDFExtractor:
 
         # Build an INFOBOX payload from geometry-detected blocks on page 1, if any.
         if infobox_buffer:
-            raw_infobox = "\n".join(infobox_buffer).strip()
+            # Use double-newline join to preserve line breaks for subject-prefixing, then normalize
+            raw_infobox = "\n\n".join(infobox_buffer).strip()
             normalized_infobox = self._normalize_text(raw_infobox)
+            # Prefix each infobox line with the document title for stronger subject binding
+            # --- Start suffix-stripping helper ---
+            raw_subject = (doc_title or "").strip()
+            title_suffixes_to_strip = [" - wikipedia", " — wikipedia", " | wikipedia"]
+            subject = raw_subject
+            lower = raw_subject.lower()
+            for suf in title_suffixes_to_strip:
+                if lower.endswith(suf):
+                    subject = raw_subject[: -len(suf)].strip()
+                    break
+            # --- End suffix-stripping helper ---
+            if subject:
+                raw_lines = [ln.strip() for ln in normalized_infobox.split("\n") if ln.strip()]
+                merged: List[str] = []
+                i = 0
+                while i < len(raw_lines):
+                    cur = raw_lines[i]
+                    nxt = raw_lines[i + 1] if i + 1 < len(raw_lines) else None
+
+                    # Merge label + value lines (generic heuristic)
+                    if (
+                        nxt
+                        and ":" not in cur
+                        and ":" not in nxt
+                        and len(cur) <= 40
+                        and len(nxt) <= 80
+                    ):
+                        merged.append(f"{subject} — {cur} — {nxt}")
+                        i += 2
+                    else:
+                        merged.append(f"{subject} — {cur}")
+                        i += 1
+
+                normalized_infobox = "\n".join(merged)
             if normalized_infobox:
-                infobox_kv = _parse_infobox_key_values(normalized_infobox)
                 info_payload = {
                     "text": normalized_infobox,
                     "section": "INFOBOX",
@@ -776,10 +810,9 @@ class PDFExtractor:
                     "source": url,
                     "section_index": 0,
                     "subsection_index": None,
-                    "title": doc_title,
+                    "title": subject or doc_title,
                     "description": "",
                     "page_number": 1,
-                    "infobox": infobox_kv,
                 }
                 if header_meta:
                     info_payload["document_headers"] = header_meta
@@ -801,8 +834,7 @@ class PDFExtractor:
                     if infobox_text and remaining_text != text:
                         # Update the existing Lead payload text
                         p["text"] = remaining_text
-                        # Build a separate INFOBOX payload with structured key/values
-                        infobox_kv = _parse_infobox_key_values(infobox_text)
+                        # Build a separate INFOBOX payload without infobox field
                         info_p = dict(p)  # shallow copy of metadata
                         info_p["text"] = infobox_text
                         info_p["section"] = "INFOBOX"
@@ -812,7 +844,16 @@ class PDFExtractor:
                         info_p["subsection_index"] = None
                         info_p["chunk_index"] = 0
                         info_p["total_chunks"] = 1
-                        info_p["infobox"] = infobox_kv
+                        # Sanitize title for infobox payload (strip suffixes)
+                        raw_subject = (info_p.get("title") or "").strip()
+                        title_suffixes_to_strip = [" - wikipedia", " — wikipedia", " | wikipedia"]
+                        subject = raw_subject
+                        lower = raw_subject.lower()
+                        for suf in title_suffixes_to_strip:
+                            if lower.endswith(suf):
+                                subject = raw_subject[: -len(suf)].strip()
+                                break
+                        info_p["title"] = subject or info_p.get("title")
                         if header_meta:
                             info_p["document_headers"] = header_meta
                         if footer_meta:
@@ -851,10 +892,44 @@ class PDFExtractor:
                         infobox_lines.append(line["text"])
             infobox_lines = [ln for ln in infobox_lines if ln.strip()]
             if infobox_lines:
-                raw_infobox = "\n".join(infobox_lines).strip()
+                # Use double-newline join to preserve line breaks for subject-prefixing, then normalize
+                raw_infobox = "\n\n".join(infobox_lines).strip()
                 normalized_infobox = self._normalize_text(raw_infobox)
+                # Prefix each infobox line with the document title for stronger subject binding
+                # --- Start suffix-stripping helper ---
+                raw_subject = (doc_title or "").strip()
+                title_suffixes_to_strip = [" - wikipedia", " — wikipedia", " | wikipedia"]
+                subject = raw_subject
+                lower = raw_subject.lower()
+                for suf in title_suffixes_to_strip:
+                    if lower.endswith(suf):
+                        subject = raw_subject[: -len(suf)].strip()
+                        break
+                # --- End suffix-stripping helper ---
+                if subject:
+                    raw_lines = [ln.strip() for ln in normalized_infobox.split("\n") if ln.strip()]
+                    merged: List[str] = []
+                    i = 0
+                    while i < len(raw_lines):
+                        cur = raw_lines[i]
+                        nxt = raw_lines[i + 1] if i + 1 < len(raw_lines) else None
+
+                        # Merge label + value lines (generic heuristic)
+                        if (
+                            nxt
+                            and ":" not in cur
+                            and ":" not in nxt
+                            and len(cur) <= 40
+                            and len(nxt) <= 80
+                        ):
+                            merged.append(f"{subject} — {cur} — {nxt}")
+                            i += 2
+                        else:
+                            merged.append(f"{subject} — {cur}")
+                            i += 1
+
+                    normalized_infobox = "\n".join(merged)
                 if normalized_infobox:
-                    infobox_kv = _parse_infobox_key_values(normalized_infobox)
                     info_payload = {
                         "text": normalized_infobox,
                         "section": "INFOBOX",
@@ -867,12 +942,10 @@ class PDFExtractor:
                         "source": url,
                         "section_index": 0,
                         "subsection_index": None,
-                        "title": doc_title,
+                        "title": subject or doc_title,
                         "description": "",
                         "page_number": 1,
                     }
-                    if infobox_kv:
-                        info_payload["infobox"] = infobox_kv
                     if header_meta:
                         info_payload["document_headers"] = header_meta
                     if footer_meta:
@@ -1044,13 +1117,49 @@ class PDFExtractor:
                     tbl_md = tbl.to_markdown()
                 except Exception:
                     continue
-                tbl_norm = self._normalize_text(tbl_md)
+                # For INFOBOX-like tables, preserve per-row newlines by doubling them before normalization
+                tbl_norm = self._normalize_text(tbl_md.replace("\n", "\n\n"))
+                # Prefix each infobox line with the document title for stronger subject binding
+                # Only do this for infobox-like tables (detected below)
+                infobox_kv = _parse_infobox_key_values(tbl_norm)
+                is_infobox = False
+                # Still detect infobox tables by section logic, but do not create infobox field
+                if bool(_parse_infobox_key_values(tbl_norm)):
+                    # --- Start suffix-stripping helper ---
+                    raw_subject = (doc_title or "").strip()
+                    title_suffixes_to_strip = [" - wikipedia", " — wikipedia", " | wikipedia"]
+                    subject = raw_subject
+                    lower = raw_subject.lower()
+                    for suf in title_suffixes_to_strip:
+                        if lower.endswith(suf):
+                            subject = raw_subject[: -len(suf)].strip()
+                            break
+                    # --- End suffix-stripping helper ---
+                    if subject:
+                        raw_lines = [ln.strip() for ln in tbl_norm.split("\n") if ln.strip()]
+                        merged: List[str] = []
+                        i = 0
+                        while i < len(raw_lines):
+                            cur = raw_lines[i]
+                            nxt = raw_lines[i + 1] if i + 1 < len(raw_lines) else None
+
+                            if (
+                                nxt
+                                and ":" not in cur
+                                and ":" not in nxt
+                                and len(cur) <= 40
+                                and len(nxt) <= 80
+                            ):
+                                merged.append(f"{subject} — {cur} — {nxt}")
+                                i += 2
+                            else:
+                                merged.append(f"{subject} — {cur}")
+                                i += 1
+
+                        tbl_norm = "\n".join(merged)
+                    is_infobox = True
                 if not tbl_norm:
                     continue
-
-                # Best-effort attempt to extract structured key/values from infobox-like tables.
-                infobox_kv = _parse_infobox_key_values(tbl_norm)
-                is_infobox = bool(infobox_kv)
 
                 section_name = current_section or ("INFOBOX" if is_infobox else "Table")
                 subsection_name = current_subsection if current_subsection else ("INFOBOX" if is_infobox else "Table")
@@ -1071,13 +1180,11 @@ class PDFExtractor:
                     "source": url,
                     "section_index": section_index,
                     "subsection_index": subsection_index if current_subsection else None,
-                    "title": doc_title,
+                    "title": (subject if is_infobox else doc_title) if is_infobox else doc_title,
                     "description": "",
                     "page_number": page,
                 }
-                if is_infobox:
-                    tbl_payload["infobox"] = infobox_kv
-
+                # Do NOT add infobox field for INFOBOX tables.
                 if header_meta:
                     tbl_payload["document_headers"] = header_meta
                 if footer_meta:

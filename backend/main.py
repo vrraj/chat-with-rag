@@ -1346,6 +1346,7 @@ class ModelConfig(BaseModel):
     max_inference_output_tokens: Optional[int] = None
     enable_tools: Optional[bool] = None
     enable_query_rewrite: Optional[bool] = None
+    inference_context_rows: Optional[int] = None
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():
@@ -1376,6 +1377,7 @@ async def get_model_config():
         max_inference_output_tokens=get_model_setting("max_inference_output_tokens"),
         enable_tools=get_model_setting("enable_tools"),
         enable_query_rewrite=get_model_setting("enable_query_rewrite"),
+        inference_context_rows=get_model_setting("inference_context_rows"),
     )
 
 @app.get(

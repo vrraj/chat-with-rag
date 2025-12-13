@@ -53,24 +53,23 @@
 </head>
 <body class="bg-gray-100">
   <div class="container mx-auto px-4 py-8">
-    <h1 class="text-3xl font-bold mb-2">Batch Upload and Generate Embeddings</h1>
-    <p class="text-gray-600 mb-1">Embed PDF, MediaWiki and HTML documents</p>
-    <p class="text-sm text-gray-500 mb-6">Documents will be uploaded to: <span id="collectionName" class="font-semibold">Loading...</span> collection</p>
+    <h1 class="text-3xl font-semibold mb-2">Batch Upload and Generate Embeddings</h1>
+    <p class="text-gray-600 mb-4">Embed PDF, MediaWiki and HTML documents. These will be uploaded to: <span id="collectionName" class="font-semibold italic">Loading...</span> collection </p>
     
     <!-- Grid Container for both sections -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
       <!-- New Generate JSON Section -->
       <div class="bg-white rounded-lg shadow-md p-6">
-        <h2 class="text-xl font-semibold mb-4">Generate JSON for PDF Batch Upload</h2>
+        <h2 class="text-xl mb-4">Generate JSON for PDF Batch Upload</h2>
         <div class="space-y-4">
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">PDF Folder Path</label>
+            <label class="block text-sm font-medium text-gray-700 mb-1">PDF Documents Folder Path</label>
             <div class="flex rounded-md shadow-sm">
               <input type="text" id="pdfFolderPath" 
                     class="flex-1 min-w-0 block w-full px-3 py-2 rounded-md border border-gray-300 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
                     placeholder="./data/pdf-files-for-upload">
             </div>
-            <div id="status" class="mt-4 text-gray-600">Ready to process</div>
+            <div id="status" class="mt-4 text-gray-600"></div>
             <div id="download-container" class="hidden">
                 <button id="download-results" class="ml-2 px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm">
                     Download Results
@@ -102,9 +101,9 @@
       </div>
 
       <!-- Existing Upload Section (now in a grid column) -->
-      <div class="bg-white rounded-lg shadow-md p-6">
-        <h2 class="text-xl font-semibold mb-4">Upload Batch Configuration</h2>
-        <div class="file-upload rounded-lg p-4 text-center" style="min-height: 120px;" id="dropZone">
+      <div class="bg-white rounded-lg shadow-md p-6 flex flex-col">
+        <h2 class="text-xl mb-4">Upload Batch Configuration</h2>
+        <div class="file-upload rounded-lg p-4 text-center flex-1" style="min-height: 120px;" id="dropZone">
           <input type="file" id="batchFile" accept=".json" class="hidden" />
           <div class="space-y-2">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -119,12 +118,12 @@
           <p class="mt-2 text-sm text-gray-500" id="fileName"></p>
         </div>
 
-      <div class="flex flex-wrap gap-4 mt-4">
+      <div class="flex flex-wrap gap-4 mt-auto pt-4">
         <button id="viewSampleBtn" class="px-4 py-2 rounded-md text-white bg-gray-600 hover:bg-gray-700">
           View Sample
         </button>
         <div class="flex-grow"></div>
-        <button id="processBtn" class="px-6 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+        <button id="processBtn" class="px-6 py-2 rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
           Process Documents
         </button>
       </div>
@@ -133,7 +132,7 @@
     <!-- Sample Section (initially hidden) -->
     <div id="sampleSection" class="hidden bg-white rounded-lg shadow-md p-6 mb-6">
       <div class="flex justify-between items-center mb-4">
-        <h2 class="text-xl font-semibold">Sample Configuration</h2>
+        <h2 class="text-xl">Sample Configuration</h2>
         <button id="closeSampleBtn" class="text-gray-400 hover:text-gray-500">
           <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -191,7 +190,7 @@
     <!-- Output Section - Full Width -->
     <div class="bg-white rounded-lg shadow-md p-6 mt-6 w-full">
       <div class="flex justify-between items-center mb-4">
-        <h2 class="text-xl font-semibold">Processing Results</h2>
+        <h2 class="text-xl">Processing Results</h2>
         <div class="flex items-center space-x-2">
           <span id="statusBadge" class="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800">
             Ready
@@ -215,7 +214,7 @@
   <div id="jsonPreviewModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
       <div class="px-6 py-4 border-b flex justify-between items-center">
-        <h3 class="text-lg font-semibold">Preview & Save JSON</h3>
+        <h3 class="text-lg">Preview & Save JSON</h3>
         <button id="closePreview" class="text-gray-400 hover:text-gray-500">
           <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />

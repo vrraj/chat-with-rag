@@ -384,6 +384,19 @@ class MediaWikiExtractor:
             raw = re.sub(r"[\t ]+", " ", raw)
             return raw.strip()
 
+        # --- Subject prefixing for Infobox ---
+        # Specifically to manage the key value pairs in the infobox to conceptually link facts to the subject for better dense vector representation
+        subject = getattr(self, "page_title", "").strip()
+        if subject:
+            prefixed_lines: List[str] = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                prefixed_lines.append(f"{subject} — {line}")
+            lines = prefixed_lines
+        # --- End subject prefixing for Infobox ---
+
         text = "\n".join(lines)
         text = re.sub(r"\u00a0", " ", text)
         text = re.sub(r"[\t ]+", " ", text)

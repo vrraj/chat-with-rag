@@ -468,13 +468,33 @@ def _summarize_messages_with_cache(
         if not messages:
             return "", True, None
 
-        key = _summary_cache_key(messages, tag=tag)
+        # Build a cleaned copy of messages so we do not mutate the original history.
+        # For assistant messages, strip any trailing 'Sources:' block before summarizing.
+        cleaned_messages: List[Dict[str, str]] = []
+        stripped = 0
+        try:
+            for m in messages:
+                role = m.get("role", "user")
+                content = m.get("content", "") or ""
+                if role == "assistant":
+                    new_content = _strip_trailing_sources_block(content)
+                    if new_content != content:
+                        stripped += 1
+                    content = new_content
+                cleaned_messages.append({"role": role, "content": content})
+            if stripped:
+                logger.debug("%s stripped trailing Sources: blocks from %d assistant messages before summary", log_prefix, stripped)
+        except Exception:
+            # If anything goes wrong during cleanup, fall back to the original messages.
+            cleaned_messages = [{"role": m.get("role", "user"), "content": m.get("content", "") or ""} for m in messages]
+
+        key = _summary_cache_key(cleaned_messages, tag=tag)
         cached = cache.get(key)
         if cached is not None:
             logger.debug(f"{log_prefix} summary cache HIT ({tag}); len=%d", len(cached))
             return cached, True, None
 
-        sum_prompt = _build_summary_prompt_with_budget(messages, max_input_tokens, model)
+        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, model)
         logger.debug(f"{log_prefix} applied local input budget; prompt_len_chars=%d", len(sum_prompt))
 
         kwargs: Dict[str, Any] = {
@@ -746,11 +766,25 @@ class Metrics:
             c = self._cost("rewrite", pt, ct, cached)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "inference":
-            self.turn[stage]["prompt_tokens"] = pt
-            self.turn[stage]["prompt_cached_tokens"] = cached
-            self.turn[stage]["completion_tokens"] = ct
+            # Accumulate tokens and costs across multiple inference calls in a single turn.
+            prev_pt = int(self.turn[stage].get("prompt_tokens") or 0)
+            prev_ck = int(self.turn[stage].get("prompt_cached_tokens") or 0)
+            prev_ct = int(self.turn[stage].get("completion_tokens") or 0)
+
+            pt_total = prev_pt + pt
+            ck_total = prev_ck + cached
+            ct_total = prev_ct + ct
+
+            self.turn[stage]["prompt_tokens"] = pt_total
+            self.turn[stage]["prompt_cached_tokens"] = ck_total
+            self.turn[stage]["completion_tokens"] = ct_total
+
+            # Cost for this specific call
             c = self._cost("inference", pt, ct, cached)
-            self.turn[stage].update(c)
+            self.turn[stage]["cost_prompt"] = float(self.turn[stage].get("cost_prompt", 0.0)) + c["cost_prompt"]
+            self.turn[stage]["cost_cached"] = float(self.turn[stage].get("cost_cached", 0.0)) + c["cost_cached"]
+            self.turn[stage]["cost_completion"] = float(self.turn[stage].get("cost_completion", 0.0)) + c["cost_completion"]
+            self.turn[stage]["cost_total"] = float(self.turn[stage].get("cost_total", 0.0)) + c["cost_total"]
 
         if extra:
             try:
@@ -771,7 +805,8 @@ class Metrics:
         ik = int(self.turn["inference"].get("prompt_cached_tokens") or 0)
         ic = int(self.turn["inference"].get("completion_tokens") or 0)
 
-        total_tokens = emb + rin + rout + sin + sout + rwin + rwout + ip + ik + ic
+        # NOTE: cached tokens are a subset of prompt/input tokens; do NOT add them again to totals.
+        total_tokens = emb + rin + rout + sin + sout + rwin + rwout + ip + ic
         self.turn["totals"]["tokens"]["turn_total"] = total_tokens
 
         total_cost = (
@@ -786,15 +821,18 @@ class Metrics:
         # Accumulate into shared conversation totals (robust to 'cost' vs 'costs')
         try:
             self.convo["tokens"]["embedding"] += emb
-            self.convo["tokens"]["llm_input"] += (rin + sin + rwin + ip + ik)
+            # NOTE: cached tokens are already included in stage input/prompt token counts; track them separately but don't double-count.
+            self.convo["tokens"]["llm_input"] += (rin + sin + rwin + ip)
             self.convo["tokens"]["llm_output"] += (rout + sout + rwout + ic)
             self.convo["tokens"]["conversation_total"] += total_tokens
             if "cost" in self.convo:
                 self.convo["cost"]["conversation_total"] = round(float(self.convo["cost"].get("conversation_total", 0.0)) + total_cost, 8)
             elif "costs" in self.convo:
                 self.convo["costs"]["conversation_total"] = round(float(self.convo["costs"].get("conversation_total", 0.0)) + total_cost, 8)
+            logger.debug("[TOTALS] Metrics Finalize Turn turn_total=%d convo_total_now=%d" % (self.turn["totals"]["tokens"]["turn_total"], self.convo["tokens"]["conversation_total"]))
         except Exception:
             # Never let metrics break the answer path
+            logger.error("[TOTALS] Metrics Finalize Turn Failure")
             pass
 
     def snapshot(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -901,9 +939,10 @@ def build_rewrite_prompt(tail_messages: List[Dict[str, str]] | None, summary_tex
     The model is instructed to return JSON only and to keep the original if ambiguous.
     """
     parts: List[str] = []
-    parts.append("Rewrite the user's latest question so it is self-contained using only the recent conversation and important keywords from latest question is included \n")
-    parts.append("If the reference is ambiguous or cannot be resolved from the conversation, return the original question unchanged.\n")
+    parts.append("Rewrite the user's latest question into a self-contained question so it is self-contained using only the recent conversation. \n")
+    parts.append("If you cannot resolve the reference to the conversation, return the original question unchanged.\n")
     parts.append("Return strictly the following JSON (no extra text, no explanations):\n")
+    parts.append("Keep reason to a short phrase (max 15-20 tokens). \n")
     parts.append('{"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}\n\n')
     if summary_text:
         parts.append("Previous conversation summary:\n" + summary_text.strip() + "\n\n")
@@ -937,6 +976,7 @@ def rewrite_query(
             logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, settings.rewrite_model)
         except Exception:
             pass
+        # Invoke the rewrite model with the prompt for the user's latest message for it to rewrite it
         resp = get_client().responses.create(
             model=settings.rewrite_model,
             input=prompt,
@@ -945,6 +985,7 @@ def rewrite_query(
         )
         usage = _extract_usage_from_responses(resp)
         raw = _extract_text_from_responses(resp).strip()
+        logger.debug("[REWRITE] response output raw=%s", raw[:400])
         try:
             if isinstance(usage, dict):
                 pt = int(usage.get("prompt_tokens") or 0)
@@ -1091,7 +1132,6 @@ class ChatManager:
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": answer_text},
             ])
-            logger.info("[PIPELINE] chat_manager.chat returning orchestrator output")
 
             return {
                 "response": answer_text,
@@ -1554,12 +1594,33 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     m.record_stage("embedding", model=getattr(settings_obj, "embedding_model", "embedding"), pt=embed_tokens)
 
 # Stage: Rerank Retrieval Results
-    try:
-        logger.info("[PIPELINE] emit stage: Rerank Retrieval Results")
-        emit_stage(req_id, "Rerank Retrieval Results")
-    except Exception:
-        pass
-    # --- Rerank decision policy
+    
+    # --- Rerank Decision Policy ---
+    # 
+    # Determines whether to apply reranking to search results based on several heuristics.
+    # The policy aims to skip expensive reranking when it's unlikely to improve results.
+    #
+    # Parameters:
+    #   - settings_obj: Configuration object containing reranking parameters
+    #   - results: List of search results with scores and metadata
+    #   - n: Total number of results available
+    #
+    # Returns:
+    #   - need_rerank: Boolean indicating if reranking should be performed
+    #   - skip_reason: String explaining why reranking was skipped (if applicable)
+    #   - kept: Number of top results to consider for reranking
+    #   - reranked: Initially set to input results, modified later if reranking is applied
+    #
+    # Decision Logic:
+    # 1. Skip if there's only 1 or fewer results (nothing to rerank)
+    # 2. Skip if results are fewer than re_ranker_input_rows (default 5)
+    # 3. Check for exact matches in top 5 results (fast path)
+    # 4. Check if top result is a clear winner based on:
+    #    - Score above rerank_clear_winner_min_top1 (default 0.65)
+    #    - Margin above 5th result > rerank_clear_winner_min_delta (default 0.15)
+    # 5. If any condition is met, skip reranking; otherwise, perform reranking
+    #
+    # Note: All thresholds are configurable via settings with sensible defaults.
     kept = min(int(getattr(settings_obj, "re_ranker_input_rows", 5)), n)
     reranked = results
     need_rerank = False
@@ -1603,12 +1664,20 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         except Exception as e:
             logger.warning("[RERANK] (%s) score analysis failed; defaulting to rerank: %s", log_origin, e, exc_info=True)
             need_rerank = True
+    if need_rerank:
+        try:
+            logger.info("[PIPELINE] emit stage: Rerank Retrieval Results")
+            emit_stage(req_id, "Rerank Retrieval Results")
+        except Exception:
+            pass
 
     if not need_rerank:
-        logger.info("[RERANK] (%s) Skipping rerank: %s", log_origin, skip_reason)
+        _dbg(f"[RERANK] {log_origin}", f"skipping rerank: {skip_reason}")
+        emit_stage(req_id, "Skipping Rerank")
         reranked = results[:kept]
     else:
-        logger.info("[RERANK] (%s) Applying rerank over %d candidates; pool capped to %d", log_origin, n, kept)
+        _dbg(f"[RERANK] {log_origin}", f"applying rerank over {n} candidates; pool capped to {kept}")
+        logger.debug("Rerank pool stats", extra={"candidates": n, "kept": kept})
         pool = results[:kept]
         pool_n = len(pool)
         logger.debug("[RERANK] (%s) Pool size=%d of %d", log_origin, pool_n, n)
@@ -1695,8 +1764,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     except Exception as e:
         logger.debug("[WEB] (%s) ignored web context due to error: %s", log_origin, e)
 
-    # --- Context + sources
-    context_text = _format_context_lines(reranked or [])
+    # --- Context + sources 
+    # Limit the number of context rows (from ) to the number of retrieved items (or kept) and the inference_context_rows setting
+    inference_rows = int(getattr(settings_obj, "inference_context_rows", kept) or kept)
+    inference_rows = min(max(1, inference_rows), kept)
+    _dbg(f"[CONTEXT] {log_origin}", f"using {inference_rows} of {kept} retrieved items")
+    context_items = (reranked or [])[:inference_rows]
+    context_text = _format_context_lines(context_items)
+   
     indexed_for_collapse = [
         {
             "index": i + 1,
@@ -1704,7 +1779,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             "section": (item.get('payload') or {}).get('section', 'N/A'),
             "subsection": (item.get('payload') or {}).get('subsection', 'N/A'),
         }
-        for i, item in enumerate((reranked or [])[:kept])
+        for i, item in enumerate(context_items)
     ]
     sources_section = "\nSources:\n" + _collapse_sources(indexed_for_collapse)
     if web_context:
@@ -1714,12 +1789,18 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Stage: Inference Prompt Build
     # --- Prompt build
     emit_stage(req_id, "Inference Prompt Build")
-    system_prompt = (
-         "You are a helpful assistant. Use the provided context to answer the user's question.\n"
-         "If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
-         "Do not fabricate sources. If no source supports the answer, say so clearly with a text: NO_SUPPORTED_SOURCES.\n"
-         "If a source URL is available (shown in the final 'Sources' section), consider referencing it by its tag like [1]."
-     )
+    strict_rag_prompt = (
+        "You are a question-answering assistant for a retrieval-augmented system.\n"
+        "STRICT RULES:\n"
+        "1. Base your answer ONLY on information in the Context section (and Web search results if present).\n"
+        "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond that context.\n"
+        "3. If the context does not contain enough information to answer the question, reply exactly with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+        "4. If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
+        "5. Do not fabricate sources or facts.\n"
+        "6. If a source URL is available (shown in the final 'Sources' section), you may reference it by its tag like [1]."
+    )
+    system_prompt = strict_rag_prompt
+
     
     prompt_input = None  # what we pass as `input` to Responses
     if style == "messages":
@@ -1747,15 +1828,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         # flat string (stateless path)
         summary_block = (f"Previous conversation summary: {summary_text}\n\n" if summary_text else "")
         prompt_str = (
-            "You are a helpful assistant. Use ONLY the provided context to answer the user's question. "
-            "If any context chunk has a citation like [1], [2], etc., retain it in your response. "
-            "Do not fabricate sources. If no source supports the answer, say so clearly. "
-            "If a source URL is available (shown in the final 'Sources' section), consider referencing it by its tag like [1].\n\n"
+            strict_rag_prompt + "\n\n"
             + summary_block
             + recent_block_str
             + f"Context:\n{context_text}\n\n"
             + f"Question: {message}\n"
         )
+        
         _dbg(f"[FULL INFERENCE PROMPT] {log_origin}", prompt_str)
         prompt_input = [{"role": "user", "content": prompt_str}] if enable_tools else prompt_str
 
@@ -1798,7 +1877,9 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     logger.info("[INFERENCE] %s: Attempting Responses API with Inference model: %s", log_origin, _kwargs_inf["model"])
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
     resp_inf = get_client_fn().responses.create(**_kwargs_inf)
+    _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
     usage_inf = _extract_usage_from_responses(resp_inf)
+    # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
         m.record_stage("inference", model=_kwargs_inf["model"], usage=usage_inf)
 
@@ -1809,12 +1890,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     answer_override: str | None = None
     used_tools: List[str] = []
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
-        
+        # Tool Calls - Single pass thru all tools required
         emit_stage(req_id, "Tool Calls")
         try:
             max_loops = getattr(settings_obj, "max_tool_passes", 2)
             loops = 0
             while loops < max_loops:
+                # Tool Calls - Extract tool calls from inference response
                 tool_calls = extract_tool_calls(resp_inf)
                 if not tool_calls:
                     break
@@ -1830,34 +1912,52 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         result_text = f"Tool '{name}' is not available."
                     else:
                         try:
-                            # lightweight context for tools
-                            combined_context = [
-                                {
-                                    "url": (it.get("payload") or {}).get("url") or (it.get("payload") or {}).get("url_lower", ""),
-                                    "title": (it.get("payload") or {}).get("title") or "",
-                                    "snippet": (it.get("payload") or {}).get("text") or (it.get("payload") or {}).get("snippet") or "",
-                                }
-                                for it in (reranked or [])
-                            ]
                             chat_context = list(history or []) + [{"role": "user", "content": message}]
+
+                            # Only pass document snippets to tools that explicitly need them.
+                            tools_with_doc_ctx = set(getattr(settings_obj, "tools_with_document_context", []) or [])
+                            combined_context = None
+                            if name in tools_with_doc_ctx:
+                                combined_context = [
+                                    {
+                                        "url": (it.get("payload") or {}).get("url") or (it.get("payload") or {}).get("url_lower", ""),
+                                        "title": (it.get("payload") or {}).get("title") or "",
+                                        "snippet": (it.get("payload") or {}).get("text") or (it.get("payload") or {}).get("snippet") or "",
+                                    }
+                                    for it in (reranked or [])
+                                ]
+
                             result_text = executor(args, chat_context, existing_context=combined_context)
                         except Exception as ex:
                             result_text = f"Tool '{name}' failed: {ex}"
                     if name:
                         used_tools.append(name)
                     tool_outputs_list.append({"tool_call_id": call_id or "", "output": str(result_text)})
-
+                    _dbg(f"[TOOLS] {log_origin} tool outputs : %s", str(tool_outputs_list))
                 if tool_outputs_list:
                     tools_text = "\n\n".join([t.get("output", "") for t in tool_outputs_list if t.get("output")])
                     rag_draft = _extract_text_from_responses(resp_inf) or ""
+                    _dbg(f"[TOOLS] RAG DRAFT {log_origin} rag draft : %s", str(rag_draft))
                     synth_prompt = (
-                        "Combine the existing RAG draft answer with these tool results.\n"
-                        "- Keep any numeric citations like [1], [2] that are already present in the RAG draft.\n"
-                        "- Insert tool facts where relevant.\n"
-                        "- If any conflict arises, prefer tool results only for time-sensitive facts.\n"
-                        "- Be concise.\n\n"
-                        f"RAG draft:\n{rag_draft}\n\n"
-                        f"Tool results:\n{tools_text}\n"
+                        "You are a question-answering assistant for a retrieval-augmented system.\n"
+                        "STRICT RULES:\n"
+                        "1. Base your answer ONLY on information in the Context section and Tool results.\n"
+                        "2. Do NOT use any outside knowledge.\n"
+                        "3. If the context does not contain enough information to answer the question, reply exactly with: "
+                        "I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+                        "4. Retain any numeric citations like [1], [2] from the Context.\n"
+                        "5. Do not fabricate sources or facts.\n\n"
+                        f"Question:\n{message}\n\n"
+                        + (f"Previous conversation summary:\n{summary_text}\n\n" if summary_text else "")
+                        + (f"{recent_block_str}\n" if recent_block_str else "")
+                        + f"Context:\n{context_text}\n\n"
+                        + f"Tool results:\n{tools_text}\n\n"
+                        + f"Draft answer (may be empty):\n{rag_draft}\n\n"
+                        + "Task:\n"
+                        "- Produce the final answer to the Question.\n"
+                        "- Use citations like [1], [2] when using Context.\n"
+                        "- Integrate Tool results where relevant (do not invent citations for tool facts).\n"
+                        "- Be concise.\n"
                     )
                     try:
                         _kwargs_synth = {
@@ -1867,9 +1967,16 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             "temperature": float(temperature),
                         }
                         # Final Inference with Tools Synthesis (if tools are required for response)
+                        emit_stage(req_id, "Generating Responses with Tools")
+                        _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
                         resp_synth = get_client_fn().responses.create(**_kwargs_synth)
+                        _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
                         combined = _extract_text_from_responses(resp_synth).strip()
                         answer_override = combined if combined else (rag_draft + "\n\n--- Live data ---\n" + tools_text)
+                        # Record Inference Usage - 2nd Inference (tools synthesis)
+                        usage_synth = _extract_usage_from_responses(resp_synth)
+                        if usage_synth:
+                            m.record_stage("inference", model=_kwargs_synth["model"], usage=usage_synth)
                     except Exception:
                         answer_override = rag_draft + "\n\n--- Live data ---\n" + tools_text
                 break
@@ -1883,6 +1990,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     sources = (reranked or []) + (web_context or [])
     # Sentinel detection: if the model indicates no supported sources, suppress Sources section and returned sources.
     _ans = (answer or "").rstrip()
+    # Handle sentinel - check for NO_SUPPORTED_SOURCES in answer text to remove irrelevant sources section
     if _ans.endswith("NO_SUPPORTED_SOURCES"):
         # Remove sentinel from final answer text
         if "\n" in _ans:
@@ -1940,7 +2048,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"answer": "", "metrics": {"vectors_retrieved": 0}}
     logger.info("Before generating req_id display query_id: %s", params.get("query_id"))
     req_id = params.get("query_id") or uuid.uuid4().hex[:8]
-    logger.info("[REQ] handle_chat start [req_id=%s]", req_id)
+    logger.info("[REQ] handle_chat start stateless [req_id=%s]", req_id)
 
     # Determine rewrite toggle (param overrides settings)
     rewrite_enabled = bool((params or {}).get("enable_query_rewrite", getattr(settings, "enable_query_rewrite", False)))
@@ -1972,7 +2080,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         enable_tools = bool(getattr(settings, "enable_tools", False))
 
-    # --- Option A: derive a namespace for cache keying (non-breaking) ---
+    # --- Derive a namespace for cache keying (non-breaking) ---
     try:
         _uid = str((params or {}).get("user_id") or "").strip()
         _cid = str((params or {}).get("conversation_id") or "").strip()
@@ -2011,7 +2119,11 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
                 req_id, len(_SUMMARY_CACHE), _pre_bytes, (_uid or ""), (_cid or ""))
         except Exception:
             pass
+        # Run the orchestrator (chat pipeline)
+        logger.info("[PIPELINE] handle_chat running pipeline orchestrator")
+
         out = run_pipeline(deps=deps, req=req)
+        
         # Log cache size after the pipeline completes
         try:
             _post_bytes = 0

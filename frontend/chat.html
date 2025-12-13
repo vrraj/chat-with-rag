@@ -100,7 +100,10 @@
               <label for="top_p">Top P</label>
               <input id="top_p" type="number" min="0" max="1" step="0.01" value="0.9" />
             </div>
-           
+            <div class="form-field">
+              <label for="inference_context_rows">Inference Context Rows</label>
+              <input id="inference_context_rows" type="number" min="1" step="1" value="3" readonly />
+            </div>
             <div class="form-field">
               <label for="max_output_tokens">Max Output Tokens</label>
               <input id="max_output_tokens" type="number" min="1" step="1" value="300" />
@@ -142,7 +145,8 @@
         <section id="metrics_bar" class="metrics-compact" aria-label="Metrics">
           <!-- Part 1: Turn Metrics -->
           <div class="metrics-subsection-title">Per Turn Metrics  :</div>
-          <div class="metric"><span class="metric-label">Tokens</span><span id="turn_total_tokens" class="metric-value" data-metric="turn_metrics.totals.tokens.turn_total">0</span></div>
+          <div class="metric"><span class="metric-label">Input Tokens</span><span id="turn_input_tokens" class="metric-value" data-sum="turn_metrics.embedding.input_tokens, turn_metrics.rerank.input_tokens, turn_metrics.summary.input_tokens, turn_metrics.rewrite.input_tokens, turn_metrics.inference.prompt_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Output Tokens</span><span id="turn_output_tokens" class="metric-value" data-sum="turn_metrics.rerank.output_tokens, turn_metrics.summary.output_tokens, turn_metrics.rewrite.output_tokens, turn_metrics.inference.completion_tokens">0</span></div>
           <div class="metric emphasis"><span class="metric-label">Cost</span><span id="turn_total_cost" class="metric-value" data-metric="turn_metrics.totals.cost.turn_total">0</span></div>
 
           <div style="flex-basis:100%;height:0"></div>
@@ -195,7 +199,8 @@
           <div style="flex-basis:100%;height:0"></div>
           <div class="metrics-subsection-title">Total Conversation Metrics :</div>
           <div class="metric"><span class="metric-label"> Cost</span><span id="conversation_total_cost" class="metric-value" data-metric="conversation_totals.cost.conversation_total">0</span></div>
-          <div class="metric"><span class="metric-label">Tokens</span><span id="conversation_total_tokens" class="metric-value" data-metric="conversation_totals.tokens.conversation_total">0</span></div>
+          <div class="metric"><span class="metric-label">Input Tokens</span><span id="conversation_input_tokens" class="metric-value" data-sum="conversation_totals.tokens.embedding, conversation_totals.tokens.llm_input">0</span></div>
+          <div class="metric"><span class="metric-label">Output Tokens</span><span id="conversation_output_tokens" class="metric-value" data-metric="conversation_totals.tokens.llm_output">0</span></div>
         </section>
 
         <!-- Scrollable chat history -->
