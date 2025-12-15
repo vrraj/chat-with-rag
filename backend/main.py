@@ -281,7 +281,10 @@ async def index_mediawiki_url(
             chunk_overlap=settings.html_chunk_overlap,
             api_url=mediawiki_input.api_url,
             user_agent=mediawiki_input.user_agent,
-            wiki_mode="parsoid",  # <- switch from "parsoid" to "action_api". Prioritize Parsoid first behavior with fallback to Action API
+            wiki_mode=settings.wiki_mode, # "parsoid" or "action_api". Parsoid is recommended for better accuracy.
+            wiki_index_tables=settings.wiki_index_tables,
+            wiki_table_rows_per_chunk=settings.wiki_table_rows_per_chunk,
+            wiki_drop_tables_from_prose=settings.wiki_drop_tables_from_prose,
         )
         #logger.info("TRACE MW: MediaWikiExtractor init done")
         url = mediawiki_input.url
@@ -454,6 +457,11 @@ async def index_pdf(
             chunk_overlap=settings.html_chunk_overlap,
             skip_sections=skip_sections,
             header_footer_filter=getattr(settings, 'header_footer_filter', True),
+            pdf_index_tables=getattr(settings, 'pdf_index_tables', True),
+            pdf_table_rows_per_chunk=getattr(settings, 'pdf_table_rows_per_chunk', 12),
+            pdf_repeat_table_header=getattr(settings, 'pdf_repeat_table_header', True),
+            pdf_table_min_rows=getattr(settings, 'pdf_table_min_rows', 1),
+            pdf_drop_tables_from_prose=getattr(settings, 'pdf_drop_tables_from_prose', False),   
         )
         # for PDF file upload
         if pdf_input.file:
@@ -514,7 +522,7 @@ async def index_pdf(
             
         if pdf_input.max_chunks is not None and pdf_input.max_chunks > 0:
             chunks = chunks[:pdf_input.max_chunks]
-            
+        logger.debug("PDF: Final chunks for embedding=%d", len(chunks))  
         if pdf_input.estimate:
             # Calculate estimated tokens using the embeddings manager's token counter
             tokens_used = 0
@@ -783,6 +791,10 @@ async def index_content(url_input: URLInput):
                         chunk_size=settings.html_chunk_size,
                         chunk_overlap=settings.html_chunk_overlap,
                         html_mode="dom",
+                        html_index_tables=True,
+                        html_table_rows_per_chunk=12,
+                        html_drop_tables_from_prose=True,
+                        skip_sections=url_input.skip_sections,
                     )
 
                     # If provided content lacks real heading tags, refetch raw HTML to ensure DOM headings are available

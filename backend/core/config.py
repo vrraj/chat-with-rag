@@ -225,18 +225,48 @@ class Settings(BaseSettings):
     # Chunking configuration
     html_chunk_size: int = 500
     html_chunk_overlap: int = 100
-    pdf_chunk_size: Optional[int] = 500  # Will be determined by section length
+    html_index_tables: bool = True # Optional: if True, index tables as structured payloads
+    html_table_rows_per_chunk: int = 12 # Optional: number of table rows per chunk
+    html_drop_tables_from_prose: bool = True # Optional: if True, remove ALL <table> elements from the prose extraction path
+    html_skip_sections: Optional[List[str]] = None # Optional: list of section names to skip (e.g., "References", "See also")
+   
+    # PDF extraction configuration
+    pdf_chunk_size: Optional[int] = 500  # chunk size for prose chunking
     pdf_chunk_overlap: int = 100
+    pdf_skip_sections: Optional[List[str]] = None  # e.g., ["References", "See also"]
+
+    # switch between legacy pymupdf extractor vs new pymupdf4llm extractor
+    pdf_use_pymupdf4llm: bool = True
+
+    # PDF extraction quality toggles
+    pdf_header_footer_filter: bool = True
+    pdf_multicolumn_sort: bool = False
+
+    # --- PDF table indexing (structured path) ---
+    # When True, emit table payloads as structured markdown tables (separate from prose).
+    pdf_index_tables: bool = True
+    # Number of table data-rows per emitted table chunk.
+    pdf_table_rows_per_chunk: int = 12
+    # Repeat the table header row in every emitted table chunk.
+    pdf_repeat_table_header: bool = True
+    # Minimum number of data rows required to index a detected table.
+    pdf_table_min_rows: int = 1
+    # If True, remove detected tables from the prose extraction path (keeps only structured table payloads).
+    pdf_drop_tables_from_prose: bool = True
+
+    # Back-compat alias used by older code paths (prefer pdf_header_footer_filter going forward)
+    header_footer_filter: bool = True
     max_urls: int = 10
     default_chunk_size: int = 500
     default_chunk_overlap: int = 100
     reranker_chunk_size: int = 500
     mediawiki_chunk_size: int = 500
     mediawiki_chunk_overlap: int = 100
+    wiki_mode: str = "parsoid"
+    wiki_index_tables: bool = True # Optional: if True, index tables as structured payloads
+    wiki_table_rows_per_chunk: int = 12 # Optional: number of table rows per chunk
+    wiki_drop_tables_from_prose: bool = True # Optional: if True, remove ALL <table> elements from the prose extraction path
     
-    # switch between legacy pymupdf extractor vs new pymupdf4llm extractor
-    pdf_use_pymupdf4llm: bool = True
-    header_footer_filter: bool = True
 
     # Wikipedia / MediaWiki API configuration
     wiki_api_url: str = "https://en.wikipedia.org/w/api.php"

@@ -41,84 +41,103 @@ SUP_UNI_RE = re.compile(r'^[\u00B9\u00B2\u00B3\u2070-\u2079]+$')  # ¹²³⁴⁵
 BRACKET_REF = re.compile(r'^\[(?:\d{1,3})(?:[\s,–-]+\d{1,3})*\]$')
 SHORT_DIGITS = re.compile(r'^\d{1,3}$')
 
-# --- Infobox extraction helpers and constants ---
-INFOBOX_LABELS = [
-    "Elevation",
-    "Prominence",
-    "Parent peak",
-    "Isolation",
-    "Listing",
-    "Coordinates",
-    "Naming",
-    "Etymology",
-]
+# --- Infobox extraction helpers (generic) ---
+#
+# We intentionally avoid a fixed list of labels.
+# Many PDFs (including Wikipedia exports) represent sidebars / infoboxes as
+# small 2-column tables (Label | Value). For other PDFs the labels differ
+# (SEC summaries, medical demographics, etc.).
+#
+# IMPORTANT: Do NOT treat large multi-column data tables as INFOBOX.
+# Doing so can cause tables to be mislabeled as INFOBOX and skipped by
+# downstream filters.
 
-def _split_infobox_from_lead(text: str) -> Tuple[Optional[str], str]:
-    """Attempt to carve out a Wikipedia-style mountain infobox from Lead text.
-
-    Strategy:
-    - Look for the first occurrence of "Highest point".
-    - If found, treat everything from that phrase to the end of the string as the
-      infobox blob.
-    - Return (infobox_text, remaining_text). If not found, return (None, original_text).
-
-    This is intentionally conservative and only applies when the expected anchor
-    phrase is present. It is safe for non-Wikipedia PDFs because it will simply
-    be a no-op when the pattern is absent.
-    """
-    if not text:
-        return None, text
-
-    # Work on a normalized single-line representation to simplify span math,
-    # but keep the original text for the remaining part.
-    normalized = re.sub(r"\s+", " ", text).strip()
-    anchor = "highest point"
-    idx = normalized.lower().find(anchor)
-    if idx == -1:
-        return None, text
-
-    infobox_text = normalized[idx:].strip()
-    remaining_text = normalized[:idx].strip()
-    return infobox_text, remaining_text
+def _table_md_column_count(table_md: str) -> int:
+    """Return the number of columns in a markdown table header row."""
+    if not table_md:
+        return 0
+    first = table_md.splitlines()[0].strip()
+    if not first.startswith("|"):
+        return 0
+    # Remove leading/trailing pipes and split.
+    parts = [p.strip() for p in first.strip("|").split("|")]
+    return len([p for p in parts if p or p == ""])  # keep empty cells
 
 
-def _parse_infobox_key_values(infobox_text: str) -> Dict[str, str]:
-    """Parse a flattened infobox blob into key/value pairs using known labels.
+def _clean_table_cell(text: str) -> str:
+    """Clean a markdown table cell into plain text."""
+    if text is None:
+        return ""
+    s = str(text)
+    # Convert common HTML line breaks used by pymupdf4llm.
+    s = s.replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ")
+    # Drop strike-through tildes that sometimes appear as OCR / markdown artifacts.
+    s = s.replace("~~", "")
+    # Collapse whitespace.
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
-    Example input (single-line normalized):
-      "Highest point Elevation 14,505 ft (4,421 m) NAVD 88 Prominence 10,075 ft ..."
 
-    Returns a dict like:
-      { 'Elevation': '14,505 ft (4,421 m) NAVD 88', 'Prominence': '10,075 ft (3,071 m)', ... }
+def _looks_like_kv_infobox_table(table_md: str) -> bool:
+    """Heuristic: True if a markdown table looks like a 2-column Label/Value infobox."""
+    if not table_md:
+        return False
+    lines = [ln for ln in table_md.splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False
 
-    If labels are not found, returns an empty dict. This is meant as a best-effort
-    helper for Wikipedia-style mountain pages and is a no-op for other PDFs.
-    """
+    col_count = _table_md_column_count(table_md)
+    # Only 2-column tables are considered INFOBOX candidates.
+    # (Some PDFs may have a 3rd column for units; handle that later if needed.)
+    if col_count != 2:
+        return False
+
+    # Ensure we have at least 2 data rows.
+    data_rows = [ln for ln in lines[2:] if ln.strip().startswith("|")]
+    if len(data_rows) < 2:
+        return False
+
+    # Label column should be relatively short and non-numeric for most rows.
+    labelish = 0
+    for r in data_rows[:10]:
+        cells = [c.strip() for c in r.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        label = _clean_table_cell(cells[0])
+        val = _clean_table_cell(cells[1])
+        if not label or not val:
+            continue
+        if len(label) <= 40 and not re.fullmatch(r"[\d.,%-]+", label):
+            labelish += 1
+
+    return labelish >= 2
+
+
+def _parse_kv_infobox_table(table_md: str) -> Dict[str, str]:
+    """Parse a 2-column markdown table into key/value fields."""
     result: Dict[str, str] = {}
-    if not infobox_text:
+    if not table_md:
         return result
 
-    text = re.sub(r"\s+", " ", infobox_text).strip()
-    if not text:
+    lines = [ln for ln in table_md.splitlines() if ln.strip()]
+    if len(lines) < 3:
         return result
 
-    # Build a regex that matches any of the known labels as a group, e.g.:
-    # (Elevation|Prominence|Parent\ peak|Isolation|Listing|Coordinates|Naming|Etymology)
-    label_pattern = r"(" + "|".join(re.escape(lbl) for lbl in INFOBOX_LABELS) + r")\b"
-    matches = list(re.finditer(label_pattern, text))
-    if not matches:
-        return result
-
-    for i, m in enumerate(matches):
-        label = m.group(1)
-        start_val = m.end()
-        if i + 1 < len(matches):
-            end_val = matches[i + 1].start()
-        else:
-            end_val = len(text)
-        value = text[start_val:end_val].strip(" :;,-")
-        if value:
-            result[label] = value.strip()
+    # Data rows start after header + separator.
+    for r in lines[2:]:
+        if not r.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in r.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        k = _clean_table_cell(cells[0]).strip(" :;,-")
+        v = _clean_table_cell(cells[1]).strip(" :;,-")
+        if k and v:
+            # If the same key repeats, append (rare but happens in messy PDFs).
+            if k in result:
+                result[k] = f"{result[k]} ; {v}"
+            else:
+                result[k] = v
 
     return result
 
@@ -151,6 +170,12 @@ class PDFExtractor:
         multicolumn_sort: bool = False,
         # --- Section filtering ---
         skip_sections: Optional[List[str]] = None,
+        # --- Table extraction / chunking (PDF) ---
+        pdf_index_tables: bool = True,
+        pdf_table_rows_per_chunk: int = 12,
+        pdf_repeat_table_header: bool = True,
+        pdf_table_min_rows: int = 2,
+        pdf_drop_tables_from_prose: bool = False,
     ):
         """PDF text extractor with configurable cleanup heuristics.
 
@@ -195,11 +220,146 @@ class PDFExtractor:
         self.drop_small_superscripts = drop_small_superscripts
         self.superscript_size_ratio = float(superscript_size_ratio)
 
+        # Table extraction controls (used by pymupdf4llm backend; safe no-ops otherwise)
+        self.pdf_index_tables = bool(pdf_index_tables)
+        self.pdf_table_rows_per_chunk = int(pdf_table_rows_per_chunk)
+        self.pdf_repeat_table_header = bool(pdf_repeat_table_header)
+        self.pdf_table_min_rows = int(pdf_table_min_rows)
+        self.pdf_drop_tables_from_prose = bool(pdf_drop_tables_from_prose)
+
         # Normalized list of section titles to skip entirely (case-insensitive)
         # e.g., ["References", "See also"]. These are matched against the
         # "section" name as extracted from headings / markdown.
         self.skip_sections = [s.strip().casefold() for s in (skip_sections or []) if s and s.strip()]
         logger.debug("PDF: skip_sections=%s", self.skip_sections)
+    def _strip_markdown_tables(self, md: str) -> str:
+        """Remove GitHub-style markdown table blocks from markdown text.
+
+        This is used only when `pdf_drop_tables_from_prose=True` to avoid double-indexing
+        tables (once as prose, once as structured table payloads).
+
+        We keep this conservative: only removes blocks that look like a table header row
+        followed by a separator row (|---|---|...).
+        """
+        if not md:
+            return ""
+
+        lines = md.splitlines()
+        out: List[str] = []
+        i = 0
+
+        def is_table_sep(line: str) -> bool:
+            s = line.strip()
+            if not s.startswith("|"):
+                return False
+            # Accept standard and alignment separators like:
+            # |---|---|, |:---|---:|, |:---:|---|
+            return bool(re.match(r"^\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$", s))
+
+        def is_table_row(line: str) -> bool:
+            s = line.strip()
+            return s.startswith("|") and "|" in s[1:]
+
+        while i < len(lines):
+            # Detect a markdown table header + separator
+            if i + 1 < len(lines) and is_table_row(lines[i]) and is_table_sep(lines[i + 1]):
+                # Skip until the table block ends
+                i += 2
+                while i < len(lines) and is_table_row(lines[i]):
+                    i += 1
+                # Also skip trailing blank lines after table
+                while i < len(lines) and not lines[i].strip():
+                    i += 1
+                continue
+
+            out.append(lines[i])
+            i += 1
+
+        return "\n".join(out)
+
+    def _extract_markdown_tables(self, md: str) -> List[str]:
+        """Extract GitHub-style markdown table blocks from markdown text.
+
+        This is used as a *fallback* when the pymupdf4llm chunk metadata does not
+        provide table objects (or when table objects fail to convert).
+
+        Returns a list of markdown strings, each containing a full table block
+        (header + separator + rows).
+        """
+        if not md:
+            return []
+
+        lines = md.splitlines()
+        tables: List[str] = []
+        i = 0
+
+        def is_table_sep(line: str) -> bool:
+            s = line.strip()
+            if not s.startswith("|"):
+                return False
+            return bool(re.match(r"^\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$", s))
+
+        def is_table_row(line: str) -> bool:
+            s = line.strip()
+            return s.startswith("|") and "|" in s[1:]
+
+        while i < len(lines):
+            # Detect a markdown table header + separator
+            if i + 1 < len(lines) and is_table_row(lines[i]) and is_table_sep(lines[i + 1]):
+                start = i
+                i += 2
+                while i < len(lines) and is_table_row(lines[i]):
+                    i += 1
+                block = "\n".join(lines[start:i]).strip()
+                if block:
+                    tables.append(block)
+                continue
+            i += 1
+
+        return tables
+
+    def _chunk_markdown_table_by_rows(self, table_md: str) -> List[str]:
+        """Chunk a markdown table into multiple markdown tables by row count.
+
+        Expected format:
+          |h1|h2|
+          |---|---|
+          |r1|r1|
+          ...
+
+        Returns a list of markdown strings, each preserving the header when
+        `self.pdf_repeat_table_header=True`.
+        """
+        if not table_md:
+            return []
+
+        lines = [ln for ln in table_md.splitlines() if ln.strip()]
+        if len(lines) < 3:
+            return []
+
+        header = lines[0]
+        sep = lines[1]
+        rows = lines[2:]
+
+        # Basic validation: must look like a markdown table
+        if not header.strip().startswith("|") or "|" not in header.strip()[1:]:
+            return []
+        if not sep.strip().startswith("|") or "---" not in sep:
+            return []
+
+        # Enforce minimum row count
+        if len(rows) < max(0, self.pdf_table_min_rows):
+            return []
+
+        n = max(1, int(self.pdf_table_rows_per_chunk))
+        chunks: List[str] = []
+        for i in range(0, len(rows), n):
+            block_rows = rows[i:i + n]
+            if self.pdf_repeat_table_header:
+                chunks.append("\n".join([header, sep] + block_rows))
+            else:
+                chunks.append("\n".join(block_rows))
+        return chunks
     def _should_skip_section(
         self,
         section: Optional[str],
@@ -963,17 +1123,45 @@ class PDFExtractor:
                 tmp_path = tmp.name
 
             # Use page_chunks so we get per-page segmentation and tables metadata.
+            # NOTE: Some PDFs fail to yield any detected tables under stricter strategies.
+            # We start strict (better structure) and fall back to a looser strategy if needed.
             chunks = pymupdf4llm.to_markdown(
                 tmp_path,
                 page_chunks=True,
                 table_strategy="lines_strict",
             )
+
+            # If no tables were detected anywhere, retry with a more permissive strategy.
+            try:
+                total_tables = sum(len((c.get("tables") or [])) for c in (chunks or []))
+            except Exception:
+                total_tables = 0
+
+            if total_tables == 0:
+                chunks = pymupdf4llm.to_markdown(
+                    tmp_path,
+                    page_chunks=True,
+                    table_strategy="lines",
+                )
         finally:
             if tmp_path is not None:
                 try:
                     os.remove(tmp_path)
                 except OSError:
                     pass
+
+        # Debug log: concise summary of detected tables/chunks (if debug_verbose)
+        if settings.debug_verbose:
+            try:
+                total_chunks = len(chunks or [])
+                total_tables = sum(len((c.get("tables") or [])) for c in (chunks or []))
+                logger.debug(
+                    "PDF: pymupdf4llm produced chunks=%d total_tables=%d (table_strategy fallback may have run)",
+                    total_chunks,
+                    total_tables,
+                )
+            except Exception:
+                pass
 
         payloads: List[Dict] = []
 
@@ -984,218 +1172,387 @@ class PDFExtractor:
         subsection_index = 0
 
         for ch in chunks:
-            md = (ch.get("text") or "").strip()
-            if not md:
-                continue
+            # Prose markdown for this chunk (may include tables, depending on the backend).
+            md_raw = (ch.get("text") or "").strip()
+            md = md_raw
 
-            page = None
+            # Tables for this chunk (we must collect these before possibly `continue`-ing).
+            tables = ch.get("tables") or []
             meta = ch.get("metadata") or {}
+            # Page number metadata can vary by pymupdf4llm version.
+            # We accept a few common keys.
+            page = None
             try:
                 page = meta.get("page_number")
             except Exception:
                 page = None
-
-            lines = md.splitlines()
-            local_buffer: List[str] = []
-
-            def flush_local() -> None:
-                nonlocal local_buffer
-                if not local_buffer:
-                    return
-                body_text = "\n".join(local_buffer).strip()
-                local_buffer = []
-                if not body_text:
-                    return
-                norm = self._normalize_text(body_text)
-                if not norm:
-                    return
-                if self._should_skip_section(current_section, current_subsection, current_subsub):
-                    return
-                payloads.extend(
-                    self._chunk_payload(
-                        norm,
-                        url,
-                        current_section,
-                        current_subsection,
-                        current_subsub,
-                        section_index,
-                        subsection_index if current_subsection else None,
+            if page is None:
+                try:
+                    page = meta.get("page")
+                except Exception:
+                    page = page
+            if page is None:
+                try:
+                    page = meta.get("pageno")
+                except Exception:
+                    page = page
+            if settings.debug_verbose:
+                try:
+                    logger.debug(
+                        "PDF: chunk page=%s md_raw_len=%d tables_meta_len=%d drop_tables_from_prose=%s index_tables=%s",
                         page,
-                        doc_title,
-                        header_meta,
-                        footer_meta,
+                        len(md_raw or ""),
+                        len(tables or []),
+                        self.pdf_drop_tables_from_prose,
+                        self.pdf_index_tables,
                     )
-                )
+                except Exception:
+                    pass
 
-            for line in lines:
-                stripped = line.strip()
+            # If configured, remove markdown table blocks from the *prose* path to avoid
+            # double-indexing. IMPORTANT: even if stripping tables leaves `md` empty,
+            # we still must index `tables` below.
+            if md and self.pdf_drop_tables_from_prose:
+                md = self._strip_markdown_tables(md).strip()
 
-                # Preserve blank lines inside the local buffer for paragraph detection.
-                if not stripped:
-                    local_buffer.append("")
-                    continue
+            # Fallback: if metadata tables are missing (or later fail conversion),
+            # we can still recover markdown table blocks from the original markdown.
+            fallback_table_mds: List[str] = []
+            if self.pdf_index_tables and md_raw:
+                try:
+                    fallback_table_mds = self._extract_markdown_tables(md_raw)
+                except Exception:
+                    fallback_table_mds = []
 
-                # Drop header/footer-only lines when filtering is enabled.
-                if self.header_footer_filter and self._looks_like_header_or_footer(
-                    stripped,
-                    header_meta=header_meta,
-                    footer_meta=footer_meta,
-                ):
-                    # We still keep these strings in document_headers / document_footers
-                    # via header_meta/footer_meta, but they don't become content chunks.
-                    continue
+            # Prose path: only run when there is remaining markdown content.
+            if md:
+                lines = md.splitlines()
+                local_buffer: List[str] = []
 
-                # Markdown heading detection (e.g., "# Title", "## Section", "### Subsection").
-                if stripped.startswith("#"):
-                    # Count leading '#' to determine heading level.
-                    level = 0
-                    for ch_header in stripped:
-                        if ch_header == "#":
-                            level += 1
+                def flush_local() -> None:
+                    nonlocal local_buffer
+                    if not local_buffer:
+                        return
+                    body_text = "\n".join(local_buffer).strip()
+                    local_buffer = []
+                    if not body_text:
+                        return
+                    norm = self._normalize_text(body_text)
+                    if not norm:
+                        return
+                    if self._should_skip_section(current_section, current_subsection, current_subsub):
+                        return
+                    payloads.extend(
+                        self._chunk_payload(
+                            norm,
+                            url,
+                            current_section,
+                            current_subsection,
+                            current_subsub,
+                            section_index,
+                            subsection_index if current_subsection else None,
+                            page,
+                            doc_title,
+                            header_meta,
+                            footer_meta,
+                        )
+                    )
+
+                for line in lines:
+                    stripped = line.strip()
+
+                    # Preserve blank lines inside the local buffer for paragraph detection.
+                    if not stripped:
+                        local_buffer.append("")
+                        continue
+
+                    # Drop header/footer-only lines when filtering is enabled.
+                    if self.header_footer_filter and self._looks_like_header_or_footer(
+                        stripped,
+                        header_meta=header_meta,
+                        footer_meta=footer_meta,
+                    ):
+                        # We still keep these strings in document_headers / document_footers
+                        # via header_meta/footer_meta, but they don't become content chunks.
+                        continue
+
+                    # Markdown heading detection (e.g., "# Title", "## Section", "### Subsection").
+                    if stripped.startswith("#"):
+                        # Count leading '#' to determine heading level.
+                        level = 0
+                        for ch_header in stripped:
+                            if ch_header == "#":
+                                level += 1
+                            else:
+                                break
+                        title = stripped[level:].strip()
+                        # Strip surrounding bold markup if present ("**Title**").
+                        if title.startswith("**") and title.endswith("**"):
+                            title = title.strip("* ")
+
+                        # Flush any buffered content before changing heading context.
+                        flush_local()
+
+                        if level == 1:
+                            # Treat H1 as document title / Lead marker, not as a section.
+                            # If PyMuPDF metadata did not provide a title, use this.
+                            if not doc_title:
+                                doc_title = title
+                            # Do not modify current_section / subsection here; subsequent
+                            # content will still be associated with the current section
+                            # (or Lead if none has been set yet).
+                        elif level == 2:
+                            # H2 → new section (to mirror MediaWiki: page headings).
+                            current_section = title
+                            current_subsection = None
+                            current_subsub = None
+                            section_index += 1
+                            subsection_index = 0
                         else:
-                            break
-                    title = stripped[level:].strip()
-                    # Strip surrounding bold markup if present ("**Title**").
-                    if title.startswith("**") and title.endswith("**"):
-                        title = title.strip("* ")
+                            # H3+ → subsection under the current section.
+                            current_subsection = title
+                            current_subsub = None
+                            subsection_index += 1
 
-                    # Flush any buffered content before changing heading context.
-                    flush_local()
+                        continue
 
-                    if level == 1:
-                        # Treat H1 as document title / Lead marker, not as a section.
-                        # If PyMuPDF metadata did not provide a title, use this.
-                        if not doc_title:
-                            doc_title = title
-                        # Do not modify current_section / subsection here; subsequent
-                        # content will still be associated with the current section
-                        # (or Lead if none has been set yet).
-                    elif level == 2:
-                        # H2 → new section (to mirror MediaWiki: page headings).
-                        current_section = title
-                        current_subsection = None
-                        current_subsub = None
-                        section_index += 1
-                        subsection_index = 0
-                    else:
-                        # H3+ → subsection under the current section.
-                        current_subsection = title
-                        current_subsub = None
-                        subsection_index += 1
+                    # Bold-only heading heuristic (e.g., "**Hydrology**", "**Climate**").
+                    m = BOLD_HEADING_RE.match(stripped)
+                    if m:
+                        title = m.group("title").strip()
+                        flush_local()
+                        if current_section is None:
+                            # Treat as a top-level section if we don't have one yet.
+                            current_section = title
+                            current_subsection = None
+                            current_subsub = None
+                            section_index += 1
+                            subsection_index = 0
+                        else:
+                            # Otherwise treat as a subsection under the current section.
+                            current_subsection = title
+                            current_subsub = None
+                            subsection_index += 1
+                        continue
 
-                    continue
+                    # Regular content line → accumulate into the current buffer.
+                    local_buffer.append(line)
 
-                # Bold-only heading heuristic (e.g., "**Hydrology**", "**Climate**").
-                m = BOLD_HEADING_RE.match(stripped)
-                if m:
-                    title = m.group("title").strip()
-                    flush_local()
-                    if current_section is None:
-                        # Treat as a top-level section if we don't have one yet.
-                        current_section = title
-                        current_subsection = None
-                        current_subsub = None
-                        section_index += 1
-                        subsection_index = 0
-                    else:
-                        # Otherwise treat as a subsection under the current section.
-                        current_subsection = title
-                        current_subsub = None
-                        subsection_index += 1
-                    continue
-
-                # Regular content line → accumulate into the current buffer.
-                local_buffer.append(line)
-
-            # Flush any remaining buffered content for this chunk.
-            flush_local()
+                # Flush any remaining buffered content for this chunk.
+                flush_local()
 
             # Handle tables from this chunk as separate payloads.
-            tables = ch.get("tables") or []
-            for tbl in tables:
+            if not self.pdf_index_tables:
+                if settings.debug_verbose:
+                    logger.debug("PDF: table indexing disabled; skipping table payload generation for this chunk")
+                continue
+
+            # `tables` was collected above, before any prose-only early exits.
+            def _table_to_markdown(obj) -> Optional[str]:
+                """Best-effort conversion of a pymupdf4llm table object to markdown.
+
+                pymupdf4llm table representations can vary by version / strategy.
+                We support a few common shapes:
+                - objects with .to_markdown()
+                - raw markdown strings
+                - dicts containing a markdown field
+
+                Returns None when the object cannot be converted.
+                """
+                if obj is None:
+                    return None
+                # Most common: pymupdf4llm Table object
+                if hasattr(obj, "to_markdown"):
+                    try:
+                        return obj.to_markdown()
+                    except Exception:
+                        return None
+                # Sometimes already a markdown string
+                if isinstance(obj, str):
+                    s = obj.strip()
+                    return s or None
+                # Sometimes a dict-like representation
+                if isinstance(obj, dict):
+                    for key in ("markdown", "md", "table_md", "text"):
+                        val = obj.get(key)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+                return None
+
+            # Combine metadata-provided tables with any tables recovered directly
+            # from markdown. We de-dupe by exact markdown text.
+            combined_table_mds: List[str] = []
+            seen_tbl: set = set()
+
+            # First: metadata tables (preferred)
+            for t in tables:
+                md_candidate = _table_to_markdown(t)
+                if not md_candidate:
+                    continue
+                key = md_candidate.strip()
+                if not key or key in seen_tbl:
+                    continue
+                seen_tbl.add(key)
+                combined_table_mds.append(key)
+
+            # Second: markdown-extracted tables (fallback)
+            for tmd in (fallback_table_mds or []):
+                key = (tmd or "").strip()
+                if not key or key in seen_tbl:
+                    continue
+                seen_tbl.add(key)
+                combined_table_mds.append(key)
+
+            if settings.debug_verbose:
                 try:
-                    tbl_md = tbl.to_markdown()
+                    logger.debug(
+                        "PDF: tables metadata=%d fallback=%d combined=%d section=%s subsection=%s",
+                        len(tables or []),
+                        len(fallback_table_mds or []),
+                        len(combined_table_mds),
+                        current_section,
+                        current_subsection,
+                    )
                 except Exception:
-                    continue
-                # For INFOBOX-like tables, preserve per-row newlines by doubling them before normalization
-                tbl_norm = self._normalize_text(tbl_md.replace("\n", "\n\n"))
-                # Prefix each infobox line with the document title for stronger subject binding
-                # Only do this for infobox-like tables (detected below)
-                infobox_kv = _parse_infobox_key_values(tbl_norm)
-                is_infobox = False
-                # Still detect infobox tables by section logic, but do not create infobox field
-                if bool(_parse_infobox_key_values(tbl_norm)):
-                    # --- Start suffix-stripping helper ---
-                    raw_subject = (doc_title or "").strip()
-                    title_suffixes_to_strip = [" - wikipedia", " — wikipedia", " | wikipedia"]
-                    subject = raw_subject
-                    lower = raw_subject.lower()
-                    for suf in title_suffixes_to_strip:
-                        if lower.endswith(suf):
-                            subject = raw_subject[: -len(suf)].strip()
-                            break
-                    # --- End suffix-stripping helper ---
-                    if subject:
-                        raw_lines = [ln.strip() for ln in tbl_norm.split("\n") if ln.strip()]
-                        merged: List[str] = []
-                        i = 0
-                        while i < len(raw_lines):
-                            cur = raw_lines[i]
-                            nxt = raw_lines[i + 1] if i + 1 < len(raw_lines) else None
+                    pass
+            if settings.debug_verbose and (tables or []) and not combined_table_mds:
+                try:
+                    first = (tables or [None])[0]
+                    logger.debug(
+                        "PDF: WARNING table metadata present but no markdown produced; first_table_type=%s first_table_repr=%s",
+                        type(first).__name__,
+                        repr(first)[:500],
+                    )
+                except Exception:
+                    pass
 
-                            if (
-                                nxt
-                                and ":" not in cur
-                                and ":" not in nxt
-                                and len(cur) <= 40
-                                and len(nxt) <= 80
-                            ):
-                                merged.append(f"{subject} — {cur} — {nxt}")
-                                i += 2
-                            else:
-                                merged.append(f"{subject} — {cur}")
-                                i += 1
-
-                        tbl_norm = "\n".join(merged)
-                    is_infobox = True
-                if not tbl_norm:
-                    continue
-
-                section_name = current_section or ("INFOBOX" if is_infobox else "Table")
-                subsection_name = current_subsection if current_subsection else ("INFOBOX" if is_infobox else "Table")
+            for tbl_md in combined_table_mds:
+                # Determine where this table belongs before doing any work.
+                # This lets us skip unwanted sections (e.g., References) early and
+                # avoid confusing logs that look like we "indexed" something we later dropped.
+                section_name = current_section or "Table"
+                subsection_name = current_subsection or "Table"
 
                 # Skip tables that belong to sections we want to ignore (e.g., "References").
                 if self._should_skip_section(section_name, subsection_name, None):
+                    if settings.debug_verbose:
+                        logger.debug(
+                            "PDF: skipping table due to skip_sections section=%s subsection=%s",
+                            section_name,
+                            subsection_name,
+                        )
                     continue
+                # DEBUG: table detected and ready for chunking/indexing
+                if settings.debug_verbose:
+                    try:
+                        row_count = max(
+                            0,
+                            len([l for l in tbl_md.splitlines() if l.strip().startswith("|")]) - 2,
+                        )
+                    except Exception:
+                        row_count = 0
+                    logger.debug(
+                        "PDF: indexing table after skipping sections rows=%d section=%s subsection=%s",
+                        row_count,
+                        current_section,
+                        current_subsection,
+                    )
+                # Optionally chunk table by rows to preserve column context per chunk.
+                table_blocks = self._chunk_markdown_table_by_rows(tbl_md)
+                if not table_blocks:
+                    # Fall back to whole-table indexing if chunking fails.
+                    table_blocks = [tbl_md]
 
-                tbl_payload: Dict[str, object] = {
-                    "text": tbl_norm,
-                    "section": "INFOBOX" if is_infobox else section_name,
-                    "subsection": None if is_infobox else subsection_name,
-                    "subsubsection": None,
-                    "chunk_index": 0,
-                    "total_chunks": 1,
-                    "url": url,
-                    "document_type": "pdf",
-                    "source": url,
-                    "section_index": section_index,
-                    "subsection_index": subsection_index if current_subsection else None,
-                    "title": (subject if is_infobox else doc_title) if is_infobox else doc_title,
-                    "description": "",
-                    "page_number": page,
-                }
-                # Do NOT add infobox field for INFOBOX tables.
-                if header_meta:
-                    tbl_payload["document_headers"] = header_meta
-                if footer_meta:
-                    tbl_payload["document_footers"] = footer_meta
-                payloads.append(tbl_payload)
+                for tbl_block in table_blocks:
+                    # Detect INFOBOX tables using table structure (2-column label/value),
+                    # not by matching a fixed label list. This prevents large multi-column
+                    # data tables (e.g., lists of mountains) from being mislabeled as INFOBOX.
+                    is_infobox = False
+                    subject = None
+                    kv_fields: Dict[str, str] = {}
+
+                    if _looks_like_kv_infobox_table(tbl_block):
+                        kv_fields = _parse_kv_infobox_table(tbl_block)
+
+                    if kv_fields:
+                        # --- Start suffix-stripping helper ---
+                        raw_subject = (doc_title or "").strip()
+                        title_suffixes_to_strip = [" - wikipedia", " — wikipedia", " | wikipedia"]
+                        subject = raw_subject
+                        lower = raw_subject.lower()
+                        for suf in title_suffixes_to_strip:
+                            if lower.endswith(suf):
+                                subject = raw_subject[: -len(suf)].strip()
+                                break
+                        # --- End suffix-stripping helper ---
+
+                        # Convert key/value fields to subject-bound lines (better retrieval).
+                        # We keep one fact per line.
+                        lines_out: List[str] = []
+                        for k, v in kv_fields.items():
+                            if subject:
+                                lines_out.append(f"{subject} — {k} — {v}")
+                            else:
+                                lines_out.append(f"{k}: {v}")
+                        tbl_norm = "\n".join(lines_out)
+                        is_infobox = True
+                    else:
+                        # For INFOBOX-like tables, preserve per-row newlines by doubling them before normalization
+                        tbl_norm = self._normalize_text(tbl_block.replace("\n", "\n\n"))
+
+                    if not tbl_norm:
+                        continue
+
+                    # Re-label for INFOBOX after detection.
+                    if is_infobox:
+                        section_name = "INFOBOX"
+                        subsection_name = "INFOBOX"
+                    else:
+                        # Keep the earlier placement for non-infobox tables.
+                        section_name = section_name
+                        subsection_name = subsection_name
+
+                    tbl_payload: Dict[str, object] = {
+                        "text": tbl_norm,
+                        "section": "INFOBOX" if is_infobox else section_name,
+                        "subsection": None if is_infobox else subsection_name,
+                        "subsubsection": None,
+                        "chunk_index": 0,
+                        "total_chunks": 1,
+                        "url": url,
+                        "document_type": "pdf",
+                        "source": url,
+                        "section_index": section_index,
+                        "subsection_index": subsection_index if current_subsection else None,
+                        "title": (subject if is_infobox else doc_title) if is_infobox else doc_title,
+                        "description": "",
+                        "page_number": page,
+                    }
+                    # Do NOT add infobox field for INFOBOX tables.
+                    if header_meta:
+                        tbl_payload["document_headers"] = header_meta
+                    if footer_meta:
+                        tbl_payload["document_footers"] = footer_meta
+                    payloads.append(tbl_payload)
 
         # At the end, append geometry-based INFOBOX payload if no INFOBOX already present via table extraction
         has_infobox = any(p.get("section") == "INFOBOX" for p in payloads)
         if not has_infobox and geom_infobox_payload is not None:
             payloads.append(geom_infobox_payload)
 
+        if settings.debug_verbose:
+            try:
+                total_payloads = len(payloads)
+                infobox_payloads = sum(1 for p in payloads if p.get("section") == "INFOBOX")
+                tableish_payloads = sum(1 for p in payloads if (p.get("section") in {"Table"} or p.get("subsection") in {"Table"}))
+                logger.debug(
+                    "PDF: pymupdf4llm final payloads=%d infobox=%d tableish=%d",
+                    total_payloads,
+                    infobox_payloads,
+                    tableish_payloads,
+                )
+            except Exception:
+                pass
         return payloads
 
     def _parse(self, url: str, pdf_bytes: bytes) -> List[Dict]:
@@ -1206,6 +1563,10 @@ class PDFExtractor:
         the existing PyMuPDF-based pipeline.
         """
         use_llm = getattr(settings, "pdf_use_pymupdf4llm", False)
+        if settings.debug_verbose:
+            logger.debug(
+                "PDF: dispatcher use_llm=%s HAS_PYMUPDF4LLM=%s", use_llm, HAS_PYMUPDF4LLM
+            )
         if use_llm and HAS_PYMUPDF4LLM and pymupdf4llm is not None:
             try:
                 return self._parse_with_pymupdf4llm(url, pdf_bytes)

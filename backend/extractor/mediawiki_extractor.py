@@ -92,6 +92,9 @@ class MediaWikiExtractor:
         wiki_mode: str = "parsoid",  # or "action_api" . Set in MediaWikiExtractor instance in main.py
         wiki_drop_selectors: Optional[List[str]] = None,
         wiki_preserve_paragraphs: bool = True,
+        wiki_index_tables: bool = False,
+        wiki_table_rows_per_chunk: int = 12,
+        wiki_drop_tables_from_prose: bool = False,
     ):
         # Per-instance API settings (fall back to global settings defaults)
         self.api_url = api_url or WIKI_API_URL
@@ -128,6 +131,17 @@ class MediaWikiExtractor:
             ]
         )
         self.wiki_preserve_paragraphs = wiki_preserve_paragraphs
+        # Optional: emit additional payloads for HTML tables (useful for list-pages).
+        # This is additive and does not change existing prose extraction.
+        self.wiki_index_tables = wiki_index_tables
+        self.wiki_table_rows_per_chunk = wiki_table_rows_per_chunk
+        # Optional: if True, remove ALL <table> elements from the prose extraction path
+        # (_html_to_text). This prevents tables from being flattened into normal section
+        # prose chunks when you prefer to index them only via the structured table path
+        # (`_emit_table_payloads`, content_type="table").
+        #
+        # IMPORTANT: This is additive and non-breaking because the default is False.
+        self.wiki_drop_tables_from_prose = wiki_drop_tables_from_prose
 
     def parse(self, wikitext: str, url: str, skip_sections: Optional[List[str]] = None) -> List[Dict]:
         """
@@ -322,6 +336,12 @@ class MediaWikiExtractor:
         for sel in drop_selectors:
             for el in soup.select(sel):
                 el.decompose()
+        # Optional: drop ALL tables from the prose path. When enabled, tables will not
+        # be flattened into normal section text chunks, and can be indexed only via the
+        # structured table extraction path (`_emit_table_payloads`).
+        if getattr(self, "wiki_drop_tables_from_prose", False):
+            for tbl in soup.find_all("table"):
+                tbl.decompose()
         # Visible text only (anchor TEXT preserved automatically)
         text = soup.get_text(" ")
         # Normalize whitespace
@@ -377,7 +397,7 @@ class MediaWikiExtractor:
                     if label and value:
                         lines.append(f"{label}: {value}")
                     continue
-        except Exception as exc:
+        except Exception:
             # On any parsing error, fall back to plain text extraction.
             raw = infobox.get_text(" ", strip=True)
             raw = re.sub(r"\u00a0", " ", raw)
@@ -385,7 +405,7 @@ class MediaWikiExtractor:
             return raw.strip()
 
         # --- Subject prefixing for Infobox ---
-        # Specifically to manage the key value pairs in the infobox to conceptually link facts to the subject for better dense vector representation
+        # Prefix facts with the page subject for better embedding semantics.
         subject = getattr(self, "page_title", "").strip()
         if subject:
             prefixed_lines: List[str] = []
@@ -401,6 +421,221 @@ class MediaWikiExtractor:
         text = re.sub(r"\u00a0", " ", text)
         text = re.sub(r"[\t ]+", " ", text)
         return text.strip()
+
+    def _is_table_nested(self, table_tag) -> bool:
+        """Return True if this <table> is inside another <table>."""
+        try:
+            return table_tag.find_parent("table") is not None
+        except Exception:
+            return False
+
+    def _should_skip_table(self, table_tag) -> bool:
+        """Heuristics to skip non-content / boilerplate tables."""
+        try:
+            classes = " ".join(table_tag.get("class", [])).lower()
+            # Common MediaWiki boilerplate / navigation tables.
+            skip_markers = [
+                "navbox",
+                "vertical-navbox",
+                "metadata",
+                "ambox",
+                "toccolours",
+                "infobox",  # infobox is handled separately
+            ]
+            return any(m in classes for m in skip_markers)
+        except Exception:
+            return False
+
+    def _extract_table_headers(self, table_tag) -> List[str]:
+        """Extract column headers from the first header row, if present."""
+        headers: List[str] = []
+        try:
+            # Prefer the first row that contains <th> cells.
+            for tr in table_tag.find_all("tr", recursive=True):
+                ths = tr.find_all("th", recursive=False)
+                if ths:
+                    headers = [th.get_text(" ", strip=True) for th in ths]
+                    break
+            # Fall back: sometimes header cells are nested; try a non-recursive search per row.
+            if not headers:
+                for tr in table_tag.find_all("tr"):
+                    ths = tr.find_all("th")
+                    if ths:
+                        headers = [th.get_text(" ", strip=True) for th in ths]
+                        break
+        except Exception:
+            headers = []
+
+        # Normalize blanks
+        headers = [h.strip() for h in headers if h and h.strip()]
+        return headers
+
+    def _flatten_cell_text(self, cell_tag) -> str:
+        """Return readable text for a cell, flattening any nested tables into plain text."""
+        try:
+            # Replace nested tables with their visible text to avoid exploding structure.
+            for nested in cell_tag.find_all("table"):
+                nested_text = nested.get_text(" ", strip=True)
+                nested_text = re.sub(r"\s+", " ", nested_text).strip()
+                nested.replace_with(f" {nested_text} ")
+            text = cell_tag.get_text(" ", strip=True)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text
+        except Exception:
+            try:
+                return re.sub(r"\s+", " ", cell_tag.get_text(" ", strip=True)).strip()
+            except Exception:
+                return ""
+
+    def _table_rows_to_chunks(
+        self,
+        table_tag,
+        *,
+        rows_per_chunk: int,
+        section: Optional[str],
+        subsection: Optional[str],
+        subsubsection: Optional[str],
+        page_title: Optional[str],
+        table_index: int,
+    ) -> List[str]:
+        """Convert a table to a list of chunk texts (row-batched) with header/context prefix."""
+        headers = self._extract_table_headers(table_tag)
+
+        # Collect row dicts
+        row_texts: List[str] = []
+        trs = table_tag.find_all("tr")
+        for tr in trs:
+            # Skip pure header rows
+            tds = tr.find_all("td", recursive=False)
+            ths = tr.find_all("th", recursive=False)
+            if not tds and ths:
+                continue
+            if not tds:
+                # Fallback: if cells are nested, try a broader search
+                tds = tr.find_all("td")
+            if not tds:
+                continue
+
+            cells = [self._flatten_cell_text(td) for td in tds]
+            cells = [c for c in cells if c]
+            if not cells:
+                continue
+
+            # If we have headers and the widths match (or are close), use key:value pairs.
+            if headers and abs(len(headers) - len(cells)) <= 1:
+                pairs = []
+                for i, val in enumerate(cells):
+                    key = headers[i] if i < len(headers) else f"col_{i+1}"
+                    pairs.append(f"{key}: {val}")
+                row_texts.append(" | ".join(pairs))
+            else:
+                # Otherwise keep as a compact row line.
+                row_texts.append(" | ".join(cells))
+
+        if not row_texts:
+            return []
+
+        # Build prefix context
+        prefix_lines: List[str] = []
+        if page_title:
+            prefix_lines.append(f"Document: {page_title}")
+        if section:
+            prefix_lines.append(f"Section: {section}")
+        if subsection:
+            prefix_lines.append(f"Subsection: {subsection}")
+        if subsubsection:
+            prefix_lines.append(f"Subsubsection: {subsubsection}")
+        if headers:
+            prefix_lines.append("Columns: " + " | ".join(headers))
+        prefix_lines.append(f"Table index: {table_index}")
+        prefix = "\n".join(prefix_lines).strip() + "\n\n"
+
+        # Chunk rows in batches
+        rows_per_chunk = max(1, int(rows_per_chunk or 12))
+        chunks: List[str] = []
+        for start in range(0, len(row_texts), rows_per_chunk):
+            batch = row_texts[start : start + rows_per_chunk]
+            chunks.append(prefix + "\n".join(f"- {r}" for r in batch))
+        return chunks
+
+    def _emit_table_payloads(
+        self,
+        html: str,
+        *,
+        url: str,
+        section: Optional[str],
+        subsection: Optional[str],
+        subsubsection: Optional[str],
+        section_index: int,
+        subsection_index: int,
+    ) -> List[Dict]:
+        """Extract top-level content tables from HTML and emit additive payloads.
+
+        This is intentionally additive and non-breaking: it does NOT replace prose
+        extraction. It emits extra payloads with `content_type="table"`.
+        """
+        if not html:
+            return []
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            return []
+
+        tables = soup.find_all("table")
+        if not tables:
+            return []
+
+        out: List[Dict] = []
+        table_counter = 0
+        for tbl in tables:
+            if self._is_table_nested(tbl):
+                continue
+            if self._should_skip_table(tbl):
+                continue
+
+            table_counter += 1
+            table_idx = table_counter
+
+            chunk_texts = self._table_rows_to_chunks(
+                tbl,
+                rows_per_chunk=self.wiki_table_rows_per_chunk,
+                section=section,
+                subsection=subsection,
+                subsubsection=subsubsection,
+                page_title=getattr(self, "page_title", None),
+                table_index=table_idx,
+            )
+            if not chunk_texts:
+                continue
+
+            total = len(chunk_texts)
+            for i, chunk in enumerate(chunk_texts):
+                # Mirror the core payload schema but avoid re-splitting by tokens.
+                out.append(
+                    {
+                        "text": chunk,
+                        "section": section or "Lead",
+                        "subsection": subsection,
+                        "subsubsection": subsubsection,
+                        "chunk_index": i,
+                        "total_chunks": total,
+                        "url": url,
+                        "doc_type": "mediawiki",
+                        "document_type": "mediawiki",
+                        "source": url,
+                        "section_index": section_index,
+                        "subsection_index": subsection_index if subsection_index is not None else 0,
+                        "title": getattr(self, "page_title", None),
+                        "description": getattr(self, "page_description", ""),
+                        # Table-specific additive metadata (safe for downstream to ignore)
+                        "content_type": "table",
+                        "table_index": table_idx,
+                        "table_chunk_index": i,
+                        "table_total_chunks": total,
+                    }
+                )
+
+        return out
 
     def _truncate_html_at_first_subheading(self, html: str, max_level: int = 2) -> str:
         """
@@ -607,7 +842,48 @@ class MediaWikiExtractor:
                     continue
                 collected_html.append(str(child))
 
-            text = self._html_to_text("".join(collected_html))
+            collected_html_str = "".join(collected_html)
+            # Compute titles / indices for this entry (used by both prose and optional table payloads)
+            if level == 2:
+                sec_title = current_h2
+                sub_title = None
+                subsub_title = None
+                sec_index = section_index_counter
+                subsec_index = 0
+            elif level == 3:
+                sec_title = current_h2
+                sub_title = current_h3
+                subsub_title = None
+                sec_index = section_index_counter
+                subsec_index = current_subsection_index
+            else:  # level >= 4
+                sec_title = current_h2
+                sub_title = current_h3
+                subsub_title = title
+                sec_index = section_index_counter
+                subsec_index = current_subsection_index
+
+            section_url = f"{base_url}#{anchor}" if anchor else base_url
+
+            # Additive table indexing (optional): emit separate payloads for tables
+            # in list-style pages so row fragments carry column/header context.
+            if getattr(self, "wiki_index_tables", False):
+                try:
+                    payloads.extend(
+                        self._emit_table_payloads(
+                            collected_html_str,
+                            url=section_url,
+                            section=sec_title,
+                            subsection=sub_title,
+                            subsubsection=subsub_title,
+                            section_index=sec_index,
+                            subsection_index=subsec_index if subsec_index is not None else 0,
+                        )
+                    )
+                except Exception as table_exc:
+                    logger.debug("Wiki: table extraction failed for url=%s: %s", section_url, table_exc)
+
+            text = self._html_to_text(collected_html_str)
 
             # DEBUG: show a snippet of extracted text for Surveys / *century* to
             # understand why some subsections (e.g., "20th century") might be
@@ -630,26 +906,6 @@ class MediaWikiExtractor:
             if not text:
                 continue
 
-            if level == 2:
-                sec_title = current_h2
-                sub_title = None
-                subsub_title = None
-                sec_index = section_index_counter
-                subsec_index = 0
-            elif level == 3:
-                sec_title = current_h2
-                sub_title = current_h3
-                subsub_title = None
-                sec_index = section_index_counter
-                subsec_index = current_subsection_index
-            else:  # level >= 4
-                sec_title = current_h2
-                sub_title = current_h3
-                subsub_title = title
-                sec_index = section_index_counter
-                subsec_index = current_subsection_index
-
-            section_url = f"{base_url}#{anchor}" if anchor else base_url
             payloads.extend(self._chunk_payload(
                 text,
                 section_url,
@@ -717,6 +973,7 @@ class MediaWikiExtractor:
         #logger.debug("Wiki: fetched %d sections via action_api for %s", len(sections), self.page_title)
 
         payloads: List[Dict] = []
+        table_payloads_all: List[Dict] = []
 
         # Lead content (section=0) + optional INFOBOX extraction from the lead HTML.
         infobox_chunks: List[Dict] = []
@@ -817,10 +1074,7 @@ class MediaWikiExtractor:
             elif level == 3:
                 html = self._truncate_html_at_first_subheading(html, max_level=3)
 
-            text = self._html_to_text(html)
-            if not text:
-                continue
-
+            # Compute titles / indices / URL for this entry (used by prose and optional table payloads)
             if level == 2:
                 section_title = current_h2
                 subsection_title = None
@@ -841,6 +1095,28 @@ class MediaWikiExtractor:
                 subsec_index = current_subsection_index
 
             section_url = f"{url}#{anchor}" if anchor else url
+
+            # Additive table indexing (optional) for Action API sections.
+            if getattr(self, "wiki_index_tables", False):
+                try:
+                    table_payloads_all.extend(
+                        self._emit_table_payloads(
+                            html,
+                            url=section_url,
+                            section=section_title,
+                            subsection=subsection_title,
+                            subsubsection=subsubsection_title,
+                            section_index=sec_index,
+                            subsection_index=subsec_index if subsec_index is not None else 0,
+                        )
+                    )
+                except Exception as table_exc:
+                    logger.debug("Wiki: action_api table extraction failed for url=%s: %s", section_url, table_exc)
+
+            text = self._html_to_text(html)
+            if not text:
+                continue
+
             section_entries.append(
                 {
                     "level": level,
@@ -959,6 +1235,10 @@ class MediaWikiExtractor:
                     entry.get("subsection_index", 0),
                 )
             )
+
+        # Append any additive table payloads last (non-breaking for prose indexing).
+        if "table_payloads_all" in locals() and table_payloads_all:
+            payloads.extend(table_payloads_all)
 
         #logger.info("Wiki: parsed via action_api url=%s payloads=%d", url, len(payloads))
         return payloads

@@ -74,6 +74,10 @@ class HTMLExtractor:
         normalize_quotes: bool = True,
         html_entity_unescape: bool = True,
         strip_reference_markers: bool = True,
+        html_index_tables: bool = False,
+        html_table_rows_per_chunk: int = 12,
+        html_drop_tables_from_prose: bool = False,
+        skip_sections: Optional[List[str]] = None,
     ) -> None:
         self.splitter = TextSplitter(
             chunk_size=chunk_size,
@@ -99,6 +103,19 @@ class HTMLExtractor:
         self.normalize_quotes = normalize_quotes
         self.html_entity_unescape = html_entity_unescape
         self.strip_reference_markers = strip_reference_markers
+
+        # Optional (DOM mode only): emit separate structured payloads for HTML <table> elements.
+        # This is additive and non-breaking because the default is False.
+        self.html_index_tables = html_index_tables
+        self.html_table_rows_per_chunk = html_table_rows_per_chunk
+
+        # Optional (DOM mode only): remove ALL <table> elements from the prose extraction path
+        # for each section body so tables do not get flattened into regular text chunks.
+        # Use together with `html_index_tables=True` when you want only structured table chunks.
+        self.html_drop_tables_from_prose = html_drop_tables_from_prose
+        
+        # Sections to skip during extraction (e.g., ["References", "External links"])
+        self.skip_sections = skip_sections or []
 
     # ----------------- public API -----------------
     def parse(self, html_content: str, url: str, skip_sections: Optional[List[str]] = None) -> List[Dict]:
@@ -179,6 +196,159 @@ class HTMLExtractor:
         s = s.strip().lower()
         s = SLUG_RE.sub('-', s).strip('-')
         return s or "section"
+
+    # -------- DOM table helpers (additive; used only when html_index_tables=True) --------
+    def _is_table_nested(self, table: Tag) -> bool:
+        """Return True if the table is nested inside another table."""
+        try:
+            return table.find_parent("table") is not None
+        except Exception:
+            return False
+
+    def _extract_table_headers(self, table: Tag) -> List[str]:
+        """Extract column headers from the first header row, or fall back to the first row."""
+        headers: List[str] = []
+        try:
+            # Prefer explicit thead
+            thead = table.find("thead")
+            if thead:
+                ths = thead.find_all("th")
+                headers = [self._normalize(th.get_text(" ", strip=True)) for th in ths]
+                headers = [h for h in headers if h]
+                if headers:
+                    return headers
+
+            # Fall back: first row that contains any <th>
+            for tr in table.find_all("tr"):
+                ths = tr.find_all("th")
+                if ths:
+                    headers = [self._normalize(th.get_text(" ", strip=True)) for th in ths]
+                    headers = [h for h in headers if h]
+                    if headers:
+                        return headers
+
+            # Last resort: first row's cells
+            first_tr = table.find("tr")
+            if first_tr:
+                cells = first_tr.find_all(["td", "th"])
+                headers = [self._normalize(c.get_text(" ", strip=True)) for c in cells]
+                headers = [h for h in headers if h]
+        except Exception:
+            return []
+        return headers
+
+    def _flatten_cell_text(self, cell: Tag) -> str:
+        """Flatten a table cell to normalized plain text."""
+        try:
+            return self._normalize(cell.get_text(" ", strip=True))
+        except Exception:
+            return ""
+
+    def _table_rows_to_chunks(self, headers: List[str], rows: List[List[str]], rows_per_chunk: int) -> List[str]:
+        """Convert table rows into chunk strings containing headers + N rows."""
+        chunks: List[str] = []
+        if rows_per_chunk <= 0:
+            rows_per_chunk = 12
+
+        header_line = " | ".join(headers) if headers else ""
+        for start in range(0, len(rows), rows_per_chunk):
+            batch = rows[start:start + rows_per_chunk]
+            lines: List[str] = []
+            if header_line:
+                lines.append(f"Columns: {header_line}")
+            for r in batch:
+                # Keep row compact; preserve column alignment by joining with pipes.
+                lines.append(" | ".join([c for c in r if c]))
+            chunk_text = self._normalize("\n".join(lines))
+            if chunk_text:
+                chunks.append(chunk_text)
+        return chunks
+
+    def _emit_table_payloads(
+        self,
+        html: str,
+        *,
+        url: str,
+        section: Optional[str],
+        subsection: Optional[str],
+        subsubsection: Optional[str],
+        section_index: int,
+        subsection_index: Optional[int],
+        title: str,
+        description: str,
+        chunk_start_index: int,
+    ) -> List[Dict]:
+        """Extract top-level tables from an HTML fragment and emit structured table chunks.
+
+        This is DOM-mode only and additive. Each emitted chunk is tagged with
+        content_type="table" so downstream can filter/boost tables independently.
+        """
+        if not html:
+            return []
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            return []
+
+        out: List[Dict] = []
+        global_idx = chunk_start_index
+        table_num = 0
+
+        for table in soup.find_all("table"):
+            if self._is_table_nested(table):
+                continue
+            table_num += 1
+
+            headers = self._extract_table_headers(table)
+
+            # Collect body rows
+            rows: List[List[str]] = []
+            try:
+                for tr in table.find_all("tr"):
+                    cells = tr.find_all(["td", "th"])
+                    if not cells:
+                        continue
+                    row = [self._flatten_cell_text(c) for c in cells]
+                    row = [c for c in row if c]
+                    if row:
+                        rows.append(row)
+            except Exception:
+                continue
+
+            # If we used the first row as headers implicitly, avoid duplicating it as a data row.
+            if headers and rows:
+                # If the first row matches headers closely, drop it.
+                first = rows[0]
+                if len(first) == len(headers) and all((a == b for a, b in zip(first, headers))):
+                    rows = rows[1:]
+
+            chunk_texts = self._table_rows_to_chunks(headers, rows, getattr(self, "html_table_rows_per_chunk", 12))
+            if not chunk_texts:
+                continue
+
+            for local_i, txt in enumerate(chunk_texts):
+                out.append({
+                    "text": txt,
+                    "section": section or "Lead",
+                    "subsection": subsection,
+                    "subsubsection": subsubsection,
+                    "chunk_index": global_idx,
+                    "total_chunks": 0,  # filled later
+                    "url": url,
+                    "document_type": "html",
+                    "source": url,
+                    "section_index": section_index,
+                    "subsection_index": subsection_index,
+                    "title": title,
+                    "description": description,
+                    "content_type": "table",
+                    "table_index": table_num,
+                    "table_chunk_index": local_i,
+                })
+                global_idx += 1
+
+        return out
 
     def _chunk_payload(self,
                        text: str,
@@ -436,6 +606,7 @@ class HTMLExtractor:
                 heading_container = h
 
             collected_nodes: List[str] = []
+            collected_html: List[str] = []
             for sib in heading_container.next_siblings:
                 # Stop when we reach the next heading container: either a direct
                 # heading tag or any sibling that itself contains an h2/h3/h4.
@@ -445,6 +616,22 @@ class HTMLExtractor:
                         break
                     if sib.find(["h2", "h3", "h4"]):
                         break
+
+                    # Preserve raw HTML for optional structured table extraction.
+                    try:
+                        collected_html.append(str(sib))
+                    except Exception:
+                        pass
+
+                    # Optional: remove tables from prose path (DOM mode) while keeping
+                    # them available via structured table extraction.
+                    if getattr(self, "html_drop_tables_from_prose", False):
+                        try:
+                            for tbl in sib.find_all("table"):
+                                tbl.decompose()
+                        except Exception:
+                            pass
+
                     try:
                         collected_nodes.append(sib.get_text(" "))
                     except Exception:
@@ -455,8 +642,33 @@ class HTMLExtractor:
                     txt_node = str(sib)
                     if txt_node.strip():
                         collected_nodes.append(txt_node)
+                        collected_html.append(txt_node)
 
             txt = self._normalize(" ".join(collected_nodes))
+
+            # Additive: structured table extraction for this section body (DOM mode only).
+            # This emits separate payloads tagged with content_type="table".
+            if getattr(self, "html_index_tables", False) and collected_html:
+                try:
+                    table_html = "".join(collected_html)
+                    table_payloads = self._emit_table_payloads(
+                        table_html,
+                        url=f"{url}#{anchor}" if anchor else url,
+                        section=current_h2,
+                        subsection=current_h3 if lvl >= 3 else None,
+                        subsubsection=ttl if lvl >= 4 else None,
+                        section_index=section_index if current_h2 else 0,
+                        subsection_index=(subsection_counts.get(section_index, 0) - 1) if (current_h3 is not None) else None,
+                        title=page_title,
+                        description=description,
+                        chunk_start_index=global_idx,
+                    )
+                    if table_payloads:
+                        payloads.extend(table_payloads)
+                        logger.debug("HTML: table chunks added=%d for heading '%s'", len(table_payloads), ttl)
+                        global_idx += len(table_payloads)
+                except Exception as table_exc:
+                    logger.debug("HTML: table extraction failed for url=%s: %s", url, table_exc)
 
             # Fallback: some sites wrap a heading and its body inside a single
             # container like <div><h3>Title</h3><p>Body...</p></div>. In those
@@ -530,6 +742,9 @@ def extract_html_payloads(
     normalize_quotes: bool = True,
     html_entity_unescape: bool = True,
     strip_reference_markers: bool = True,
+    html_index_tables: bool = False,
+    html_table_rows_per_chunk: int = 12,
+    html_drop_tables_from_prose: bool = False,
     skip_sections: Optional[List[str]] = None,
 ) -> List[Dict]:
     """HTML-only entrypoint that returns chunked payloads matching PDF/MediaWiki schema.
@@ -547,8 +762,12 @@ def extract_html_payloads(
         normalize_quotes=normalize_quotes,
         html_entity_unescape=html_entity_unescape,
         strip_reference_markers=strip_reference_markers,
+        skip_sections=skip_sections,
+        html_index_tables=html_index_tables,
+        html_table_rows_per_chunk=html_table_rows_per_chunk,
+        html_drop_tables_from_prose=html_drop_tables_from_prose,
     )
-    return extractor.parse(html_content, url, skip_sections=skip_sections)
+    return extractor.parse(html_content, url)
 
 
 __all__ = ["HTMLExtractor", "extract_html_payloads", "ContentExtractor"]
