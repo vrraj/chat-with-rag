@@ -1139,8 +1139,22 @@ class ChatManager:
             }
         except Exception as e:
             logger.exception("Exception in chat: %s", e)
+            err_text = f"I'm sorry, I encountered an error while processing your request: {str(e)}"
+            # Best-effort: terminate SSE stage stream on errors so UI doesn't hang when using this stateful path.
+            try:
+                emit_stage(req_id, "Final Answer", final=True, finalContent=err_text)
+            except Exception:
+                pass
+            try:
+                emit_stage(req_id, "Done", final=True)
+            except Exception:
+                pass
+            try:
+                close_stream(req_id)
+            except Exception:
+                pass
             return {
-                "response": f"I'm sorry, I encountered an error while processing your request: {str(e)}",
+                "response": err_text,
                 "sources": []
             }
 # --- debug helper ---
@@ -2152,8 +2166,22 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.exception("[PIPELINE] handle_chat orchestrator failed: %s", e)
+        err_text = "Sorry, something went wrong."
+        # Ensure SSE stage stream terminates on errors so the UI doesn't hang.
+        try:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=err_text)
+        except Exception:
+            pass
+        try:
+            emit_stage(req_id, "Done", final=True)
+        except Exception:
+            pass
+        try:
+            close_stream(req_id)
+        except Exception:
+            pass
         return {
-            "answer": "Sorry, something went wrong.",
-            "response": "Sorry, something went wrong.",
+            "answer": err_text,
+            "response": err_text,
             "metrics": {"vectors_retrieved": 0},
         }

@@ -44,40 +44,45 @@ except Exception as _e:  # pragma: no cover
     logger.warning("stream_emit: stream_registry import failed: %s", _e)
 
 
-# --- thin pass‑throughs so call‑sites don’t import the registry directly -----
+# --- Thin pass‑throughs so call‑sites don’t import the registry directly -----
 def ensure_queue_for(query_id: str) -> Any:
     """Create (or fetch) the queue for this query_id in the registry."""
-    if _sr and hasattr(_sr, "ensure_queue_for"):
-        return _sr.ensure_queue_for(query_id)
+    fn = getattr(_sr, "ensure_queue_for", None) if _sr else None
+    if callable(fn):
+        return fn(query_id)
     return None
 
 
 def put_stage_update(query_id: str, payload: Dict[str, Any]) -> bool:
     """Non‑threadsafe put; only use when you are on the consumer loop."""
-    if _sr and hasattr(_sr, "put_stage_update"):
-        return bool(_sr.put_stage_update(query_id, payload))
+    fn = getattr(_sr, "put_stage_update", None) if _sr else None
+    if callable(fn):
+        return bool(fn(query_id, payload))
     return False
 
 
 def put_stage_update_threadsafe(query_id: str, payload: Dict[str, Any]) -> bool:
     """Thread/loop‑agnostic put; safe to call from workers/background threads."""
-    if _sr and hasattr(_sr, "put_stage_update_threadsafe"):
-        return bool(_sr.put_stage_update_threadsafe(query_id, payload))
+    fn = getattr(_sr, "put_stage_update_threadsafe", None) if _sr else None
+    if callable(fn):
+        return bool(fn(query_id, payload))
     return False
 
 
 def in_same_loop_as_consumer(query_id: str) -> bool:
     """Best‑effort hint whether current context shares the consumer loop."""
-    if _sr and hasattr(_sr, "in_same_loop_as_consumer"):
-        return bool(_sr.in_same_loop_as_consumer(query_id))
+    fn = getattr(_sr, "in_same_loop_as_consumer", None) if _sr else None
+    if callable(fn):
+        return bool(fn(query_id))
     return False
 
 
 def close_stream(query_id: str) -> None:
     """Signal that producers are done for this query_id."""
-    if _sr and hasattr(_sr, "close_stream"):
+    fn = getattr(_sr, "close_stream", None) if _sr else None
+    if callable(fn):
         try:
-            _sr.close_stream(query_id)
+            fn(query_id)
         except Exception:  # pragma: no cover
             logger.exception("close_stream(%s) failed", query_id)
 

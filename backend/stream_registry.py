@@ -217,6 +217,20 @@ def unregister_query(query_id: str) -> None:
         pass
 
 
+def close_stream(query_id: str) -> None:
+    """Public close helper expected by stream_emit.close_stream().
+
+    Enqueues the `None` sentinel and cleans up registry state.
+    """
+    try:
+        unregister_query(query_id)
+    except Exception:
+        try:
+            logger.exception("close_stream(%s) failed", query_id)
+        except Exception:
+            pass
+
+
 __all__ = [
     "register_query",
     "register_consumer_loop",
@@ -226,6 +240,7 @@ __all__ = [
     "ensure_queue_for",
     "put_stage_update",
     "put_stage_update_threadsafe",
+    "close_stream",
     "unregister_query",
     "in_same_loop_as_consumer",
 ]
