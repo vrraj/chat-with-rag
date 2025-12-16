@@ -42,8 +42,9 @@ services:
     command: python run.py # *** USES THE DEVELOPMENT SCRIPT run.py  with reload option in uvicorn***
     # command: python start.py # *** USES THE PRODUCTION SCRIPT start.py ***
 
-    env_file:
-      - .env
+   # docker-compose should read .env file automatically if it exists
+   # env_file:
+   #   - .env
 
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
