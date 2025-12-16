@@ -13,7 +13,7 @@ Chat Pipeline Stages (with History Integration):
    - Uses history to resolve ambiguous references (pronouns, etc.)
    - Helps disambiguate queries based on conversation context
 
-2. Context Retrieval
+2. Context (Document) Retrieval
    - Qdrant vector database search
    - Score and filter results
    - Current query combined with history for better context
@@ -22,17 +22,13 @@ Chat Pipeline Stages (with History Integration):
    - Reranks results using both query and conversation history
    - Improves relevance based on the full conversation context
 
-4. Web Search (optional)
-   - Augments context with web results when needed
-   - Uses history to maintain search context
-
-5. Summarization
+4. Context Summarization
    - Processes conversation history:
      - Keeps recent messages verbatim
      - Condenses older messages to save tokens
    - Uses `split_history_for_prompt()` to manage history window
 
-6. Prompt Construction
+5. Prompt Construction
    - Combines:
      - System instructions
      - Summarized history
@@ -40,15 +36,15 @@ Chat Pipeline Stages (with History Integration):
      - Retrieved context
      - Current query
 
-7. LLM Inference
+6. LLM Inference
    - Processes the full prompt with history
    - Generates response using conversation context
 
-8. Tool Execution (if needed)
+7. Tool Execution (if needed)
    - May use history for tool parameter resolution
    - Maintains tool state across turns
 
-9. Response Generation
+8. Response Generation
    - Formats final response
    - Updates conversation history with new exchange
 

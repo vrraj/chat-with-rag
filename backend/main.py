@@ -1,5 +1,9 @@
 import os
 from dotenv import load_dotenv
+# Load environment variables from .env (if present) without overriding OS env vars.
+# Precedence: OS env vars win; .env is a fallback.
+load_dotenv(override=False)
+
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -52,8 +56,6 @@ tags_metadata = [
     {"name": "5. Debug", "description": "Developer diagnostics and inspection utilities."},
 ]
 
-# Load environment variables from .env file if it exists
-load_dotenv()
 
 app = FastAPI(
     title="RAG Pipeline Chat API",
