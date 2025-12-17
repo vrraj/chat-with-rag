@@ -66,7 +66,10 @@
           <h2 class="text-xl inline">Results</h2>
           <span id="resultCount" class="ml-2 text-sm text-gray-500"></span>
         </div>
-        <button id="downloadBtn" class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700">Download JSON</button>
+        <div class="flex items-center space-x-2">
+          <span class="text-sm text-gray-500">Use for batch imports (check PDF paths after download)</span>
+          <button id="downloadBtn" class="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700">Download JSON</button>
+        </div>
       </div>
       <div class="mb-2 text-sm text-gray-500">
         <span id="showingCount" class="font-medium"></span>
@@ -260,14 +263,59 @@ if (val === d.base_url) {
           lastJson = dataToDownload; // Cache the data
         }
         
-        // Process the data to aggregate by base_url before downloading
+        // Process the data into the required format with aligned columns and title attribute
         if (dataToDownload && Array.isArray(dataToDownload.documents)) {
-          const aggregatedData = {
-            aggregated: true,
-            timestamp: new Date().toISOString(),
-            documents: aggregateByBaseUrl(dataToDownload.documents)
+          // Group documents by URL
+          const urlMap = new Map();
+          
+          dataToDownload.documents.forEach(doc => {
+            const url = doc.base_url || '';
+            if (!url) return;
+            
+            if (!urlMap.has(url)) {
+              urlMap.set(url, {
+                url: url,
+                doc_type: url.includes('wikipedia.org') ? 'mediawiki' : 
+                          url.endsWith('.pdf') ? 'pdf' : 'html',
+                skip_sections: ["References", "External links", "See also", "Further reading"],
+                title: doc.title || '',
+                total_chunks: 0,
+                updated_at: doc.updated_at || new Date().toISOString()
+              });
+              
+              // Add user_agent for non-PDF URLs
+              if (!url.endsWith('.pdf')) {
+                urlMap.get(url).user_agent = "Mozilla/5.0 (compatible; MyBot/1.0; +http://example.com/bot)";
+              }
+            }
+            
+            // Update total_chunks (using count if available, otherwise increment by 1)
+            const entry = urlMap.get(url);
+            entry.total_chunks += typeof doc.count === 'number' ? doc.count : 1;
+            
+            // Keep the earliest updated_at date
+            if (doc.updated_at && doc.updated_at < entry.updated_at) {
+              entry.updated_at = doc.updated_at;
+            }
+          });
+          
+          // Convert map values to array and format the final output
+          const formattedData = {
+            items: Array.from(urlMap.values()).map(item => ({
+              url: item.url,
+              doc_type: item.doc_type,
+              skip_sections: item.skip_sections,
+              title: item.title,
+              total_chunks: item.total_chunks,
+              updated_at: item.updated_at,
+              ...(item.user_agent && { user_agent: item.user_agent })
+            })),
+            max_chunks: 100,
+            estimate: true,
+            force_delete: false
           };
-          triggerDownload(aggregatedData);
+          
+          triggerDownload(formattedData);
         } else {
           // If the data structure is different, download as is
           triggerDownload(dataToDownload);

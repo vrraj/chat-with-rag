@@ -2,16 +2,16 @@
 
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
+A modular RAG framework that transforms unstructured data into **actionable intelligence** through sophisticated retrieval-reranking pipelines, real-time observability, and tool-augmented reasoning.
 
-A full end‑to‑end RAG system that ingests MediaWiki pages, HTML and PDFs, converts them into searchable embeddings, and lets you chat with your knowledge base using real‑time retrieval. The platform also supports tool integration and extensible API‑driven connectors, enabling live data augmentation from external systems or custom enterprise workflows.
+This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
 
 ##  Table of Contents
 
 - [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
 - [Features](#-features)
-- [System Requirements](#system-requirements)
-- [Quick Start – Setup & Run](#quick-start---setup--run)
-- [Sample (Seed) Data Overview](#sample-seed-data-overview)
+- [Getting Started with Chat with RAG](#getting-started-with-chat-with-rag)
+- [Knowledge Base and Sample Data](#knowledge-base-and-sample-data)
 - [Example Queries](#example-queries)
 - [Batch Ingestion](#batch-ingestion)
 - [Technical Overview](#technical-overview)
@@ -21,263 +21,209 @@ A full end‑to‑end RAG system that ingests MediaWiki pages, HTML and PDFs, co
 
 ## 🧠 High-Level RAG Pipeline Overview
 
-**Ingestion Pipeline**
-```
-Documents (single or batch)
-→ Extraction
-→ Processing & Normalization
-→ Metadata Augmentation
-→ Embedding Generation
-→ Vector Storage (Qdrant)
-```
+  The system operates through two primary parallel workflows: an **Ingestion Pipeline** for knowledge base construction and a **Chat Pipeline** for real-time retrieval and response generation.
 
-**Chat & Query Pipeline**
-```
-User Prompt
-→ Query Rewrite (optional)
-→ Document Retrieval
-→ Relevance Reranking (if needed)
-→ Context Construction (raw tail turns + summarized history)
-→ Prompt Assembly
-→ LLM Inference
-→ Tool Execution (if needed)
-→ Final Response
-```
+| **Ingestion Pipeline** (Data → Vector) | **Chat Pipeline** (Prompt → Answer) |
+| :--- | :--- |
+| 1. **Documents** (Single or Batch) | 1. **User Prompt** |
+| 2. **Extraction** (PDF, HTML, Wiki) | 2. **Query Rewrite** (Optimization) |
+| 3. **Processing & Normalization** | 3. **Document Retrieval** (Qdrant Search) |
+| 4. **Metadata Augmentation** | 4. **Relevance Reranking** |
+| 5. **Embedding Generation** (OpenAI) | 5. **Context Construction** (History + reranked chunks) |
+| 6. **Vector Storage** (Qdrant) | 6. **LLM Inference** (GPT-4o-mini) |
+| | 7. **Tool Execution** (e.g., Weather, Maps) |
+| | 8. **Final Response** (with Citations) |
 
 
 ## ✨ Features
 
-The system offers a complete pipeline for document-to-chat capabilities:
+An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to synthesize raw documents into structured intelligence, featuring a high-fidelity ingestion engine and live observability for verifiable, context-grounded insights.
 
-- **Intelligent Document Ingestion**
-  - Extracts, parses, and processes content from PDFs, Mediawiki pages, and HTML documents via a high-fidelity pipeline that includes:
-    - **Smart Chunking:** Configurable text chunking strategies to optimize retrieval context.
-    - **Semantic Indexing:** Generates vector embeddings and stores them along with rich metadata in the Qdrant vector database.
-    - **Noise Filtering:** Configurable rules to ignore irrelevant sections (e.g., headers/footers, references, etc.) for cleaner context.
-  - **Batch Ingestion:** Process multiple local PDFs (`file://`) and remote URLs with optional token/cost estimation.
-  - Preserve document structure and handle both structured and unstructured content.
+### 📥 High-Fidelity Ingestion
+* **Multi-Source Extraction**: Native support for high-fidelity parsing of **PDFs**, **MediaWiki**, and **HTML**.
+* **Intelligent Processing**: 
+    * **Smart Chunking**: Configurable strategies to preserve semantic context across fragments.
+    * **Structure Preservation**: Maintains the integrity of complex tables and structured layouts.
+    * **Noise Filtering**: Automated removal of headers, footers, and irrelevant boilerplate for cleaner context.
+* **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
 
+### 🧠 Advanced Chat Orchestration
+* **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
+* **Dynamic Context Control**: Fine-tune conversation history using a hybrid approach of **raw tail-turns** and **summary turns** to perfectly balance memory depth and token efficiency.
+* **Retrieval Optimization**:
+    * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.
+    * **Semantic Reranking**: Secondary relevance scoring applied to retrieved candidates to eliminate "hallucination noise."
+    * **Query Rewriting**: Intelligent expansion of user prompts with confidence-based filtering for better search hits.
+* **Verified Citations**: Final answers include direct deep-linked citations across multiple source documents.
 
-- **Configurable Chat Orchestration**
-  - **LLM Configuration :** Supports OpenAI models, with *separate* configurable models for each stage: Query Rewrite, Summarizer, Reranker, and Final Inference.
-  - **Retrieval Optimization:** Fine-tune retrieval with configurable parameters:
-    - Top-K, Distance Thresholds for Qdrant results.
-    - Query Rewrite: Configurable step for refining search queries with a confidence factor.
-    - Re-Ranking: Integrated Re-ranking stage applied to Qdrant results for improved relevance.
-    - **Retrieval tuning note:** Retrieval quality is sensitive to how many candidate chunks are fetched from the vector store. For noisy datasets or ambiguous queries, increasing the number of retrieved candidates can improve recall, at the expense of additional reranking cost. This trade-off is intentional and configurable, allowing users to balance answer quality, latency, and cost.
-  - **Context Control & Cost Management:** Conversation chain context is highly configurable:
-    - Set the number of **raw tail turns** and **summary turns** and **Token limits** to be included in the context. This allows users to strike an optimal balance between conversational history and token cost management.
-  - **Real-Time Observability (SSE):** Real-time Server-Sent Events (SSE) showing the progress of the entire RAG flow.
-- **Extensible Tool Calling:** Includes example tools (`get_nearby_airports`, `get_weather`) and supports adding custom API-driven tools for live data..
-  - **Per-Stage Cost Metrics:** Provides **tokens and cost for every stage** of the RAG pipeline.
-  - **Final Response:** Final responses across multiple documents with citations. 
-
-## ⚙️ System Requirements
-
-The application requires the following to run. Follow the Quick Start instructions to get started:
-
-- **macOS/Linux** . Not tested on Windows although it should work with docker
-- **Qdrant (Vector Database)** v1.14.1
-- **Docker** (required to run Qdrant)
-- **Python** 3.9 or higher
-- **OpenAI API Key** (for using OpenAI models)
-- **Git** (for cloning the repository)
+### 🛠️ Developer & Ops Experience
+* **Real-Time Observability**: Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens.
+* **Granular Cost Tracking**: Instant transparency with per-stage token usage and dollar-cost metrics for every request.
+* **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
 
 
-## 🚀 Quick Start - Setup & Run
+## 🚀 Getting Started with Chat with RAG
 
-There are two supported ways to get the application running. Choose the path that best fits your use case.
->**Note:** The provided `Makefile` simplifies setup and management. It contains a number of helpful targets to get started and manage the application.
+Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
 
-**Method 1 — Deployment Quick Start (Docker Compose)**  
-*Best for users who want to run the application quickly with minimal setup.*
-
-```
-Setup OpenAI account → Install Docker → Start Application → Seed Data (optional) → Launch application
-```
-
-**Method 2 — Developer Setup (Hybrid Mode)**  
-*Best for developers who want to modify or extend the backend code.*
-
-```
-Setup OpenAI account → Install Docker → Create Python Environment → Start Application → Seed Data (optional) → Launch application
-```
+### 📋 1. Prerequisites
+Ensure your environment meets these requirements before proceeding:
+* **OS:** macOS or Linux (Windows supported via Docker).
+* **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
+* **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
+* **OpenAI API Key:** Required for embeddings and chat pipeline. [Get one here](https://platform.openai.com/api-keys)
 
 
-### 1. Environment Setup (for both methods)
+### 2. Setup and Launch Application
 
-**1.1) Clone the Repository**
-``` bash
-git clone https://github.com/vrraj/chat-with-rag.git
-cd chat-with-rag
-
-```
-
-**1.2) Install Docker and Verify Installation**
-
-If you don't have Docker installed, follow the instructions for your platform:
-   - Mac / Windows: [Download Docker Desktop](https://www.docker.com/products/docker-desktop/)
-   - Linux: Setup Docker Engine and Docker Compose
-
-   ```bash
+**2.1) Verify Docker Installation**
+```bash
    # Verify Docker Installation
    docker --version
    docker-compose --version
 
    ```
-   You should see version numbers for both commands if Docker is installed correctly.
+ You should see version numbers if Docker is installed correctly.
 
-> **Note:** Linux Users: If you encounter a "permission denied" error when running Docker commands, it means your user is not in the docker group. To fix this, please follow the post-installation steps for Linux, which typically involve adding your user to the group: `sudo usermod -aG docker $USER` and then logging out and back in to apply the change.
+> **Note for Linux Users:** If you get "permission denied," add your user to the docker group: `sudo usermod -aG docker $USER` and then log out/in.
 
+**2.2) Clone the Repository**
+``` bash
+git clone [https://github.com/vrraj/chat-with-rag.git](https://github.com/vrraj/chat-with-rag.git)
+cd chat-with-rag
 
+```
 
-### 2. OpenAI API Access & Cost Management
-> **Note:** The core API features of this application require access to the **OpenAI API Platform** (not just ChatGPT access) for ingesting data, querying documents, and chatting with your knowledge base.
+**2.3) Configure OpenAI API & Costs**
 
->Users are responsible for managing and monitoring their own API usage and associated costs.To keep usage predictable, it’s strongly recommended to create a **dedicated project, API key and budget** for this application. 
+> [!IMPORTANT]
+> This application requires an **OpenAI API Platform** account (different from a ChatGPT Plus subscription). It is strongly recommended to set a **hard usage limit** in your [OpenAI Dashboard](https://platform.openai.com/api-keys) to stay within your desired budget.
 
 | Recommendation | Action | Rationale |
 | :--- | :--- | :--- |
-| **Budget** | An initial budget of **$5–$10** is generally plenty for testing. | Establishes a **safety ceiling** to prevent unexpected costs. |
-| **API Key** | Create a **new, dedicated API Key** named something like `chat-with-rag` in your [OpenAI API Key Dashboard](https://platform.openai.com/api-keys). | Allows you to track all usage specifically for this application on your usage dashboard. |
-| **Limits** | Set a **hard usage limit** or a **notification threshold** on your account or a dedicated Project to receive an email alert when you approach your set budget. | Provides proactive cost control. |
+| **Budget** | Set a limit of **$5–$10**. | Establishes a safety ceiling for testing. |
+| **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
+| **Alerts** | Set a 50% notification. | Provides proactive cost control. |
 
 
-### 3. Set up the Application
+**2.4) Set up local environment variables**
 
-Use one of the following methods to set up the application. 
-#### Method 1: Deployment Quick Start
+Copy the example environment file and add your API key.
 
-1.1 **Set OpenAI API Key in .env**
-> **Optional:** Advanced users may instead set `OPENAI_API_KEY` as an OS environment variable.  
+> **Note:** Optional: Advanced users may instead set `OPENAI_API_KEY` as an OS environment variable.  
 > If set, it will take precedence over the value in `.env`.
 
-Copy the example .env file to .env and set your OpenAI API key
-OPENAI_API_KEY=your-key-here
 ```bash
-
 cp .env.example .env
-vi .env
+# IMPORTANT: Open .env and add your OPENAI_API_KEY
+vi .env   # or use 'nano .env' / your preferred text editor
 
 ```
-1.2 **Start the Application**:
 
-Start Qdrant and the web app. Pulls **qdrant image** from dockerhub.
+### 🚀 3. Launch and Populate Seed Data
+
+**3.1) Start Infrastructure** This launches the Qdrant vector database and the FastAPI web application.
+
 ```bash
 make start
 
 ```
 **Note for macOS Users:**
-The make start command is configured to automatically launch the Docker Desktop application if it is not already running. The script will pause briefly while waiting for the Docker daemon to initialize before starting the containers.
+ `will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-1.3  **Seed sample data**
-After seeding data open the **View Documents** page in the frontend UI — it displays the complete dataset loaded into Qdrant.
-You will need a python environment to run this command.
+**3.2) Initialize environment and seed data**
+
+To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
+
 ```bash
+# Create and activate virtual environment
 python3 -m venv venv
 source venv/bin/activate
+# Install dependencies and seed Qdrant
 pip install -r requirements.txt 
 make seed
 
 ```
 
-1.4 **Access the web interface at [http://localhost:8000](http://localhost:8000)**
+**3.3) Access the interface**: Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
 
-#### Method 2: Developer Quick Start - Hybrid (Qdrant in Docker, Python app locally)
+### 🧪 4. Developer Mode (Optional)
 
-2.1 **Set OpenAI API Key in .env**
-> **Optional:** Advanced users may instead set `OPENAI_API_KEY` as an OS environment variable.  
-> If set, it will take precedence over the value in `.env`.
+To enable **hot-reload** (Uvicorn reload) for active development:
 
-Copy the example .env file to .env and set your OpenAI API key
-OPENAI_API_KEY=your-key-here
-```bash
+1.  **Open `docker-compose.yml`**.
+2.  **Change the command** from `python start.py` to `python run.py`.
+3.  **Restart the container** (run `make start` again).
 
-cp .env.example .env
-vi .env
-
-```
-2.2 **Set up Python environment**
-```bash
-python3 -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-```
-
-2.3 **Start the Application**
- Starts the application in hybrid mode - Qdrant in docker and the web app locally. Pulls qdrant image from dockerhub.
-
-```bash
-make start-hybrid
-
-```
-
-2.4 **Seed sample data** (Optional)
-You will need a python environment to run this command.
-After seeding data open the **View Documents** page in the frontend UI — it displays the complete dataset loaded into Qdrant.
-```bash
-python3 -m venv venv
-source venv/bin/activate   
-pip install -r requirements.txt 
-make seed
-
-```
-
-2.5 **Access the web interface at [http://localhost:8000](http://localhost:8000)**
+> [!TIP]
+> Because the webapp is a **volume mount**, any changes you make to your local `.py` files will reflect instantly inside the container. `run.py` detects these changes and triggers an automatic Uvicorn restart.
 
 ---
 
-## 🌱 Sample (Seed) Data Overview
 
-When `make seed` is run, the application loads approximately 50 Wikipedia pages into the Qdrant `document_index` collection. These cover well-known mountains, parks, trails, and outdoor destinations worldwide.
+## 📚 Knowledge Base and Sample Data
 
-### Explore Sample Data
+When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **50 Wikipedia pages**. This focus on world-renowned mountains, national parks, and trails provides a rich environment to test the RAG pipeline's accuracy.
 
-To view **all** seed indexed documents (with titles, URLs, and metadata), open the  
-**View Documents** page in the frontend UI — it displays the complete dataset loaded into Qdrant.
+### 📄 Data Attribution
+To demonstrate multi-source RAG capabilities, this project includes a sample knowledge base derived from Wikipedia.
+* **Source:** 55 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
+* **Integrity:** Source URLs and author metadata are preserved within the vector payloads to enable **verified citations**.
+* **License:** Distributed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+* **Full Credits:** Detailed source links and compliance information can be found in [ATTRIBUTIONS.md](./ATTRIBUTIONS.md).
 
-Alternatively, run in your unix shell (Terminal) from the project root directory:
+### 🔍 Explore the Data
+
+You can verify the indexed documents through the web interface or the command line:
+
+| Method | Action |
+| :--- | :--- |
+| **Frontend UI** | Navigate to the **"View Documents"** page to see titles, URLs, and metadata. |
+| **Terminal (CLI)** | Run the following to list the first 100 document titles: |
+
 ```bash
 source venv/bin/activate
 python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
-```
- 
-
-### Resetting or Removing Seed Data
-
-When `make seed` is run, all sample documents are loaded into the default Qdrant collection (config.py):
 
 ```
-collection_name=document_index
-```
 
-**NOTE:** To clear the seed data and start fresh with custom documents, the simplest option is to switch to a **new collection name**.
+### 🔄 Managing Your Collections
 
-1. #### Option A — Create a Fresh Collection (Recommended)
+The default collection is named `document_index` (defined in `backend/core/config.py`). If you want to move beyond the sample data, choose one of the following paths:
 
-Edit `backend/core/config.py` file and update the `collection_name` to use a different collection name, for example:
+#### Option A: Create a Fresh Collection (Recommended)
+This is the cleanest way to experiment with your own data (PDFs, URLs, etc.) without losing the original seed data.
 
-```
-collection_name=my_new_collection
-```
+1.  **Open `backend/core/config.py`**.
+2.  **Update the `collection_name` variable**:
+    ```python
+    collection_name = "my_custom_knowledge_base"
+    ```
+3.  **Restart the app**. The system will automatically detect the missing collection and create a fresh, empty one in Qdrant.
 
-On the next startup, the system will automatically create this new collection in Qdrant (if it does not already exist). From that point on, any documents ingested (PDFs, URLs, MediaWiki pages, etc.) will be stored in this new collection, completely separate from the original seed data. This provides a clean environment for custom data without modifying or deleting the original `document_index` collection.
+> [!TIP]
+> This approach allows you to maintain multiple "knowledge bases" on the same server. You can swap back to the seed data at any time just by changing this variable back to `document_index`.
 
+#### Option B: Delete and Purge (Destructive)
+Use this if you want to completely clear the sample data but keep using the `document_index` name for your own knowledge base.
 
-2. #### Option B — Delete the document_index Collection
+> [!WARNING]
+> This action will permanently delete the collection and all vectors within it. This cannot be undone.
 
-To delete the seed data collection, run the following command:
+1.  **Activate your environment**:
+    ```bash
+    source venv/bin/activate
+    
+    ```
+2.  **Run the deletion script**:
+    ```bash
+    python qdrant_scripts/qdrant_ops.py --delete-collection document_index
 
-```bash
-source venv/bin/activate
-python qdrant_scripts/qdrant_ops.py --delete-collection document_index
+    ```
+3.  **Verify or Re-seed**: 
+    If you visit the UI now, the collection will be gone. You can either start fresh by uploading your own files via the interface or run `make seed` to repopulate it from scratch.
 
-```
-This deletes the document_index collection from Qdrant. Afterward, run make seed to load new sample data into the document_index collection.
-
----
 
 ### 💬 Example Queries
 The following examples are based on the seed data.
@@ -330,6 +276,8 @@ Tools Used: get_weather
 <p align="center">
 <img src="images/multi-turn-conversation-with-tools.png" width="95%" />
 </p>
+
+---
 
 ## 📦 Batch Ingestion
 
