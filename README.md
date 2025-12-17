@@ -6,17 +6,24 @@ A modular RAG framework that transforms unstructured data into **actionable inte
 
 This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
 
-##  Table of Contents
+## Table of Contents
 
-- [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
-- [Features](#-features)
-- [Getting Started with Chat with RAG](#getting-started-with-chat-with-rag)
-- [Knowledge Base and Sample Data](#knowledge-base-and-sample-data)
-- [Example Queries](#example-queries)
-- [Batch Ingestion](#batch-ingestion)
-- [Technical Overview](#technical-overview)
-- [Project Structure](#project-structure)
-- [License & Usage](#license--usage)
+- [🧠 High-Level RAG Pipeline Overview](#high-level-rag-pipeline-overview)
+- [✨ Features](#features)
+- [🚀 Getting Started with Chat with RAG](#getting-started-with-chat-with-rag)
+  - [📋 1. Prerequisites](#1-prerequisites)
+  - [⚡ 2.0 One-command setup](#20-one-command-setup-macoslinux)
+  - [🛠️ 2.1 Manual setup](#21-manual-setup-step-by-step)
+  - [🧪 2.2 Developer Mode](#22-developer-mode-optional)
+- [📚 Knowledge Base and Sample Data](#knowledge-base-and-sample-data)
+  - [📄 Data Attribution](#data-attribution)
+  - [🔍 Explore the Data](#explore-the-data)
+  - [🔄 Managing Your Collections](#managing-your-collections)
+- [💬 Example Queries](#example-queries)
+- [📦 Batch Ingestion](#batch-ingestion)
+- [🏗️ Technical Overview](#technical-overview)
+- [🗂️ Project Structure](#project-structure)
+- [📜 License & Usage](#license--usage)
 
 
 ## 🧠 High-Level RAG Pipeline Overview
@@ -68,33 +75,66 @@ Get the system running in minutes using the provided `Makefile`. This setup uses
 
 ### 📋 1. Prerequisites
 Ensure your environment meets these requirements before proceeding:
-* **OS:** macOS or Linux (Windows supported via Docker).
-* **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
-* **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
-* **OpenAI API Key:** Required for embeddings and chat pipeline. [Get one here](https://platform.openai.com/api-keys)
+- **OS:** macOS or Linux (Windows supported via Docker).
+- **Git** – required to clone the repository. Install: https://git-scm.com/downloads
+- **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
+- **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
+- **OpenAI API Key:** Required for embeddings and chat pipeline. [Get one here](https://platform.openai.com/api-keys)
 
 
-### 2. Setup and Launch Application
 
-**2.1) Verify Docker Installation**
+### ⚡ 2.0 One-command setup (macOS/Linux)
+
+If you prefer fewer copy/paste steps, you can **run the setup in one go**.
+
+This script will:
+- create `.env` (if missing) and prompt you for `OPENAI_API_KEY`
+- start Docker services (`make start`)
+- create a Python venv, install dependencies, and seed sample data (`make seed`)
+
+> [!IMPORTANT]
+> The API key is written to your local `.env` file. Treat it like a password (don’t commit it).
+>
+> [!IMPORTANT]
+> Before running the setup, create an **OpenAI API Platform** key and set a **hard usage limit** (budget + alerts) in your OpenAI Dashboard.
+> See: [2.1.3 Configure OpenAI API & Costs](#213-configure-openai-api--costs)
+
 ```bash
-   # Verify Docker Installation
-   docker --version
-   docker-compose --version
+# 1) clone and enter the repo
+git clone https://github.com/vrraj/chat-with-rag.git
+cd chat-with-rag
 
-   ```
+# 2) run the one-command setup
+bash scripts/rag_setup.sh
+```
+
+> Tip: You can open `scripts/rag_setup.sh` to review exactly what will run before executing it.
+> The API key you enter is stored in .env. Treat it like a password. Do not commit it.
+
+### 🛠️ 2.1 Manual setup (step-by-step: 2.1.1 - 2.1.7)
+
+> If you ran the **2.0 One-command setup** above, you can skip this entire section.
+
+**2.1.1) Verify Docker Installation**
+```bash
+# Verify Docker
+ docker --version
+
+# Verify Docker Compose (v2 or v1)
+ docker compose version || docker-compose --version
+```
  You should see version numbers if Docker is installed correctly.
 
 > **Note for Linux Users:** If you get "permission denied," add your user to the docker group: `sudo usermod -aG docker $USER` and then log out/in.
 
-**2.2) Clone the Repository**
+**2.1.2) Clone the Repository**
 ``` bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
 
 ```
 
-**2.3) Configure OpenAI API & Costs**
+#### 2.1.3 Configure OpenAI API & Costs
 
 > [!IMPORTANT]
 > This application requires an **OpenAI API Platform** account (different from a ChatGPT Plus subscription). It is strongly recommended to set a **hard usage limit** in your [OpenAI Dashboard](https://platform.openai.com/api-keys) to stay within your desired budget.
@@ -106,12 +146,13 @@ cd chat-with-rag
 | **Alerts** | Set a 50% notification. | Provides proactive cost control. |
 
 
-**2.4) Set up local environment variables**
+**2.1.4) Set up local environment variables**
 
 Copy the example environment file and add your API key.
 
 > **Note:** Optional: Advanced users may instead set `OPENAI_API_KEY` as an OS environment variable.  
 > If set, it will take precedence over the value in `.env`.
+> If you used the one-command setup script above, it will prompt for the key and write it into your local .env automatically.
 
 ```bash
 cp .env.example .env
@@ -120,19 +161,18 @@ vi .env   # or use 'nano .env' / your preferred text editor
 
 ```
 
-### 🚀 3. Launch and Populate Seed Data
+**2.1.5) Start Infrastructure** This launches the Qdrant vector database and the FastAPI web application.
 
-**3.1) Start Infrastructure** This launches the Qdrant vector database and the FastAPI web application.
 
 ```bash
 make start
 
 ```
-**Note for macOS Users:**
- `will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
+> **Note for macOS Users:**
+> `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-**3.2) Initialize environment and seed data**
+**2.1.6) Initialize environment and seed data**
 
 To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
 
@@ -143,12 +183,13 @@ source venv/bin/activate
 # Install dependencies and seed Qdrant
 pip install -r requirements.txt 
 make seed
+deactivate
 
 ```
 
-**3.3) Access the interface**: Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
+**2.1.7) Access the interface**: Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
 
-### 🧪 4. Developer Mode (Optional)
+### 🧪 2.2 Developer Mode (Optional)
 
 To enable **hot-reload** (Uvicorn reload) for active development:
 

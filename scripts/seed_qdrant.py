@@ -77,6 +77,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Qdrant port (default: {DEFAULT_PORT})")
     parser.add_argument("--collection", default=DEFAULT_COLLECTION, help=f"Collection name (default: {DEFAULT_COLLECTION})")
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH, help=f"Upsert batch size (default: {DEFAULT_BATCH})")
+    parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     args = parser.parse_args()
 
     # Ensure seed file exists
@@ -89,6 +90,27 @@ def main() -> None:
         print(f"Qdrant is not reachable at http://{args.host}:{args.port}")
         print("Hint: run 'make start-docker' and 'make start-qdrant' first, then retry.")
         sys.exit(2)
+
+    # Check if collection exists
+    collection_exists = False
+    try:
+        collection_info = client.get_collection(collection_name=args.collection)
+        collection_exists = True
+        print(f"Found existing collection: {args.collection} (points: {collection_info.points_count})")
+    except Exception as e:
+        if "not found" not in str(e).lower():
+            print(f"Warning: Error checking collection: {e}")
+        print(f"Collection '{args.collection}' does not exist, will create it")
+
+    # Only prompt if collection exists and --force is not set
+    if collection_exists and not args.force:
+        print("\nWARNING: This operation will delete all data in the collection.")
+        print("If you wish to keep your current data, cancel now (Ctrl+C) and back up your Qdrant storage directory.")
+        print()
+        resp = input("Do you want to continue with recreating the collection and deleting existing data? (y/N): ").strip().lower()
+        if resp not in ("y", "yes"):
+            print("Operation cancelled by user.")
+            sys.exit(0)
 
     # Peek first record to determine vector size if needed
     iterator = iter_jsonl(args.path)
@@ -104,18 +126,11 @@ def main() -> None:
     else:
         vector_size = DEFAULT_VECTOR_FALLBACK
 
-    print()
-    print("WARNING: This operation will delete any existing data in the collection (DOCUMENT_INDEX) before recreating it.")
-    print("If you wish to keep your current data, cancel now (Ctrl+C) and back up your Qdrant storage directory.")
-    print()
-    resp = input("Do you want to continue with recreating the collection and deleting existing data? (y/N): ").strip().lower()
-    if resp not in ("y", "yes"):
-        print("Operation cancelled by user.")
-        sys.exit(0)
-
     # Recreate collection
     url = f"http://{args.host}:{args.port}"
-    print(f"Recreating collection '{args.collection}' (size={vector_size}, distance={DEFAULT_DISTANCE.value}) @ {url}")
+    action = "Recreating" if collection_exists else "Creating"
+    print(f"{action} collection '{args.collection}' (size={vector_size}, distance={DEFAULT_DISTANCE.value}) @ {url}")
+    
     try:
         client.recreate_collection(
             collection_name=args.collection,
