@@ -130,9 +130,6 @@ class PDFInput(BaseModel):
         description="List of section titles to skip (case-insensitive)."
     )
 
-## Consolidated PDF schema handled via /pdf endpoint with form fields; URL-only schema removed
-
-
 # Payload update request schema
 class PayloadUpdateRequest(BaseModel):
     url: str

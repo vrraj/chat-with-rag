@@ -44,6 +44,7 @@ User Prompt
 → Final Response
 ```
 
+
 ## ✨ Features
 
 The system offers a complete pipeline for document-to-chat capabilities:
@@ -63,6 +64,7 @@ The system offers a complete pipeline for document-to-chat capabilities:
     - Top-K, Distance Thresholds for Qdrant results.
     - Query Rewrite: Configurable step for refining search queries with a confidence factor.
     - Re-Ranking: Integrated Re-ranking stage applied to Qdrant results for improved relevance.
+    - **Retrieval tuning note:** Retrieval quality is sensitive to how many candidate chunks are fetched from the vector store. For noisy datasets or ambiguous queries, increasing the number of retrieved candidates can improve recall, at the expense of additional reranking cost. This trade-off is intentional and configurable, allowing users to balance answer quality, latency, and cost.
   - **Context Control & Cost Management:** Conversation chain context is highly configurable:
     - Set the number of **raw tail turns** and **summary turns** and **Token limits** to be included in the context. This allows users to strike an optimal balance between conversational history and token cost management.
   - **Real-Time Observability (SSE):** Real-time Server-Sent Events (SSE) showing the progress of the entire RAG flow.
@@ -330,6 +332,8 @@ Tools Used: get_weather
 </p>
 
 ## 📦 Batch Ingestion
+
+> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **TECHNICAL_OVERVIEW.md** for the recommended re-ingestion workflow.
 
 The system supports batch processing of multiple documents (PDFs, web pages, MediaWiki) with the following directory structure and requirements:
 

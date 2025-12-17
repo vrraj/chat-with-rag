@@ -1,15 +1,38 @@
 """Central logging configuration for the backend.
 
-Keep this module lightweight and side-effect free. Import LOGGING_CONFIG
-and apply it in the application entrypoint (e.g., main.py).
+Import LOGGING_CONFIG and apply it in the application entrypoint (e.g., main.py).
+
+Note: This module intentionally creates the ./logs directory at import time so
+file handlers have a valid destination.
 """
 
+import logging
 import os
 from pathlib import Path
 
 # Ensure logs directory exists
 log_dir = Path('logs')
 log_dir.mkdir(exist_ok=True)
+
+# --- Environment-driven log levels (minimal contract) ---
+# LOG_LEVEL: overall logger level for the app/root (default: DEBUG)
+# LOG_CONSOLE_LEVEL: console handler level (default: INFO)
+# LOG_FILE_LEVEL: main file handler level (default: DEBUG)
+
+def _env_level(name: str, default: str) -> str:
+    """Return a valid logging level name from env, falling back to default."""
+    raw = os.getenv(name, default)
+    if raw is None:
+        return default
+    level = str(raw).strip().upper()
+    # Accept standard Python logging level names.
+    if level in logging._nameToLevel and level != "NOTSET":
+        return level
+    return default
+
+ENV_LOG_LEVEL = _env_level("LOG_LEVEL", "WARNING")
+ENV_LOG_CONSOLE_LEVEL = _env_level("LOG_CONSOLE_LEVEL", "INFO")
+ENV_LOG_FILE_LEVEL = _env_level("LOG_FILE_LEVEL", "DEBUG")
 
 LOGGING_CONFIG = {
     'version': 1,
@@ -29,7 +52,7 @@ LOGGING_CONFIG = {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'default',
-            'level': 'INFO',
+            'level': ENV_LOG_CONSOLE_LEVEL,
             'stream': 'ext://sys.stderr',
         },
         'file': {
@@ -39,11 +62,11 @@ LOGGING_CONFIG = {
             'backupCount': 5,              # Keep 5 backup files
             'encoding': 'utf-8',
             'formatter': 'detailed',
-            'level': 'DEBUG',
+            'level': ENV_LOG_FILE_LEVEL,
         },
         'error_file': {
             'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
-            'filename': str(log_dir / 'error.log'),
+            'filename': str(log_dir / 'warnings_and_errors.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 5,
             'encoding': 'utf-8',
@@ -55,13 +78,13 @@ LOGGING_CONFIG = {
         # Root logger - catches everything
         '': {
             'handlers': ['console', 'file', 'error_file'],
-            'level': 'DEBUG',  # Capture all levels
+            'level': ENV_LOG_LEVEL, 
             'propagate': True,
         },
         # Application logger
         'backend': {
             'handlers': ['console', 'file', 'error_file'],
-            'level': 'DEBUG',
+            'level': ENV_LOG_LEVEL,
             'propagate': False,
         },
         # Third-party loggers
@@ -86,7 +109,6 @@ LOGGING_CONFIG = {
             'level': 'INFO',
             'propagate': False,
         },
-        # Silence verbose third-party DEBUG logs
         'openai': {
             'handlers': ['file', 'error_file'],
             'level': 'WARNING',
