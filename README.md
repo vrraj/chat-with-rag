@@ -89,7 +89,7 @@ Ensure your environment meets these requirements before proceeding:
 
 **2.2) Clone the Repository**
 ``` bash
-git clone [https://github.com/vrraj/chat-with-rag.git](https://github.com/vrraj/chat-with-rag.git)
+git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
 
 ```

@@ -16,37 +16,40 @@ UNAME := $(shell uname)
 # Prerequisites: Docker and Docker Compose must be installed
 # Usage: make start
 start:
-	echo "Starting Qdrant and Chat application..."
-# Set the command based on the OS using Make directives
-
+	@echo "Starting Qdrant and Chat application..."
 	@echo "Detected OS: $(UNAME)"
 
-	# Use standard shell 'if' syntax within the indented recipe block
-	# Semicolons and backslashes are required to format the 'if' statement correctly on one logical line for make
+	# Start Docker Desktop on macOS if not running
 	@if [ "$(UNAME)" = "Darwin" ]; then \
 		echo "Opening Docker Desktop GUI on Mac."; \
-		open -a Docker || open -a "Docker Desktop"; \
-	else \
+			open -a Docker || open -a "Docker Desktop"; \
+		else \
 		echo "No GUI launch command for non-Darwin OS."; \
 	fi
 
-# ---  WAIT LOOP to check of Docket is up  ---
+	# Wait for Docker daemon
 	@echo "Waiting for Docker daemon to become available..."
-	@TIMEOUT=30; while ! docker info >/dev/null 2>&1; do \
+	@TIMEOUT=30; \
+	while ! docker info >/dev/null 2>&1; do \
 		if [ $$TIMEOUT -le 0 ]; then \
-			echo "Error: Docker daemon did not start within 30 seconds. Please check Docker Desktop application."; \
+			echo "Error: Docker daemon did not start within 30 seconds. Please check Docker Desktop."; \
 			exit 1; \
 		fi; \
+		printf '.'; \
 		sleep 1; \
 		TIMEOUT=$$(($$TIMEOUT - 1)); \
-	done
-	@echo "Docker daemon is running. Proceeding with compose."
+	done; \
+	echo ""; \
+	echo "Docker daemon is running. Proceeding with compose."
 
-	@if ! (ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | grep -q "$(QDRANT_HOST)" || [ "$(QDRANT_HOST)" = "localhost" ]); then \
-		echo "Error: QDRANT_HOST ($(QDRANT_HOST)) does not resolve to this machine. Please set QDRANT_HOST to this machine's IP address."; \
+	# Start the services
+	@if ! docker compose up -d; then \
+		echo "Error: Failed to start services with docker compose"; \
 		exit 1; \
 	fi
-	docker compose up -d
+
+	@echo "Qdrant and Chat application started successfully."
+	@echo "Access the application at: http://localhost:8000"
 	echo "Qdrant and Chat application started successfully."
 
 # Stop the application - all Docker containers
