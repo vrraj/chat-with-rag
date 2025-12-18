@@ -123,13 +123,13 @@ bash scripts/rag_setup.sh
 
 ```
 
-> [!TIP]
 > **Troubleshooting (macOS):** If `make smoke_api` or `python3 scripts/api_smoke_test.py` fails with `SSL: CERTIFICATE_VERIFY_FAILED`, your Python install may be missing trusted root certificates.
 >
 > Run:
-> ```bash
-> open "/Applications/Python 3.12/Install Certificates.command"
-> ```
+```bash
+open "/Applications/Python 3.12/Install Certificates.command"
+```
+
 
 ### 🛠️ 2.1 Manual setup (step-by-step)
 
@@ -167,7 +167,7 @@ cd chat-with-rag
 
 
 
-**2.1.4) Set up local environment variables**
+#### 2.1.4) Set up local environment variables
 
 Copy the example environment file and add your API key.
 
@@ -182,7 +182,8 @@ vi .env   # or use 'nano .env' / your preferred text editor
 
 ```
 
-**2.1.5) Start Infrastructure** This launches the Qdrant vector database and the FastAPI web application.
+#### 2.1.5) Start Infrastructure
+This launches the Qdrant vector database and the FastAPI web application.
 
 
 ```bash
@@ -193,7 +194,7 @@ make start
 > `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-**2.1.6) Initialize environment and seed data**
+#### 2.1.6) Initialize environment and seed data
 
 To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
 
@@ -208,7 +209,8 @@ deactivate
 
 ```
 
-**2.1.7) Access the interface**: Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
+#### 2.1.7) Access the interface
+Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
 
 ### 🧪 2.2 Developer Mode (Optional)
 
@@ -399,6 +401,7 @@ chat-with-rag/
 3. Start with `"estimate": true` to preview processing before actual ingestion
 4. Check the web interface's "View Documents" page to verify successful ingestion
 
+--
 
 ## 🏗️ Technical Overview
 
@@ -407,6 +410,8 @@ Technical details about the system architecture, pipelines, design decisions, an
 👉 **[TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md)**
 
 This overview covers module structure, extraction pipeline, embedding flow, Qdrant indexing, batch ingestion (local PDFs + URLs with optional cost estimation), chat orchestration, SSE streaming, and frontend–backend integration.
+
+---
 
 ## 🗂️ Project Structure
 
@@ -434,7 +439,8 @@ chat-with-rag/
 ```
 
 
-© 2025 Rajkumar Velliavitil — All Rights Reserved
+
+---
 
 ## 📜 License & Usage
 
@@ -442,3 +448,4 @@ This project is **source-available** for **personal, educational, and evaluation
 It is permitted to **run, modify, and fork** the code for non-commercial use.
 
 **Redistribution, sublicensing, or commercial use** of this project or derivative works **requires explicit written permission** from the author.
+© 2025 Rajkumar Velliavitil — All Rights Reserved
