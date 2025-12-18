@@ -109,9 +109,17 @@ cd chat-with-rag
 bash scripts/rag_setup.sh
 
 ```
-
+**Access the web app at `http://localhost:8000`**
 > Tip: You can open `scripts/rag_setup.sh` to review exactly what will run before executing it.
 > The API key you enter is stored in .env. Treat it like a password. Do not commit it.
+
+[!TIP]
+> **Troubleshooting (macOS):** If `make smoke_api` or `python3 scripts/api_smoke_test.py` fails with `SSL: CERTIFICATE_VERIFY_FAILED`, your Python install may be missing trusted root certificates.
+> 
+> Run:
+> ```bash
+> open "/Applications/Python 3.12/Install Certificates.command"
+> ```
 
 ### 🛠️ 2.1 Manual setup (step-by-step: 2.1.1 - 2.1.7)
 
@@ -146,6 +154,7 @@ cd chat-with-rag
 | **Budget** | Set a limit of **$5–$10**. | Establishes a safety ceiling for testing. |
 | **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
 | **Alerts** | Set a 50% notification. | Provides proactive cost control. |
+
 
 
 **2.1.4) Set up local environment variables**
