@@ -30,9 +30,10 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 
-def _load_key_from_dotenv(dotenv_path: Path) -> str | None:
+def _load_key_from_dotenv(dotenv_path: Path) -> Optional[str]:
     """Very small .env reader: finds OPENAI_API_KEY=... and returns the value.
 
     Supports lines like:
@@ -61,7 +62,7 @@ def _load_key_from_dotenv(dotenv_path: Path) -> str | None:
     return None
 
 
-def _get_api_key(allow_dotenv: bool) -> str | None:
+def _get_api_key(allow_dotenv: bool) -> Optional[str]:
     key = os.getenv("OPENAI_API_KEY")
     if key:
         return key.strip() or None
@@ -74,7 +75,7 @@ def _get_api_key(allow_dotenv: bool) -> str | None:
     return _load_key_from_dotenv(repo_root / ".env")
 
 
-def _http_json(url: str, headers: dict[str, str], timeout: float) -> tuple[int, dict]:
+def _http_json(url: str, headers: Dict[str, str], timeout: float) -> Tuple[int, dict]:
     req = urllib.request.Request(url=url, headers=headers, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         status = getattr(resp, "status", 200)
