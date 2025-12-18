@@ -19,6 +19,7 @@ This project explores end-to-end RAG system design, prioritizing transparency an
   - [📋 1. Prerequisites](#-1-prerequisites)
   - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
   - [🛠️ 2.1 Manual setup](#-21-manual-setup-step-by-step)
+  - [▶️ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
 - [📚 Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
   - [📄 Data Attribution](#-data-attribution)
   - [🔍 Explore the Data](#-explore-the-data)
@@ -211,7 +212,30 @@ deactivate
 #### 2.1.7) Access the interface
 Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
 
-### 🧪 2.2 Developer Mode (Optional)
+
+### ▶️ 2.3 Running & Managing the Application
+
+Use the following Make targets to manage the application lifecycle:
+
+- **Start the application stack (Qdrant + web app):**
+  ```bash
+  make start
+
+  ```
+
+- **Stop the application stack:**
+  ```bash
+  make stop
+
+  ```
+
+These commands are the recommended way to run and shut down the system locally.
+
+For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
+- the `Makefile` in the project root
+- **TECHNICAL_OVERVIEW.md**
+
+### 🧪 2.4 Developer Mode (Optional)
 
 To enable **hot-reload** (Uvicorn reload) for active development:
 

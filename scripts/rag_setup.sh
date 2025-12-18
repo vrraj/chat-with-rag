@@ -101,6 +101,14 @@ if ! grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; t
 
     break
   done
+
+  # Remove any existing OPENAI_API_KEY line (empty or old), then append.
+  # macOS/BSD sed differs from GNU sed, so we use grep+mv for portability.
+  grep -v '^OPENAI_API_KEY=' .env > .env.tmp || true
+  mv .env.tmp .env
+  printf "OPENAI_API_KEY=%s\n" "$OPENAI_API_KEY" >> .env
+
+  echo "✅ Saved OPENAI_API_KEY to .env"
 else
   echo "✅ OPENAI_API_KEY already present in .env (not prompting)"
 fi
