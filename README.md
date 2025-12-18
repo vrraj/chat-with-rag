@@ -106,6 +106,7 @@ cd chat-with-rag
 
 # 2) run the one-command setup
 bash scripts/rag_setup.sh
+
 ```
 
 > Tip: You can open `scripts/rag_setup.sh` to review exactly what will run before executing it.

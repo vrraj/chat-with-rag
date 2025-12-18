@@ -82,7 +82,7 @@ fi
 if ! grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; then
   echo
   echo "🔑 OPENAI_API_KEY not found in .env"
-  read -r -s -p "Enter your OpenAI API key (input hidden): " OPENAI_API_KEY
+  read -r -s -p "Enter your OpenAI API key (input hidden) and press Enter: " OPENAI_API_KEY
   echo
 
   # Basic validation (future-proof): non-empty and no whitespace.
