@@ -13,22 +13,22 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 
 ## Table of Contents
 
-- [🧠 High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
-- [✨ Features](#-features)
+- [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
+- [Features](#-features)
 - [🚀 Getting Started](#-getting-started)
-  - [📋 1. Prerequisites](#-1-prerequisites)
+  - [1. Prerequisites](#-1-prerequisites)
   - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
-  - [🛠️ 2.1 Manual setup](#-21-manual-setup-step-by-step)
-  - [▶️ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
-- [📚 Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
-  - [📄 Data Attribution](#-data-attribution)
-  - [🔍 Explore the Data](#-explore-the-data)
-  - [🔄 Managing Your Collections](#-managing-your-collections)
-- [💬 Example Queries](#example-queries)
-- [📦 Batch Ingestion](#batch-ingestion)
-- [🏗️ Technical Overview](#technical-overview)
-- [🗂️ Project Structure](#project-structure)
-- [📜 License & Usage](#-license--usage)
+  - [2.1 Manual setup](#-21-manual-setup-step-by-step)
+  - [ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
+- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
+  - [Data Attribution](#-data-attribution)
+  - [Explore the Data](#-explore-the-data)
+  - [Managing Your Collections](#-managing-your-collections)
+- [Example Queries](#example-queries)
+- [Batch Ingestion](#batch-ingestion)
+- [Technical Overview](#technical-overview)
+- [Project Structure](#project-structure)
+- [License & Usage](#license--usage)
 
 
 ## 🧠 High-Level RAG Pipeline Overview
