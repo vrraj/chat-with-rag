@@ -755,6 +755,7 @@ The `Makefile` includes specialized targets essential for debugging, maintenance
 | Target | Description | Usage |
 | :--- | :--- | :--- |
 | `make seed` | **Ingests sample data** into the current Qdrant collection. Requires the local `venv` to be active. | `make seed` |
+| `make smoke_api` | Runs an **OpenAI API smoke test** to verify `OPENAI_API_KEY` authentication and connectivity. | `make smoke_api` |
 | `make start-qdrant` | Starts only the **Qdrant vector database** container in detached mode. | `make start-qdrant` |
 | `make stop-qdrant` | Stops and removes the Qdrant container and resources. | `make stop-qdrant` |
 | `make stop-uvicorn` | Gracefully kills the local running FastAPI application process (SIGTERM) without affecting Qdrant. | `make stop-uvicorn` |

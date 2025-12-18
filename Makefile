@@ -1,4 +1,4 @@
-.PHONY: start stop start-hybrid stop-hybrid bg-start-chat start-debug start-docker start-qdrant stop-qdrant qdrant-logs qdrant-restart qdrant-status qdrant-collections qdrant-info qdrant-info-json qdrant-indexes
+.PHONY: start stop start-hybrid stop-hybrid bg-start-chat start-debug start-docker start-qdrant stop-qdrant qdrant-logs qdrant-restart qdrant-status qdrant-collections qdrant-info qdrant-info-json qdrant-indexes smoke_api
 
 # Qdrant endpoint configuration. Prefer environment overrides; else fall back to backend Settings; else sensible defaults
 ifndef QDRANT_HOST	
@@ -245,6 +245,11 @@ seed:
 	@. venv/bin/activate && python scripts/seed_qdrant.py
 	@echo " Qdrant seed completed successfully."
 
+# Run OpenAI API smoke test (verifies API key, auth, and connectivity)
+# Usage: make smoke-api
+smoke-api:
+	@echo "Running OpenAI API smoke test..."
+	@python3 scripts/api_smoke_test.py
 
 
 # FOR Development and operations -  Codex model selector (default is set up  "gpt-5o-mini" in  ~/.codex.config.toml

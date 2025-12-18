@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -12,6 +10,7 @@ set -euo pipefail
 #   3) Prompts for OPENAI_API_KEY if missing and writes it into .env (local only)
 #   4) Starts infrastructure + app via `make start`
 #   5) Creates a Python venv (./venv), installs deps, and seeds sample data
+#   6) (Optional) Runs an OpenAI API smoke test (auth check) via scripts/api_smoke_test.py
 #
 # How to run:
 #   From the repo root:
@@ -86,8 +85,10 @@ if ! grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; t
   read -r -s -p "Enter your OpenAI API key (input hidden): " OPENAI_API_KEY
   echo
 
-  if [ -z "${OPENAI_API_KEY}" ]; then
-    echo "❌ OPENAI_API_KEY is required." >&2
+  # Basic validation (future-proof): non-empty and no whitespace.
+  # Avoid enforcing a specific prefix or length since key formats may change.
+  if [ -z "${OPENAI_API_KEY}" ] || [[ "$OPENAI_API_KEY" =~ [[:space:]] ]]; then
+    echo "❌ Invalid OPENAI_API_KEY. Please paste the full key (no spaces)." >&2
     exit 1
   fi
 
@@ -138,6 +139,27 @@ echo "🌱 Seeding sample data ..."
 make seed
 
 deactivate
+
+# -----------------------------------------------------------------------------
+# 4) Optional OpenAI API smoke test (non-fatal)
+# -----------------------------------------------------------------------------
+
+if [ "${SKIP_OPENAI_SMOKE_TEST:-0}" = "1" ]; then
+  echo
+  echo "🧪 Skipping OpenAI API smoke test (SKIP_OPENAI_SMOKE_TEST=1)"
+else
+  echo
+  echo "🧪 Running OpenAI API smoke test (auth check) ..."
+  if python3 scripts/api_smoke_test.py; then
+    echo "✅ Smoke test passed"
+  else
+    echo "⚠️  Smoke test failed. Setup is still complete, but your API key, budget, or network may need attention." >&2
+    echo "    Next steps:" >&2
+    echo "      1) Update OPENAI_API_KEY in .env (and verify OpenAI usage limits/budget)" >&2
+    echo "      2) Re-run: make start" >&2
+    echo "      3) Re-test: python3 scripts/api_smoke_test.py" >&2
+  fi
+fi
 
 # -----------------------------------------------------------------------------
 # Done
