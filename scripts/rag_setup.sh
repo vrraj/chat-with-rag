@@ -82,23 +82,25 @@ fi
 if ! grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; then
   echo
   echo "🔑 OPENAI_API_KEY not found in .env"
-  read -r -s -p "Enter your OpenAI API key (input hidden) and press Enter: " OPENAI_API_KEY
-  echo
 
-  # Basic validation (future-proof): non-empty and no whitespace.
-  # Avoid enforcing a specific prefix or length since key formats may change.
-  if [ -z "${OPENAI_API_KEY}" ] || [[ "$OPENAI_API_KEY" =~ [[:space:]] ]]; then
-    echo "❌ Invalid OPENAI_API_KEY. Please paste the full key (no spaces)." >&2
-    exit 1
-  fi
+  while true; do
+    read -r -s -p "Enter your OpenAI API key (input hidden) and press Enter: " OPENAI_API_KEY
+    echo
 
-  # Remove any existing OPENAI_API_KEY line (empty or old), then append.
-  # macOS/BSD sed differs from GNU sed, so we use grep+mv for portability.
-  grep -v '^OPENAI_API_KEY=' .env > .env.tmp || true
-  mv .env.tmp .env
-  printf "OPENAI_API_KEY=%s\n" "$OPENAI_API_KEY" >> .env
+    # Re-prompt on empty input
+    if [ -z "${OPENAI_API_KEY}" ]; then
+      echo "⚠️  API key cannot be empty. Please paste your OpenAI API key." >&2
+      continue
+    fi
 
-  echo "✅ Saved OPENAI_API_KEY to .env"
+    # Reject whitespace (most common paste mistake)
+    if [[ "$OPENAI_API_KEY" =~ [[:space:]] ]]; then
+      echo "❌ Invalid OPENAI_API_KEY (contains spaces). Please paste the full key." >&2
+      continue
+    fi
+
+    break
+  done
 else
   echo "✅ OPENAI_API_KEY already present in .env (not prompting)"
 fi
