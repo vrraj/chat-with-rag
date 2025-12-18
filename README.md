@@ -17,17 +17,17 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 - [✨ Features](#-features)
 - [🚀 Getting Started](#-getting-started)
   - [📋 1. Prerequisites](#-1-prerequisites)
-  - [⚡ 2.0 One-command setup](#20-one-command-setup-macoslinux)
-  - [🛠️ 2.1 Manual setup](#21-manual-setup-step-by-step)
+  - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
+  - [🛠️ 2.1 Manual setup](#-21-manual-setup-step-by-step)
 - [📚 Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
-  - [📄 Data Attribution](#data-attribution)
-  - [🔍 Explore the Data](#explore-the-data)
-  - [🔄 Managing Your Collections](#managing-your-collections)
+  - [📄 Data Attribution](#-data-attribution)
+  - [🔍 Explore the Data](#-explore-the-data)
+  - [🔄 Managing Your Collections](#-managing-your-collections)
 - [💬 Example Queries](#example-queries)
 - [📦 Batch Ingestion](#batch-ingestion)
 - [🏗️ Technical Overview](#technical-overview)
 - [🗂️ Project Structure](#project-structure)
-- [📜 License & Usage](#license--usage)
+- [📜 License & Usage](#-license--usage)
 
 
 ## 🧠 High-Level RAG Pipeline Overview
@@ -92,14 +92,13 @@ Ensure your environment meets these requirements before proceeding:
 If you prefer fewer copy/paste steps, you can **run the setup in one go**.
 
 This script will:
-- create `.env` (if missing) and prompt you for `OPENAI_API_KEY`
-- start Docker services (`make start`)
-- create a Python venv, install dependencies, and seed sample data (`make seed`)
+- Create `.env` (if missing) and prompt you for `OPENAI_API_KEY`
+- Start Docker services (`make start`)
+- Create a Python venv, install dependencies, and seed sample data (`make seed`)
 
 > [!IMPORTANT]
-> The API key is written to your local `.env` file. Treat it like a password (don’t commit it).
+> The API key is written to your local `.env` file. Treat it like a password (don't commit it).
 >
-> [!IMPORTANT]
 > Before running the setup, create an **OpenAI API Platform** key and set a **hard usage limit** (budget + alerts) in your OpenAI Dashboard.
 > See: [2.1.3 Configure OpenAI API & Costs](#213-configure-openai-api--costs)
 
@@ -130,14 +129,11 @@ bash scripts/rag_setup.sh
 > Run:
 > ```bash
 > open "/Applications/Python 3.12/Install Certificates.command"
-
 > ```
-
 
 ### 🛠️ 2.1 Manual setup (step-by-step)
 
 > If you ran the **2.0 One-command setup** above, you can skip this entire section.
-
 
 **2.1.1) Verify Docker Installation**
 ```bash
@@ -414,30 +410,27 @@ This overview covers module structure, extraction pipeline, embedding flow, Qdra
 
 ## 🗂️ Project Structure
 
-
-
 ```text
-backend/                     # Server-side application
-├── api/                    # HTTP routes (chat, ingestion)
-├── chat/                   # Chat orchestration, tools, SSE stages
-├── core/                   # Settings, logging, shared schemas
-├── db/                     # Qdrant client + vector store layer
-├── embeddings/             # Embedding manager + model abstraction
-├── extractor/              # HTML / MediaWiki / PDF extractors + splitters
-├── crawler/                # URL & PDF fetch utilities
-└── utils/                  # Shared helpers and admin scripts
-
-frontend/                    # Browser UI
-├── static/                 # JS/CSS assets
-├── index.html              # Landing page
-└── chat.html               # Chat interface
-
-scripts/                     # Maintenance + ingestion scripts
-qdrant_scripts/              # Qdrant maintenance scripts
-data/                        # Seed / demo datasets
-images/                      # Images for system use
-logs/                        # Rotating runtime logs
-qdrant_storage/              # Local Qdrant data volume
+chat-with-rag/
+├── backend/               # Server-side application
+│   ├── api/              # HTTP routes (chat, ingestion)
+│   ├── chat/             # Chat orchestration, tools, SSE stages
+│   ├── core/             # Settings, logging, shared schemas
+│   ├── db/               # Qdrant client + vector store layer
+│   ├── embeddings/       # Embedding manager + model abstraction
+│   ├── extractor/        # HTML/MediaWiki/PDF extractors + splitters
+│   ├── crawler/          # URL & PDF fetch utilities
+│   └── utils/            # Shared helpers and admin scripts
+├── frontend/             # Browser UI
+│   ├── static/           # JS/CSS assets
+│   ├── index.html        # Landing page
+│   └── chat.html         # Chat interface
+├── scripts/              # Maintenance + ingestion scripts
+├── qdrant_scripts/       # Qdrant maintenance scripts
+├── data/                 # Seed / demo datasets
+├── images/               # Images for system use
+├── logs/                 # Rotating runtime logs
+└── qdrant_storage/       # Local Qdrant data volume
 ```
 
 
