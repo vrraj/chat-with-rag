@@ -2,20 +2,24 @@
 
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
+
 A modular RAG framework that transforms unstructured data into **actionable intelligence** through sophisticated retrieval-reranking pipelines, real-time observability, and tool-augmented reasoning.
 
 This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
 
+**Project Scope & Intent**
+
+This project explores end-to-end RAG system design, prioritizing transparency and modularity over abstraction-heavy frameworks to make pipeline behavior explicit and observable.
+
 ## Table of Contents
 
-- [🧠 High-Level RAG Pipeline Overview](#high-level-rag-pipeline-overview)
-- [✨ Features](#features)
-- [🚀 Getting Started with Chat with RAG](#getting-started-with-chat-with-rag)
-  - [📋 1. Prerequisites](#1-prerequisites)
+- [🧠 High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
+- [✨ Features](#-features)
+- [🚀 Getting Started](#-getting-started)
+  - [📋 1. Prerequisites](#-1-prerequisites)
   - [⚡ 2.0 One-command setup](#20-one-command-setup-macoslinux)
   - [🛠️ 2.1 Manual setup](#21-manual-setup-step-by-step)
-  - [🧪 2.2 Developer Mode](#22-developer-mode-optional)
-- [📚 Knowledge Base and Sample Data](#knowledge-base-and-sample-data)
+- [📚 Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
   - [📄 Data Attribution](#data-attribution)
   - [🔍 Explore the Data](#explore-the-data)
   - [🔄 Managing Your Collections](#managing-your-collections)
@@ -69,7 +73,7 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
 
 
-## 🚀 Getting Started with Chat with RAG
+## 🚀 Getting Started
 
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
 
@@ -99,31 +103,41 @@ This script will:
 > Before running the setup, create an **OpenAI API Platform** key and set a **hard usage limit** (budget + alerts) in your OpenAI Dashboard.
 > See: [2.1.3 Configure OpenAI API & Costs](#213-configure-openai-api--costs)
 
-Paste the commands below into your terminal. If they don’t start running immediately after paste, press **Enter** once.
+Paste the commands below into your terminal.
+
+**Step 1 — Clone the repo**
+
 ```bash
-# 1) clone and enter the repo
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
 
-# 2) run the one-command setup
-bash scripts/rag_setup.sh
 
 ```
-**Access the web app at `http://localhost:8000`**
-> Tip: You can open `scripts/rag_setup.sh` to review exactly what will run before executing it.
-> The API key you enter is stored in .env. Treat it like a password. Do not commit it.
 
-[!TIP]
+> **Note:** You will be prompted to enter your OpenAI API key when you run the setup script. The API key is stored in `.env`. Treat it like a password — never commit it to Git.
+
+**Step 2 — Run the setup**
+
+```bash
+bash scripts/rag_setup.sh
+
+
+```
+
+> [!TIP]
 > **Troubleshooting (macOS):** If `make smoke_api` or `python3 scripts/api_smoke_test.py` fails with `SSL: CERTIFICATE_VERIFY_FAILED`, your Python install may be missing trusted root certificates.
-> 
+>
 > Run:
 > ```bash
 > open "/Applications/Python 3.12/Install Certificates.command"
+
 > ```
 
-### 🛠️ 2.1 Manual setup (step-by-step: 2.1.1 - 2.1.7)
+
+### 🛠️ 2.1 Manual setup (step-by-step)
 
 > If you ran the **2.0 One-command setup** above, you can skip this entire section.
+
 
 **2.1.1) Verify Docker Installation**
 ```bash
