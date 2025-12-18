@@ -99,6 +99,7 @@ This script will:
 > Before running the setup, create an **OpenAI API Platform** key and set a **hard usage limit** (budget + alerts) in your OpenAI Dashboard.
 > See: [2.1.3 Configure OpenAI API & Costs](#213-configure-openai-api--costs)
 
+Paste the commands below into your terminal. If they don’t start running immediately after paste, press **Enter** once.
 ```bash
 # 1) clone and enter the repo
 git clone https://github.com/vrraj/chat-with-rag.git
