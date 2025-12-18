@@ -49,11 +49,11 @@ else
   COMPOSE_CMD="docker compose"
 fi
 
-# Helpful info (non-fatal)
+# Docker daemon may not be running yet (especially on macOS).
+# `make start` will attempt to start Docker Desktop and wait for the daemon.
 if ! docker info >/dev/null 2>&1; then
-  echo "⚠️  Docker daemon does not appear to be running." >&2
-  echo "    If you're on macOS, start Docker Desktop and re-run this script." >&2
-  exit 1
+  echo "⚠️  Docker daemon is not running yet. Continuing..." >&2
+  echo "    Note: 'make start' will attempt to start Docker Desktop (macOS) and wait for it." >&2
 fi
 
 cd "$REPO_ROOT"
