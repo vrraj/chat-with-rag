@@ -120,7 +120,6 @@ cd chat-with-rag
 ```bash
 bash scripts/rag_setup.sh
 
-
 ```
 
 > **Troubleshooting (macOS):** If `make smoke_api` or `python3 scripts/api_smoke_test.py` fails with `SSL: CERTIFICATE_VERIFY_FAILED`, your Python install may be missing trusted root certificates.
