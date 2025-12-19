@@ -59,6 +59,8 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 | | 7. **Tool Execution** (e.g., Weather, Maps) |
 | | 8. **Final Response** (with Citations) |
 
+The screenshot below illustrates how these **pipeline stages** surface in the live chat interface.
+
 <p align="center">
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
     <img
