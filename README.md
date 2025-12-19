@@ -12,7 +12,6 @@ This system goes beyond basic vector search by implementing a multi-stage LLM or
   <a href="images/content-ingestion-primary-actions.png">
     <img
       src="images/content-ingestion-primary-actions.png"
-      width="850"
       style="max-width: 100%; height: auto;"
       alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
     />
@@ -66,7 +65,7 @@ The screenshot below illustrates how these **pipeline stages** surface in the mu
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
     <img
       src="images/chat-pipeline-rewrite-context-tools-inference.png"
-      max-width="100%"
+      style="max-width: 100%; height: auto;"
       alt="Chat pipeline UI showing query rewrite, multi-turn context, pipeline stages, tool calls, and citations"
     />
   </a>
