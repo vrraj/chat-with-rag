@@ -5,7 +5,20 @@
 
 A modular RAG framework that transforms unstructured data into **actionable intelligence** through sophisticated retrieval-reranking pipelines, real-time observability, and tool-augmented reasoning.
 
+
 This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
+
+<p align="center">
+  <a href="images/content-ingestion-primary-actions.png">
+    <img
+      src="images/content-ingestion-primary-actions.png"
+      width="850"
+      alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
+    />
+  </a>
+</p>
+
+*Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 
 **Project Scope & Intent**
 
@@ -45,6 +58,18 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 | 6. **Vector Storage** (Qdrant) | 6. **LLM Inference** (GPT-4o-mini) |
 | | 7. **Tool Execution** (e.g., Weather, Maps) |
 | | 8. **Final Response** (with Citations) |
+
+<p align="center">
+  <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
+    <img
+      src="images/chat-pipeline-rewrite-context-tools-inference.png"
+      width="850"
+      alt="Chat pipeline UI showing query rewrite, multi-turn context, pipeline stages, tool calls, and citations"
+    />
+  </a>
+</p>
+
+*Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
 
 ## ✨ Features
