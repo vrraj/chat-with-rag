@@ -13,6 +13,7 @@ This system goes beyond basic vector search by implementing a multi-stage LLM or
     <img
       src="images/content-ingestion-primary-actions.png"
       width="850"
+      style="max-width: 100%; height: auto;"
       alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
     />
   </a>
@@ -65,7 +66,7 @@ The screenshot below illustrates how these **pipeline stages** surface in the mu
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
     <img
       src="images/chat-pipeline-rewrite-context-tools-inference.png"
-      width="850"
+      max-width="100%"
       alt="Chat pipeline UI showing query rewrite, multi-turn context, pipeline stages, tool calls, and citations"
     />
   </a>
@@ -388,7 +389,7 @@ Tools Used: get_weather
 
 
 <p align="center">
-<img src="images/multi-turn-conversation-with-tools.png" width="95%" />
+<img src="images/multi-turn-conversation-with-tools.png" width="100%" style="max-width: 100%; height: auto;" alt="Multi-turn conversation with tool calls and citations. Preserves context and history across turns." />
 </p>
 
 *Multi-turn conversation with tool calls and citations. Preserves context and history across turns.*
