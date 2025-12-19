@@ -59,7 +59,7 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 | | 7. **Tool Execution** (e.g., Weather, Maps) |
 | | 8. **Final Response** (with Citations) |
 
-The screenshot below illustrates how these **pipeline stages** surface in the live chat interface.
+The screenshot below illustrates how these **pipeline stages** surface in the multi-turn live chat interface.
 
 <p align="center">
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
@@ -390,6 +390,8 @@ Tools Used: get_weather
 <p align="center">
 <img src="images/multi-turn-conversation-with-tools.png" width="95%" />
 </p>
+
+*Multi-turn conversation with tool calls and citations. Preserves context and history across turns.*
 
 ---
 
