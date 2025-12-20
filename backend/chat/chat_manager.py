@@ -96,34 +96,97 @@ def get_client():
             raise
     return _client
 
-# ---- Conversation totals accumulator (module-level)  ----
+# ---- Conversation totals accumulator (per-namespace, module-level) ----
 COST_BASIS = float(getattr(settings, "cost_basis_tokens", 1_000_000))
 
+# Back-compat default (used when namespace is empty)
 CONVO_TOTALS = {
     "tokens": {
         "embedding": 0,
         "llm_input": 0,      # prompt + cached tokens across stages
         "llm_output": 0,     # completion tokens across stages
-        "conversation_total": 0
+        "conversation_total": 0,
     },
     "costs": {
         "embedding": 0.0,
         "llm_input": 0.0,
         "llm_output": 0.0,
         "total": 0.0,
-        "conversation_total": 0.0
+        "conversation_total": 0.0,
     },
 }
 
-def _zero_convo_totals():
-    CONVO_TOTALS["tokens"].update({
-        "embedding": 0,
-        "llm_input": 0,
-        "llm_output": 0,
-        "conversation_total": 0,
-    })
-    CONVO_TOTALS["costs"]["conversation_total"] = 0.0
-    # ---- end accumulator ----
+# Per-conversation/session totals, keyed by namespace (typically user_id:conversation_id or conversation_id)
+_CONVO_TOTALS_BY_NS: Dict[str, Dict[str, Any]] = {}
+
+
+def _new_convo_totals() -> Dict[str, Any]:
+    return {
+        "tokens": {
+            "embedding": 0,
+            "llm_input": 0,
+            "llm_output": 0,
+            "conversation_total": 0,
+        },
+        "costs": {
+            "embedding": 0.0,
+            "llm_input": 0.0,
+            "llm_output": 0.0,
+            "total": 0.0,
+            "conversation_total": 0.0,
+        },
+    }
+
+
+def _zero_totals_dict(totals: Dict[str, Any]) -> None:
+    """Best-effort reset of a totals dict to zeros."""
+    try:
+        totals["tokens"].update({
+            "embedding": 0,
+            "llm_input": 0,
+            "llm_output": 0,
+            "conversation_total": 0,
+        })
+        totals["costs"].update({
+            "embedding": 0.0,
+            "llm_input": 0.0,
+            "llm_output": 0.0,
+            "total": 0.0,
+            "conversation_total": 0.0,
+        })
+    except Exception:
+        # Best-effort only; never break the pipeline.
+        pass
+
+
+def _get_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
+    """Return a mutable totals dict scoped to `namespace` (conversation/session)."""
+    ns = str(namespace or "").strip()
+    if not ns:
+        return CONVO_TOTALS
+    existing = _CONVO_TOTALS_BY_NS.get(ns)
+    if existing is None:
+        existing = _new_convo_totals()
+        _CONVO_TOTALS_BY_NS[ns] = existing
+    return existing
+
+
+def _zero_convo_totals() -> None:
+    """Back-compat: reset the default (empty-namespace) accumulator."""
+    _zero_totals_dict(CONVO_TOTALS)
+
+
+def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
+    """Clear totals for a specific namespace (conversation/session). Returns stats."""
+    ns = str(namespace or "").strip()
+    if not ns:
+        _zero_convo_totals()
+        return {"cleared": True, "namespace": "", "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
+    existed = ns in _CONVO_TOTALS_BY_NS
+    if existed:
+        _CONVO_TOTALS_BY_NS.pop(ns, None)
+    return {"cleared": bool(existed), "namespace": ns, "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
+# ---- end accumulator ----
 
 def _extract_text_from_responses(resp) -> str:
     """Return response text from Responses API object.
@@ -1280,7 +1343,30 @@ def _strip_trailing_sources_block(text: str) -> str:
         return s.rstrip()
     except Exception:
         return text or ""
-# --- end tail cleanup helper ---
+
+# --- end tail cleanup helper - when tool results are present but no sources---
+
+def _has_tool_results(tools_used: Any) -> bool:
+    """True if tools were executed / tool results exist."""
+    try:
+        if not tools_used:
+            return False
+        if isinstance(tools_used, list):
+            return len(tools_used) > 0
+        if isinstance(tools_used, dict):
+            return len(tools_used.keys()) > 0
+        return True
+    except Exception:
+        return False
+
+
+def _should_emit_no_supported_sources(sources: Any, tools_used: Any) -> bool:
+    """Only emit NO_SUPPORTED_SOURCES when we have neither doc sources nor tool results."""
+    try:
+        has_sources = isinstance(sources, list) and len(sources) > 0
+    except Exception:
+        has_sources = bool(sources)
+    return (not has_sources) and (not _has_tool_results(tools_used))
 
 # --- Unified pipeline orchestrator (Option A) ---
 
@@ -1346,8 +1432,17 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         "original": message,
     }
 
-    # Metrics helper
-    m = Metrics(settings_obj, CONVO_TOTALS)
+    # Conversation totals should be scoped per namespace (conversation_id/tab/session)
+    _totals_ref = _get_convo_totals_for_namespace(namespace)
+    m = Metrics(settings_obj, _totals_ref)
+    # Diagnostics: show whether we're using the default accumulator vs a namespace-scoped one
+    try:
+        if namespace:
+            logger.debug("[TOTALS] (%s) using namespace-scoped totals ns='%s'", log_origin, namespace)
+        else:
+            logger.warning("[TOTALS] (%s) namespace is empty -> using default totals accumulator", log_origin)
+    except Exception:
+        pass
 
     # --- Resolve retrieval knobs
     try:
@@ -1898,6 +1993,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Optional tool loop (bounded for safety)
     
     answer_override: str | None = None
+    tool_answer_text: str = ""
     used_tools: List[str] = []
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # Tool Calls - Single pass thru all tools required
@@ -1920,6 +2016,24 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     executor = get_executor_fn(name)
                     if not executor:
                         result_text = f"Tool '{name}' is not available."
+                        # Normalize empty tool outputs so the user can see a clear no-results outcome.
+                        try:
+                            if result_text is None:
+                                result_text = ""
+                            if isinstance(result_text, str) and not result_text.strip():
+                                result_text = f"Tool '{name}' executed but returned no results."
+                        except Exception:
+                            pass
+                        # Capture tool output for fallback rendering
+                        try:
+                            if isinstance(result_text, str):
+                                txt = result_text.strip()
+                            else:
+                                txt = str(result_text).strip()
+                            if txt and not tool_answer_text:
+                                tool_answer_text = txt
+                        except Exception:
+                            pass
                     else:
                         try:
                             chat_context = list(history or []) + [{"role": "user", "content": message}]
@@ -1938,14 +2052,50 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                 ]
 
                             result_text = executor(args, chat_context, existing_context=combined_context)
+                            # Normalize empty tool outputs so the user can see a clear no-results outcome.
+                            try:
+                                if result_text is None:
+                                    result_text = ""
+                                if isinstance(result_text, str) and not result_text.strip():
+                                    result_text = f"Tool '{name}' executed but returned no results."
+                            except Exception:
+                                pass
+                            # Capture tool output for fallback rendering
+                            try:
+                                if isinstance(result_text, str):
+                                    txt = result_text.strip()
+                                else:
+                                    txt = str(result_text).strip()
+                                if txt and not tool_answer_text:
+                                    tool_answer_text = txt
+                            except Exception:
+                                pass
                         except Exception as ex:
                             result_text = f"Tool '{name}' failed: {ex}"
+                            # Normalize empty tool outputs so the user can see a clear no-results outcome.
+                            try:
+                                if result_text is None:
+                                    result_text = ""
+                                if isinstance(result_text, str) and not result_text.strip():
+                                    result_text = f"Tool '{name}' executed but returned no results."
+                            except Exception:
+                                pass
+                            # Capture tool output for fallback rendering
+                            try:
+                                if isinstance(result_text, str):
+                                    txt = result_text.strip()
+                                else:
+                                    txt = str(result_text).strip()
+                                if txt and not tool_answer_text:
+                                    tool_answer_text = txt
+                            except Exception:
+                                pass
                     if name:
                         used_tools.append(name)
                     tool_outputs_list.append({"tool_call_id": call_id or "", "output": str(result_text)})
                     _dbg(f"[TOOLS] {log_origin} tool outputs : %s", str(tool_outputs_list))
                 if tool_outputs_list:
-                    tools_text = "\n\n".join([t.get("output", "") for t in tool_outputs_list if t.get("output")])
+                    tools_text = "\n\n".join([str(t.get("output", "")) for t in tool_outputs_list]).strip()
                     rag_draft = _extract_text_from_responses(resp_inf) or ""
                     _dbg(f"[TOOLS] RAG DRAFT {log_origin} rag draft : %s", str(rag_draft))
                     synth_prompt = (
@@ -1982,44 +2132,85 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         resp_synth = get_client_fn().responses.create(**_kwargs_synth)
                         _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
                         combined = _extract_text_from_responses(resp_synth).strip()
-                        answer_override = combined if combined else (rag_draft + "\n\n--- Live data ---\n" + tools_text)
+                        answer_override = (
+                            combined
+                            if combined
+                            else (rag_draft or tool_answer_text or "") + "\n\n--- Live data ---\n" + tools_text
+                        )
                         # Record Inference Usage - 2nd Inference (tools synthesis)
                         usage_synth = _extract_usage_from_responses(resp_synth)
                         if usage_synth:
                             m.record_stage("inference", model=_kwargs_synth["model"], usage=usage_synth)
                     except Exception:
-                        answer_override = rag_draft + "\n\n--- Live data ---\n" + tools_text
+                        answer_override = (rag_draft or tool_answer_text or "") + "\n\n--- Live data ---\n" + tools_text
                 break
         except Exception as e:
             logger.debug("[TOOLS] (%s) tool loop failed: %s", log_origin, e, exc_info=True)
+        # Final safety: if tools ran but synthesis produced no answer, use tool output directly
+        if (not answer_override) and tool_answer_text:
+            answer_override = tool_answer_text
 
     
     # Stage: Final answer and packing
     # --- Final answer and packing
     answer = (answer_override or _extract_text_from_responses(resp_inf) or "")
     sources = (reranked or []) + (web_context or [])
-    # Sentinel detection: if the model indicates no supported sources, suppress Sources section and returned sources.
-    _ans = (answer or "").rstrip()
-    # Handle sentinel - check for NO_SUPPORTED_SOURCES in answer text to remove irrelevant sources section
-    if _ans.endswith("NO_SUPPORTED_SOURCES"):
+
+    # Normalize tool usage for downstream guards
+    tools_out = sorted({t for t in used_tools if t}) if used_tools else []
+    has_tools = _has_tool_results(tools_out)
+
+    # Sentinel / unsupported-source handling
+    _ans_raw = (answer or "").rstrip()
+    _ans_norm_end = _ans_raw.rstrip(" \t\r\n'\"")
+
+    # If tools produced results, never allow NO_SUPPORTED_SOURCES to override a tool-backed answer.
+    if "NO_SUPPORTED_SOURCES" in _ans_raw and has_tools:
+        # Drop any lines containing the sentinel (and common boilerplate) while preserving the useful answer.
+        kept_lines: List[str] = []
+        for ln in _ans_raw.splitlines():
+            if "NO_SUPPORTED_SOURCES" in ln:
+                continue
+            if "couldn't find any information" in ln.lower():
+                continue
+            kept_lines.append(ln)
+        answer = "\n".join(kept_lines).rstrip()
+        _ans_raw = (answer or "").rstrip()
+        _ans_norm_end = _ans_raw.rstrip(" \t\r\n'\"")
+
+    # If the model indicates no supported sources AND we did not use tools, suppress sources.
+    if (not has_tools) and _ans_norm_end.endswith("NO_SUPPORTED_SOURCES"):
         # Remove sentinel from final answer text
-        if "\n" in _ans:
-            _ans = _ans.rsplit("\n", 1)[0].rstrip()
-        answer = _ans
+        if "\n" in _ans_raw:
+            _ans_raw = _ans_raw.rsplit("\n", 1)[0].rstrip()
+        else:
+            _ans_raw = _ans_raw.replace("NO_SUPPORTED_SOURCES", "").rstrip()
+        answer = _ans_raw
         sources = []  # JSON: no sources returned
         sources_section = ""  # No sources block appended
-   
-    # Heuristic: if the model indicates lack of supporting context, even without sentinel
-    lower_ans = _ans.lower()
-    if (
+
+    # Heuristic: if the model indicates lack of supporting context, even without sentinel.
+    # Only apply this when tools were NOT used.
+    lower_ans = _ans_raw.lower()
+    if (not has_tools) and (
         "the provided context does not contain" in lower_ans
         or "the context provided does not contain" in lower_ans
         or "provided context does not" in lower_ans
         or "context does not" in lower_ans
     ):
-        answer = _ans
+        answer = _ans_raw
         sources = []
         sources_section = ""
+
+    # If tools were used but we have no document/web sources, provide a minimal tool source
+    # so post-processing/validators don't incorrectly mark the answer as unsupported.
+    if (not sources) and has_tools:
+        try:
+            label = "tool" if not tools_out else ("tool:" + ",".join(tools_out[:3]))
+            sources = [{"type": "tool", "label": label}]
+        except Exception:
+            sources = [{"type": "tool", "label": "tool"}]
+
     try:
         m.finalize_turn()
         turn_metrics, convo_snapshot = m.snapshot()
@@ -2037,7 +2228,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         "turn_metrics": turn_metrics,
         "conversation_totals": convo_snapshot,
         "metrics": legacy_metrics,
-        "tools_used": sorted({t for t in used_tools if t}) if used_tools else [],
+        "tools_used": tools_out,
         "rewrite_display": rewrite_display,
     }
 
@@ -2097,6 +2288,24 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         _ns = (f"{_uid}:{_cid}" if _uid and _cid else (_cid or ""))
     except Exception:
         _ns = ""
+
+    # Diagnostics: confirm namespace / conversation_id on every stateless request
+    try:
+        logger.info(
+            "[REQ %s] ns='%s' user_id='%s' conversation_id='%s' query_id='%s'",
+        req_id,
+        _ns,
+        (_uid or ""),
+        (_cid or ""),
+        (params.get("query_id") if isinstance(params, dict) else None),
+    )
+        if not _ns:
+         logger.warning(
+            "[REQ %s] EMPTY namespace -> using default CONVO_TOTALS (totals may appear to reset/collide)",
+            req_id,
+        )
+    except Exception:
+        pass
 
     deps = {
         "db": db,

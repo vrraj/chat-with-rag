@@ -391,6 +391,13 @@ async def clear_chat_summaries(payload: ClearChatRequest):
             return JSONResponse({"removed": 0, "remaining": 0, "reclaimed_bytes": 0})
         ns = f"{uid}:{cid}" if uid and cid else (cid or "")
         stats = cm.clear_summaries_for_namespace(ns)
+        # Also reset per-conversation totals for this namespace so a new conversation_id starts at zero
+        try:
+            totals_stats = cm.clear_convo_totals_for_namespace(ns)
+            if isinstance(stats, dict) and isinstance(totals_stats, dict):
+                stats["totals"] = totals_stats
+        except Exception:
+            pass
         return JSONResponse(stats)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
