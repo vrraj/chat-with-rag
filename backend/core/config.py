@@ -186,6 +186,7 @@ class Settings(BaseSettings):
     # 6) Inference model
     # -------------------------------------------------------------------------
     inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
+    inference_tools_synthesis_model: str = "gpt-4o-mini" # 
 
     inference_temperature: float = 0.4  # Decoding temperature
     inference_top_p: float = 0.7  # Nucleus sampling top-p
@@ -199,6 +200,10 @@ class Settings(BaseSettings):
     inference_cost_per_MM_tokens_cached_input: float = 0.075
 
     max_inference_output_tokens: int = 300
+    # to include reasoning for the inference_model, set the inference_reasoning_effort and inference_reasoning_model
+    # inference_reasoning_effort: "low" | "medium" | "high"
+    # inference_reasoning_model: True to use reasoning
+
     inference_reasoning_effort: str = "low"
     inference_reasoning_model: bool = False
 
