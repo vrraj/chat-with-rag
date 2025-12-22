@@ -44,6 +44,8 @@ services:
 
     # docker-compose should read .env file automatically if it exists
 
+    env_file:
+      - .env
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       # Use the service name 'qdrant' for connection inside the Docker network
