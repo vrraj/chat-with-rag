@@ -347,7 +347,9 @@ The following examples are based on the seed data.
 
 	•	“Compare Kilimanjaro with Mount Whitney.”
 
-	•	“Which mountain is taller — Everest or Whitney?”
+  • "Elevation of mont blanc in the alps , the current weather and the closest airport"
+  
+  •	“Which mountain is taller — Everest or Whitney?”
 
 	•	“Where is Mount Whitney located? What is the closest airport to it?”
   
