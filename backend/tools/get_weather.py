@@ -21,9 +21,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import re
 import requests
+import logging
 
 
 TOOL_NAME = "get_weather"
+
+logger = logging.getLogger(__name__)
 
 
 def tool_definition() -> Dict[str, Any]:
@@ -118,7 +121,11 @@ def _geocode_location(name: str, *, timeout: float = 7.0) -> Optional[Tuple[floa
         parts = [p for p in [r.get("name"), r.get("admin1"), r.get("country")] if p]
         display = ", ".join(parts) if parts else name
         return lat, lon, display
-    except Exception:
+    except Exception as ex:
+        try:
+            logger.debug("[get_weather] geocode failed name=%r err=%s", name, ex, exc_info=True)
+        except Exception:
+            pass
         return None
 
 
@@ -144,6 +151,7 @@ def _fetch_weather(location: str, *, timeout: float = 10.0) -> Optional[Weather]
                 "current_weather": True,
                 "timezone": "auto",
             },
+            headers={"User-Agent": "chat-with-rag/1.0 (+https://github.com/)"},
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -163,7 +171,11 @@ def _fetch_weather(location: str, *, timeout: float = 10.0) -> Optional[Weather]
             avg_c=round(float(avg), 1),
             current_c=round(float(current), 1),
         )
-    except Exception:
+    except Exception as ex:
+        try:
+            logger.debug("[get_weather] forecast failed location=%r lat=%s lon=%s err=%s", location, lat, lon, ex, exc_info=True)
+        except Exception:
+            pass
         return None
 
 
@@ -224,7 +236,17 @@ def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None =
 
     weather = _fetch_weather(location)
     if not weather:
-        return f"Could not fetch weather for '{location}'. Please try a more specific location."
+        # One simple retry for common phrasing artifacts (e.g., "Region of X")
+        simplified = re.sub(r"\bof\b", ",", location, flags=re.IGNORECASE).strip(" ,")
+        if simplified and simplified.lower() != location.lower():
+            weather = _fetch_weather(simplified)
+            if weather:
+                return _format_output(weather, preferred_unit=unit)
+        return (
+            f"Could not fetch weather for '{location}'. "
+            "This may be due to an ambiguous place name or network/SSL restrictions. "
+            "Try a more specific location like 'Mount Whitney, CA' or 'Lone Pine, CA'."
+        )
     return _format_output(weather, preferred_unit=unit)
 
 

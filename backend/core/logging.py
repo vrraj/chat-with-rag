@@ -30,7 +30,7 @@ def _env_level(name: str, default: str) -> str:
         return level
     return default
 
-ENV_LOG_LEVEL = _env_level("LOG_LEVEL", "WARNING")
+ENV_LOG_LEVEL = _env_level("LOG_LEVEL", "DEBUG")
 ENV_LOG_CONSOLE_LEVEL = _env_level("LOG_CONSOLE_LEVEL", "INFO")
 ENV_LOG_FILE_LEVEL = _env_level("LOG_FILE_LEVEL", "DEBUG")
 
