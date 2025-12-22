@@ -96,34 +96,97 @@ def get_client():
             raise
     return _client
 
-# ---- Conversation totals accumulator (module-level)  ----
+# ---- Conversation totals accumulator (per-namespace, module-level) ----
 COST_BASIS = float(getattr(settings, "cost_basis_tokens", 1_000_000))
 
+# Back-compat default (used when namespace is empty)
 CONVO_TOTALS = {
     "tokens": {
         "embedding": 0,
         "llm_input": 0,      # prompt + cached tokens across stages
         "llm_output": 0,     # completion tokens across stages
-        "conversation_total": 0
+        "conversation_total": 0,
     },
     "costs": {
         "embedding": 0.0,
         "llm_input": 0.0,
         "llm_output": 0.0,
         "total": 0.0,
-        "conversation_total": 0.0
+        "conversation_total": 0.0,
     },
 }
 
-def _zero_convo_totals():
-    CONVO_TOTALS["tokens"].update({
-        "embedding": 0,
-        "llm_input": 0,
-        "llm_output": 0,
-        "conversation_total": 0,
-    })
-    CONVO_TOTALS["costs"]["conversation_total"] = 0.0
-    # ---- end accumulator ----
+# Per-conversation/session totals, keyed by namespace (typically user_id:conversation_id or conversation_id)
+_CONVO_TOTALS_BY_NS: Dict[str, Dict[str, Any]] = {}
+
+
+def _new_convo_totals() -> Dict[str, Any]:
+    return {
+        "tokens": {
+            "embedding": 0,
+            "llm_input": 0,
+            "llm_output": 0,
+            "conversation_total": 0,
+        },
+        "costs": {
+            "embedding": 0.0,
+            "llm_input": 0.0,
+            "llm_output": 0.0,
+            "total": 0.0,
+            "conversation_total": 0.0,
+        },
+    }
+
+
+def _zero_totals_dict(totals: Dict[str, Any]) -> None:
+    """Best-effort reset of a totals dict to zeros."""
+    try:
+        totals["tokens"].update({
+            "embedding": 0,
+            "llm_input": 0,
+            "llm_output": 0,
+            "conversation_total": 0,
+        })
+        totals["costs"].update({
+            "embedding": 0.0,
+            "llm_input": 0.0,
+            "llm_output": 0.0,
+            "total": 0.0,
+            "conversation_total": 0.0,
+        })
+    except Exception:
+        # Best-effort only; never break the pipeline.
+        pass
+
+
+def _get_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
+    """Return a mutable totals dict scoped to `namespace` (conversation/session)."""
+    ns = str(namespace or "").strip()
+    if not ns:
+        return CONVO_TOTALS
+    existing = _CONVO_TOTALS_BY_NS.get(ns)
+    if existing is None:
+        existing = _new_convo_totals()
+        _CONVO_TOTALS_BY_NS[ns] = existing
+    return existing
+
+
+def _zero_convo_totals() -> None:
+    """Back-compat: reset the default (empty-namespace) accumulator."""
+    _zero_totals_dict(CONVO_TOTALS)
+
+
+def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
+    """Clear totals for a specific namespace (conversation/session). Returns stats."""
+    ns = str(namespace or "").strip()
+    if not ns:
+        _zero_convo_totals()
+        return {"cleared": True, "namespace": "", "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
+    existed = ns in _CONVO_TOTALS_BY_NS
+    if existed:
+        _CONVO_TOTALS_BY_NS.pop(ns, None)
+    return {"cleared": bool(existed), "namespace": ns, "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
+# ---- end accumulator ----
 
 def _extract_text_from_responses(resp) -> str:
     """Return response text from Responses API object.
@@ -1280,7 +1343,30 @@ def _strip_trailing_sources_block(text: str) -> str:
         return s.rstrip()
     except Exception:
         return text or ""
-# --- end tail cleanup helper ---
+
+# --- end tail cleanup helper - when tool results are present but no sources---
+
+def _has_tool_results(tools_used: Any) -> bool:
+    """True if tools were executed / tool results exist."""
+    try:
+        if not tools_used:
+            return False
+        if isinstance(tools_used, list):
+            return len(tools_used) > 0
+        if isinstance(tools_used, dict):
+            return len(tools_used.keys()) > 0
+        return True
+    except Exception:
+        return False
+
+
+def _should_emit_no_supported_sources(sources: Any, tools_used: Any) -> bool:
+    """Only emit NO_SUPPORTED_SOURCES when we have neither doc sources nor tool results."""
+    try:
+        has_sources = isinstance(sources, list) and len(sources) > 0
+    except Exception:
+        has_sources = bool(sources)
+    return (not has_sources) and (not _has_tool_results(tools_used))
 
 # --- Unified pipeline orchestrator (Option A) ---
 
@@ -1346,8 +1432,17 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         "original": message,
     }
 
-    # Metrics helper
-    m = Metrics(settings_obj, CONVO_TOTALS)
+    # Conversation totals should be scoped per namespace (conversation_id/tab/session)
+    _totals_ref = _get_convo_totals_for_namespace(namespace)
+    m = Metrics(settings_obj, _totals_ref)
+    # Diagnostics: show whether we're using the default accumulator vs a namespace-scoped one
+    try:
+        if namespace:
+            logger.debug("[TOTALS] (%s) using namespace-scoped totals ns='%s'", log_origin, namespace)
+        else:
+            logger.warning("[TOTALS] (%s) namespace is empty -> using default totals accumulator", log_origin)
+    except Exception:
+        pass
 
     # --- Resolve retrieval knobs
     try:
@@ -1896,130 +1991,217 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Stage: Tool Calls
     # --- Tool Calls - Single pass thru all tools required
     # Optional tool loop (bounded for safety)
-    
+
     answer_override: str | None = None
+    tool_answer_text: str = ""
     used_tools: List[str] = []
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
-        # Tool Calls - Single pass thru all tools required
+        # NOTE: Single-pass tool execution.
+        # The previous bounded while-loop was ineffective because `resp_inf` is not updated in-loop,
+        # and we already synthesize once per turn. Keep behavior identical via a single pass.
         emit_stage(req_id, "Tool Calls")
         try:
-            max_loops = getattr(settings_obj, "max_tool_passes", 2)
-            loops = 0
-            while loops < max_loops:
-                # Tool Calls - Extract tool calls from inference response
-                tool_calls = extract_tool_calls(resp_inf)
-                if not tool_calls:
-                    break
-                tool_outputs_list = []
-                for call in tool_calls:
-                    name = call.get("name") or ""
-                    call_id = call.get("id") or call.get("tool_call_id")
-                    args = parse_tool_args(call.get("args"))
-                    logger.debug("[PIPELINE] emit stage: Tool Calls %s", name)
-                    emit_stage(req_id, f"Calling Tool: {name}")
-                    executor = get_executor_fn(name)
-                    if not executor:
-                        result_text = f"Tool '{name}' is not available."
-                    else:
-                        try:
-                            chat_context = list(history or []) + [{"role": "user", "content": message}]
+            # Extract tool calls from the first inference response
+            tool_calls = extract_tool_calls(resp_inf)
+            logger.debug("[TOOLS] Found %d tool calls", len(tool_calls))
+            if not tool_calls:
+                raise StopIteration  # handled by outer try/except; leaves answer_override=None
 
-                            # Only pass document snippets to tools that explicitly need them.
-                            tools_with_doc_ctx = set(getattr(settings_obj, "tools_with_document_context", []) or [])
-                            combined_context = None
-                            if name in tools_with_doc_ctx:
-                                combined_context = [
-                                    {
-                                        "url": (it.get("payload") or {}).get("url") or (it.get("payload") or {}).get("url_lower", ""),
-                                        "title": (it.get("payload") or {}).get("title") or "",
-                                        "snippet": (it.get("payload") or {}).get("text") or (it.get("payload") or {}).get("snippet") or "",
-                                    }
-                                    for it in (reranked or [])
-                                ]
+            tool_outputs_list: List[Dict[str, Any]] = []
+            chat_context = list(history or []) + [{"role": "user", "content": message}]
 
-                            result_text = executor(args, chat_context, existing_context=combined_context)
-                        except Exception as ex:
-                            result_text = f"Tool '{name}' failed: {ex}"
-                    if name:
-                        used_tools.append(name)
-                    tool_outputs_list.append({"tool_call_id": call_id or "", "output": str(result_text)})
-                    _dbg(f"[TOOLS] {log_origin} tool outputs : %s", str(tool_outputs_list))
-                if tool_outputs_list:
-                    tools_text = "\n\n".join([t.get("output", "") for t in tool_outputs_list if t.get("output")])
-                    rag_draft = _extract_text_from_responses(resp_inf) or ""
-                    _dbg(f"[TOOLS] RAG DRAFT {log_origin} rag draft : %s", str(rag_draft))
-                    synth_prompt = (
-                        "You are a question-answering assistant for a retrieval-augmented system.\n"
-                        "STRICT RULES:\n"
-                        "1. Base your answer ONLY on information in the Context section and Tool results.\n"
-                        "2. Do NOT use any outside knowledge.\n"
-                        "3. If the context does not contain enough information to answer the question, reply exactly with: "
-                        "I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-                        "4. Retain any numeric citations like [1], [2] from the Context.\n"
-                        "5. Do not fabricate sources or facts.\n\n"
-                        f"Question:\n{message}\n\n"
-                        + (f"Previous conversation summary:\n{summary_text}\n\n" if summary_text else "")
-                        + (f"{recent_block_str}\n" if recent_block_str else "")
-                        + f"Context:\n{context_text}\n\n"
-                        + f"Tool results:\n{tools_text}\n\n"
-                        + f"Draft answer (may be empty):\n{rag_draft}\n\n"
-                        + "Task:\n"
-                        "- Produce the final answer to the Question.\n"
-                        "- Use citations like [1], [2] when using Context.\n"
-                        "- Integrate Tool results where relevant (do not invent citations for tool facts).\n"
-                        "- Be concise.\n"
-                    )
+            # Hoist doc-context allowlist outside the per-tool loop
+            tools_with_doc_ctx = set(getattr(settings_obj, "tools_with_document_context", []) or [])
+
+            # Helper: format a safe tool-results fallback without duplicating the same message twice.
+            def _format_tool_fallback(_tool_answer_text: str, _tools_text: str) -> str:
+                _tt = (_tool_answer_text or "").strip()
+                _tools = (_tools_text or "").strip()
+                if _tt and _tools and (_tt not in _tools):
+                    return _tt + "\n\n" + "--- External Tool Results ---\n" + _tools
+                return "--- External Tool Results ---\n" + _tools
+
+            for call in tool_calls:
+                name = call.get("name") or ""
+                call_id = call.get("id") or call.get("tool_call_id")
+                args = parse_tool_args(call.get("args"))
+                logger.debug("[TOOLS] Tool call: name=%s id=%s args=%s", name, call_id, args)
+
+                emit_stage(req_id, f"Calling Tool: {name}")
+                executor = get_executor_fn(name)
+                logger.debug("[TOOLS] Found executor for %s: %s", name, "Yes" if executor else "No")
+
+                if not executor:
+                    result_text: Any = f"Tool '{name}' is not available."
+                    logger.warning("[TOOLS] Tool not found: %s", name)
+                else:
                     try:
-                        _kwargs_synth = {
-                            "model": getattr(settings_obj, "tools_synthesis_model", _kwargs_inf["model"]),
-                            "input": synth_prompt,
-                            "max_output_tokens": int(max_out),
-                            "temperature": float(temperature),
-                        }
-                        # Final Inference with Tools Synthesis (if tools are required for response)
-                        emit_stage(req_id, "Generating Responses with Tools")
-                        _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
-                        resp_synth = get_client_fn().responses.create(**_kwargs_synth)
-                        _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
-                        combined = _extract_text_from_responses(resp_synth).strip()
-                        answer_override = combined if combined else (rag_draft + "\n\n--- Live data ---\n" + tools_text)
-                        # Record Inference Usage - 2nd Inference (tools synthesis)
-                        usage_synth = _extract_usage_from_responses(resp_synth)
-                        if usage_synth:
-                            m.record_stage("inference", model=_kwargs_synth["model"], usage=usage_synth)
-                    except Exception:
-                        answer_override = rag_draft + "\n\n--- Live data ---\n" + tools_text
-                break
+                        exec_combined_context = None
+                        if name in tools_with_doc_ctx:
+                            exec_combined_context = [
+                                {
+                                    "url": (it.get("payload") or {}).get("url")
+                                    or (it.get("payload") or {}).get("url_lower", ""),
+                                    "title": (it.get("payload") or {}).get("title") or "",
+                                    "snippet": (it.get("payload") or {}).get("text")
+                                    or (it.get("payload") or {}).get("snippet")
+                                    or "",
+                                }
+                                for it in (reranked or [])
+                            ]
+
+                        result_text = executor(args, chat_context, existing_context=exec_combined_context)
+                        logger.debug("[TOOLS] Executed tool %s returned: %r", name, result_text)
+                    except Exception as ex:
+                        result_text = f"Tool '{name}' failed: {ex}"
+
+                # Normalize empty tool outputs so the user can see a clear outcome.
+                try:
+                    if result_text is None:
+                        result_text = ""
+                    if isinstance(result_text, str) and not result_text.strip():
+                        result_text = f"Tool '{name}' executed but returned no results."
+                except Exception:
+                    pass
+
+                if name:
+                    used_tools.append(name)
+
+                tool_outputs_list.append({"tool_call_id": call_id or "", "output": str(result_text)})
+                logger.debug("[TOOLS] Tool output added - ID: %s, Output: %r", call_id or "N/A", result_text)
+                logger.debug("[TOOLS] Current tool_outputs_list: %s", tool_outputs_list)
+
+                # Preserve first non-empty tool message for final fallback rendering
+                try:
+                    txt = (result_text.strip() if isinstance(result_text, str) else str(result_text).strip())
+                    if txt and not tool_answer_text:
+                        tool_answer_text = txt
+                except Exception:
+                    pass
+
+            if not tool_outputs_list:
+                raise StopIteration
+
+            tools_text = "\n\n".join([str(t.get("output", "")) for t in tool_outputs_list]).strip()
+            logger.debug("[TOOLS] tools_text before synthesis: %r", tools_text)
+            if not tools_text:
+                tools_text = "Tool(s) executed but returned no results."
+
+            synth_prompt = (
+                "You are a question-answering assistant for a retrieval-augmented system.\n"
+                "STRICT RULES:\n"
+                "1. Base your answer ONLY on information in the Context section and Tool results.\n"
+                "2. Do NOT use any outside knowledge.\n"
+                "3. If the context does not contain enough information to answer the question, reply exactly with: "
+                "I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+                "4. Retain any numeric citations like [1], [2] from the Context.\n"
+                "5. Do not fabricate sources or facts.\n\n"
+                f"Question:\n{message}\n\n"
+                + (f"Previous conversation summary:\n{summary_text}\n\n" if summary_text else "")
+                + (f"{recent_block_str}\n" if recent_block_str else "")
+                + f"Context:\n{context_text}\n\n"
+                + f"Tool results:\n{tools_text}\n\n"
+                + "Task:\n"
+                "- Produce the final answer to the Question.\n"
+                "- Use citations like [1], [2] when using Context.\n"
+                "- Integrate Tool results where relevant (do not invent citations for tool facts).\n"
+                "- Be concise.\n"
+            )
+
+            _kwargs_synth = {
+                "model": getattr(settings_obj, "inference_tools_synthesis_model", _kwargs_inf.get("model")),
+                "input": synth_prompt,
+                "max_output_tokens": int(max_out),
+                "temperature": float(temperature),
+            }
+
+            try:
+                emit_stage(req_id, "Generating Responses with Tools")
+                _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
+                resp_synth = get_client_fn().responses.create(**_kwargs_synth)
+                _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
+                combined = _extract_text_from_responses(resp_synth).strip()
+                logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
+
+                if combined and ("NO_SUPPORTED_SOURCES" not in combined):
+                    answer_override = combined
+                else:
+                    answer_override = _format_tool_fallback(tool_answer_text, tools_text)
+
+                logger.debug(f"[TOOLS] {log_origin} tools synthesis combined: %s  and answer_override %s ", combined, answer_override)
+                usage_synth = _extract_usage_from_responses(resp_synth)
+                if usage_synth:
+                    m.record_stage("inference", model=_kwargs_synth["model"], usage=usage_synth)
+            except Exception as ex:
+                logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, ex, exc_info=True)
+                answer_override = _format_tool_fallback(tool_answer_text, tools_text)
+        except StopIteration:
+            # No tool calls / no outputs; treat as "no tools" path.
+            pass
         except Exception as e:
             logger.debug("[TOOLS] (%s) tool loop failed: %s", log_origin, e, exc_info=True)
+        # Final safety: if tools ran but synthesis produced no answer, use tool output directly
+        if (not answer_override) and tool_answer_text:
+            logger.debug(f"[TOOLS] {log_origin} Falling back to tool answer text %s ", tool_answer_text[:100])
+            answer_override = tool_answer_text
 
     
     # Stage: Final answer and packing
-    # --- Final answer and packing
-    answer = (answer_override or _extract_text_from_responses(resp_inf) or "")
+    # Principle:
+    # - If tools ran, `answer_override` is considered the authoritative final answer.
+    # - If tools did not run, the first inference answer may carry NO_SUPPORTED_SOURCES and we suppress sources accordingly.
+
+    # Normalize tool usage for downstream rendering/metadata
+    tools_out = sorted({t for t in used_tools if t}) if used_tools else []
+
+    # Default sources are the retrieved + optional web context
     sources = (reranked or []) + (web_context or [])
-    # Sentinel detection: if the model indicates no supported sources, suppress Sources section and returned sources.
-    _ans = (answer or "").rstrip()
-    # Handle sentinel - check for NO_SUPPORTED_SOURCES in answer text to remove irrelevant sources section
-    if _ans.endswith("NO_SUPPORTED_SOURCES"):
-        # Remove sentinel from final answer text
-        if "\n" in _ans:
-            _ans = _ans.rsplit("\n", 1)[0].rstrip()
-        answer = _ans
-        sources = []  # JSON: no sources returned
-        sources_section = ""  # No sources block appended
-   
-    # Heuristic: if the model indicates lack of supporting context, even without sentinel
-    lower_ans = _ans.lower()
-    if (
-        "the provided context does not contain" in lower_ans
-        or "the context provided does not contain" in lower_ans
-        or "provided context does not" in lower_ans
-        or "context does not" in lower_ans
-    ):
-        answer = _ans
-        sources = []
-        sources_section = ""
+
+    if answer_override is not None:
+        # Tools path: pass through exactly what the tools/synthesis logic produced.
+        answer = answer_override or ""
+
+        # If we are returning tool-only output (or we have no doc/web sources), suppress the Sources block
+        # to avoid implying citations for tool facts.
+        try:
+            if ("--- External Tool Results ---" in (answer or "")) or (not sources):
+                sources = []
+                sources_section = ""
+        except Exception:
+            pass
+
+    else:
+        # No-tools path: use the original inference output.
+        answer = (_extract_text_from_responses(resp_inf) or "")
+
+        # Sentinel / unsupported-source handling (no-tools only)
+        _ans_raw = (answer or "").rstrip()
+        _ans_norm_end = _ans_raw.rstrip(" \t\r\n'\"")
+
+        # If the model indicates no supported sources AND we did not use tools, suppress sources.
+        if _ans_norm_end.endswith("NO_SUPPORTED_SOURCES"):
+            # Remove sentinel from final answer text
+            if "\n" in _ans_raw:
+                _ans_raw = _ans_raw.rsplit("\n", 1)[0].rstrip()
+            else:
+                _ans_raw = _ans_raw.replace("NO_SUPPORTED_SOURCES", "").rstrip()
+            answer = _ans_raw
+            sources = []  # JSON: no sources returned
+            sources_section = ""  # No sources block appended
+
+        # Heuristic: if the model indicates lack of supporting context, even without sentinel.
+        lower_ans = (_ans_raw or "").lower()
+        if (
+            "the provided context does not contain" in lower_ans
+            or "the context provided does not contain" in lower_ans
+            or "provided context does not" in lower_ans
+            or "context does not" in lower_ans
+        ):
+            answer = _ans_raw
+            sources = []
+            sources_section = ""
+
+
     try:
         m.finalize_turn()
         turn_metrics, convo_snapshot = m.snapshot()
@@ -2037,7 +2219,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         "turn_metrics": turn_metrics,
         "conversation_totals": convo_snapshot,
         "metrics": legacy_metrics,
-        "tools_used": sorted({t for t in used_tools if t}) if used_tools else [],
+        "tools_used": tools_out,
         "rewrite_display": rewrite_display,
     }
 
@@ -2097,6 +2279,24 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         _ns = (f"{_uid}:{_cid}" if _uid and _cid else (_cid or ""))
     except Exception:
         _ns = ""
+
+    # Diagnostics: confirm namespace / conversation_id on every stateless request
+    try:
+        logger.info(
+            "[REQ %s] ns='%s' user_id='%s' conversation_id='%s' query_id='%s'",
+        req_id,
+        _ns,
+        (_uid or ""),
+        (_cid or ""),
+        (params.get("query_id") if isinstance(params, dict) else None),
+    )
+        if not _ns:
+         logger.warning(
+            "[REQ %s] EMPTY namespace -> using default CONVO_TOTALS (totals may appear to reset/collide)",
+            req_id,
+        )
+    except Exception:
+        pass
 
     deps = {
         "db": db,
