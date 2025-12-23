@@ -110,17 +110,38 @@ def get_client():
 # same OpenAI client created by `get_client()` (which uses `settings.openai_api_key`).
 # This avoids relying on environment variables inside llm_handler.
 
-def _responses_create(**kwargs: Any):
-    """Call Responses API via llm_handler while preserving existing OpenAI client config."""
+
+def _responses_create(provider: str | None = None, **kwargs: Any):
+    """Compatibility shim for LLM calls.
+
+    Default behavior (no provider provided):
+      - Preserve existing behavior by routing to `llm_handler.responses.create(**kwargs)`
+      - Best-effort reuse the OpenAI client created by `get_client()` (settings-driven)
+
+    Optional behavior (provider provided):
+      - Route via `llm_handler.create(provider=..., model=..., input=..., stream=..., **kwargs)`
+      - This enables stage-level provider selection later without changing call sites.
+
+    NOTE: In this step we do not change any callers; provider defaults to None.
+    """
+    prov = (provider or "openai").strip().lower()
+
+    # Always try to pin the OpenAI client to the settings-driven instance to avoid env drift.
     try:
-        # Ensure llm_handler uses the same OpenAI client as the rest of chat_manager.
-        # This is best-effort and should not change functional behavior.
         if getattr(llm_handler, "_openai", None) is None:
             llm_handler._openai = get_client()  # type: ignore[attr-defined]
     except Exception:
-        # Best-effort only; fall back to llm_handler's own initialization if needed.
         pass
-    return llm_handler.responses.create(**kwargs)
+
+    # Preserve existing Responses API path when provider is not explicitly set (or is openai).
+    if provider is None or prov == "openai":
+        return llm_handler.responses.create(**kwargs)
+
+    # Provider-aware path (used in later steps when stage selection is enabled).
+    model = kwargs.pop("model", None)
+    inp = kwargs.pop("input", None)
+    stream = bool(kwargs.pop("stream", False))
+    return llm_handler.create(provider=prov, model=model, input=inp, stream=stream, **kwargs)
 
 
 # --- Stage resolver (read-only; mirrors existing fields as-is) ---
@@ -151,6 +172,12 @@ def resolve_stage_specs(
     NOTE: Provider selection is intentionally fixed to "openai" in this first step.
     """
     p = params or {}
+
+    # Optional per-request overrides (kept minimal for iterative rollout)
+    rerank_provider_override = str(p.get("rerank_provider") or "").strip()
+    rerank_model_override = str(p.get("rerank_model") or "").strip()
+    rewrite_provider_override = str(p.get("rewrite_provider") or "").strip()
+    rewrite_model_override = str(p.get("rewrite_model") or "").strip()
 
     # Existing flat fields (read as-is)
     rewrite_model = getattr(settings_obj, "rewrite_model", getattr(settings_obj, "inference_model", ""))
@@ -210,8 +237,8 @@ def resolve_stage_specs(
             "kwargs": {},
         },
         "rewrite": {
-            "provider": "openai",
-            "model": rewrite_model,
+            "provider": (rewrite_provider_override or "openai"),
+            "model": (rewrite_model_override or rewrite_model),
             "kwargs": {
                 "temperature": rewrite_temp,
                 "max_output_tokens": rewrite_max_out,
@@ -228,8 +255,8 @@ def resolve_stage_specs(
             },
         },
         "rerank": {
-            "provider": "openai",
-            "model": rerank_model,
+            "provider": (rerank_provider_override or "openai"),
+            "model": (rerank_model_override or rerank_model),
             "kwargs": {
                 "temperature": rerank_temp,
                 "max_output_tokens": rerank_max_out,
@@ -1157,27 +1184,171 @@ def should_rewrite(message: str) -> bool:
     return False
 
 
-def build_rewrite_prompt(tail_messages: List[Dict[str, str]] | None, summary_text: str, message: str) -> str:
-    """Build a compact prompt for the rewrite model using only a tiny context pack.
-    We include: (optional) summary of earlier turns and the verbatim recent tail, plus the user's latest message.
-    The model is instructed to return JSON only and to keep the original if ambiguous.
+def build_rewrite_prompt(
+    tail_messages: List[Dict[str, str]] | None,
+    summary_text: str,
+    message: str,
+) -> str:
+    """Build a structured prompt for the rewrite model using conversation history.
+
+    Uses:
+      - Optional long-term summary (summary_text)
+      - Recent verbatim turns (tail_messages)
+      - Current user message (message)
+
+    The model is instructed to output ONLY a JSON object with the shape:
+      {"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}
     """
     parts: List[str] = []
-    parts.append("Rewrite the user's latest question into a self-contained question so it is self-contained using only the recent conversation. \n")
-    parts.append("If you cannot resolve the reference to the conversation, return the original question unchanged.\n")
-    parts.append("Return strictly the following JSON (no extra text, no explanations):\n")
-    parts.append("Keep reason to a short phrase (max 15-20 tokens). \n")
-    parts.append('{"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}\n\n')
+
+    # 1. SYSTEM IDENTITY (Static/Cacheable)
+    parts.append("### ROLE\n")
+    parts.append(
+        "You are a Search Query Optimizer. Your task is to rewrite the user's latest message "
+        "into a single, standalone search query that can be sent to a vector database or search engine, "
+        "using only the provided conversation context.\n\n"
+    )
+
+    # 2. HIERARCHICAL INSTRUCTIONS (Static/Cacheable)
+    parts.append("### INSTRUCTIONS\n")
+    parts.append(
+        "1. PRIORITY: Use the 'RECENT CONVERSATION' to resolve immediate pronouns and vague references "
+        "(e.g., it, this, that, they, those, their, its).\n"
+    )
+    parts.append(
+        "2. BACKGROUND: Use the 'CONVERSATION SUMMARY' only to understand the overall topic when the recent turns "
+        "are not sufficient by themselves.\n"
+    )
+    parts.append(
+        "3. STANDALONE QUERY: The 'rewritten' field must be a clear, self-contained search query. "
+        "If the user's latest message is already a clear standalone question, return it unchanged and set "
+        "'changed': false.\n"
+    )
+    parts.append(
+        "4. NO CHAT / NO ANSWERS: Do not answer the question. Do not add explanations, opinions, or chit-chat. "
+        "Your only job is to rewrite the query for retrieval.\n"
+    )
+    parts.append(
+        "5. AMBIGUITY HANDLING: If you cannot confidently resolve what a pronoun or vague reference refers to, "
+        "keep the original question unchanged, set 'ambiguous': true, and briefly explain why in 'reason'.\n\n"
+    )
+
+    # 3. OUTPUT SCHEMA (Static/Cacheable)
+    parts.append("### OUTPUT SCHEMA\n")
+    parts.append(
+        "Return STRICTLY a single JSON object with this shape and field meanings (no extra text, no code fences):\n"
+    )
+    parts.append(
+        '{"rewritten":"...","changed":true|false,"confidence":0.0,'
+        '"ambiguous":true|false,"reason":"..."}\n'
+    )
+    parts.append(
+        "- rewritten: the final standalone search query.\n"
+        "- changed: true if you modified the user question, false if you kept it as-is.\n"
+        "- confidence: a float from 0.0 to 1.0 indicating how confident you are in the rewrite.\n"
+        "- ambiguous: true if the context is too unclear to safely rewrite; otherwise false.\n"
+        "- reason: a short phrase (max ~15-20 tokens) explaining your decision.\n\n"
+    )
+
+    # 4. FEW-SHOT EXAMPLES (Static/Cacheable)
+    parts.append("### EXAMPLES\n")
+
+    # EXAMPLE 1: Mount Whitney (domain-specific, location + weather + airport)
+    parts.append("EXAMPLE 1\n")
+    parts.append("SUMMARY: user is interested in mount whitney.\n")
+    parts.append(
+        'RECENT: USER: "what is the elevtion ." | ASSISTANT: "The elevation is 14505 ft."\n'
+    )
+    parts.append('CURRENT: "Current weather and closest airport."\n')
+    parts.append(
+        '{"rewritten": "what is the current weather in Mount Whitney, California and the closest airport to it", '
+        '"changed": true, "confidence": 0.98, "ambiguous": false, '
+        '"reason": "added full context for mount whitney"}\n\n'
+    )
+
+    # EXAMPLE 2: SDK / Linux compatibility (resolving "it" to Python SDK)
+    parts.append("EXAMPLE 2\n")
+    parts.append("SUMMARY: user is installing and using a Python SDK.\n")
+    parts.append(
+        'RECENT: USER: "How do I install the Python SDK?" | ASSISTANT: "You can install it with pip using `pip install my-sdk`."\n'
+    )
+    parts.append('CURRENT: "Does it work on Linux?"\n')
+    parts.append(
+        '{"rewritten": "Linux compatibility and system requirements for the my-sdk Python SDK", '
+        '"changed": true, "confidence": 0.96, "ambiguous": false, '
+        '"reason": "resolved it to Python SDK and added linux compatibility context"}\n\n'
+    )
+
+    # EXAMPLE 3: Q3 revenue / projections (topic continuation)
+    parts.append("EXAMPLE 3\n")
+    parts.append("SUMMARY: user is asking about company financial performance for Q3.\n")
+    parts.append(
+        'RECENT: USER: "Tell me about the Q3 revenue." | ASSISTANT: "Q3 revenue was $45M, up 12% year-over-year."\n'
+    )
+    parts.append('CURRENT: "What about the projections?"\n')
+    parts.append(
+        '{"rewritten": "Q3 revenue projections and future financial outlook for the company", '
+        '"changed": true, "confidence": 0.94, "ambiguous": false, '
+        '"reason": "used prior Q3 revenue topic to expand vague projections into standalone query"}\n\n'
+    )
+
+    # EXAMPLE 4: Car clicking sound (entity clarification)
+    parts.append("EXAMPLE 4\n")
+    parts.append("SUMMARY: user has a car with a clicking sound and wants to understand the issue.\n")
+    parts.append(
+        'RECENT: USER: "My car is making a clicking sound when I accelerate." | ASSISTANT: "That can have several causes, typically related to CV joints or engine components."\n'
+    )
+    parts.append('CURRENT: "How much to fix it?"\n')
+    parts.append(
+        '{"rewritten": "cost and repair estimates to fix a car that makes a clicking sound when accelerating", '
+        '"changed": true, "confidence": 0.92, "ambiguous": false, '
+        '"reason": "expanded it into explicit car clicking sound repair cost query"}\n\n'
+    )
+
+    # EXAMPLE 5: Already clear airports question (no semantic change, but more context)
+    parts.append("EXAMPLE 5\n")
+    parts.append("SUMMARY: user is researching airports near Mount Whitney.\n")
+    parts.append(
+        'RECENT: USER: "What are the closest airports to Mount Whitney?" | ASSISTANT: "There are several nearby, including Bishop and Fresno Yosemite."\n'
+    )
+    parts.append('CURRENT: "What are the closest airports to Mount Whitney?"\n')
+    parts.append(
+        '{"rewritten": "What are the closest airports to Mount Whitney?", '
+        '"changed": false, "confidence": 0.99, "ambiguous": false, '
+        '"reason": "question already clear and self-contained"}\n\n'
+    )
+
+    # EXAMPLE 6: Truly ambiguous follow-up (keep original, mark ambiguous)
+    parts.append("EXAMPLE 6\n")
+    parts.append("SUMMARY: user is asking many unrelated questions about different products and topics.\n")
+    parts.append(
+        'RECENT: USER: "How do I reset my router?" | ASSISTANT: "Press and hold the reset button for 10 seconds."\n'
+    )
+    parts.append('CURRENT: "What about that one?"\n')
+    parts.append(
+        '{"rewritten": "What about that one?", '
+        '"changed": false, "confidence": 0.2, "ambiguous": true, '
+        '"reason": "cannot determine what that one refers to from context"}\n\n'
+    )
+
+    # 5. DYNAMIC DATA (Changes every turn)
     if summary_text:
-        parts.append("Previous conversation summary:\n" + summary_text.strip() + "\n\n")
+        parts.append("### CONVERSATION SUMMARY (Long-term Context)\n")
+        parts.append(summary_text.strip())
+        parts.append("\n\n")
+
     if tail_messages:
-        parts.append("Recent conversation:\n")
+        parts.append("### RECENT CONVERSATION (Immediate Context)\n")
         for m in tail_messages:
-            role = m.get("role", "user")
-            content = m.get("content", "")
+            role = (m.get("role") or "user").upper()
+            content = m.get("content", "") or ""
             parts.append(f"{role}: {content}\n")
         parts.append("\n")
-    parts.append(f"User question: {message.strip()}\n")
+
+    parts.append("### CURRENT USER QUESTION\n")
+    parts.append(message.strip())
+    parts.append("\n")
+
     return "".join(parts)
 
 
@@ -1186,6 +1357,7 @@ def rewrite_query(
     summary_text: str,
     message: str,
     log_prefix: str = "[REWRITE]",
+    stage_spec: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Call the rewrite model to produce a self-contained query.
     Returns a dict with keys: rewritten, changed, confidence, ambiguous, reason.
@@ -1195,17 +1367,29 @@ def rewrite_query(
         prompt = build_rewrite_prompt(tail_messages, summary_text, message)
         # Log an estimated prompt token count for rewrite
         try:
-            enc = _get_encoder_for_model(settings.rewrite_model)
+            _rw = stage_spec or {}
+            _model_for_est = str(_rw.get("model") or settings.rewrite_model)
+            enc = _get_encoder_for_model(_model_for_est)
             pt_est = len(enc.encode(prompt))
-            logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, settings.rewrite_model)
+            logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, _model_for_est)
         except Exception:
             pass
         # Invoke the rewrite model with the prompt for the user's latest message for it to rewrite it
+        _rw = stage_spec or {}
+        _provider = str(_rw.get("provider") or "openai")
+        _model = str(_rw.get("model") or settings.rewrite_model)
+        _kwargs = dict(_rw.get("kwargs") or {})
+        if not _kwargs:
+            _kwargs = {
+                "max_output_tokens": int(settings.rewrite_max_output_tokens),
+                "temperature": float(settings.rewrite_temperature),
+            }
+
         resp = _responses_create(
-            model=settings.rewrite_model,
+            provider=_provider,
+            model=_model,
             input=prompt,
-            max_output_tokens=int(settings.rewrite_max_output_tokens),
-            temperature=float(settings.rewrite_temperature),
+            **_kwargs,
         )
         usage = _extract_usage_from_responses(resp)
         raw = _extract_text_from_responses(resp).strip()
@@ -1589,6 +1773,22 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     history: List[Dict[str, str]] = (req or {}).get("history") or []
     params: Dict[str, Any] = (req or {}).get("params") or {}
 
+    # --- Stage resolver (Step 1): compute provider/model/kwargs per stage from existing settings ---
+    # NOTE: This is read-only in this step (no behavior change). We compute it early so later
+    # steps can pull from a single source instead of scattered getattr(...) calls.
+    try:
+        _prompt_input_hint: Any = [] if str(style) == "messages" else ""
+        stage_specs = resolve_stage_specs(
+            settings_obj=settings_obj,
+            params=params,
+            enable_tools=enable_tools,
+            prompt_input=_prompt_input_hint,
+            message=message,
+            list_tools_fn=list_tools_fn,
+        )
+    except Exception:
+        stage_specs = {}
+
     # UI-friendly summary of rewrite decision (always returned)
     rewrite_display: Dict[str, Any] = {
         "enabled": bool(enable_query_rewrite),
@@ -1662,12 +1862,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         log_prefix=f"[REWRITE] {log_origin}"
                     )
                 if tail_rw or summary_rw:
-                    rw = rewrite_query(tail_rw, summary_rw, message, log_prefix=f"[REWRITE] {log_origin}")
+                    rw_spec = (stage_specs or {}).get("rewrite") or {}
+                    rw = rewrite_query(tail_rw, summary_rw, message, log_prefix=f"[REWRITE] {log_origin}", stage_spec=rw_spec)
                     threshold = float(thr)
                     usage_rw = rw.get("_usage") if isinstance(rw, dict) else None
                     accepted = bool(rw.get("changed")) and (not rw.get("ambiguous")) and (float(rw.get("confidence", 0.0) or 0.0) >= threshold)
                     if usage_rw:
-                        m.record_stage("rewrite", model=getattr(settings_obj, "rewrite_model", settings_obj.inference_model), usage=usage_rw, extra={"applied": True, "reason": ("accepted" if accepted else "rejected")})
+                        _rw_m = str(((rw_spec or {}).get("model")) or getattr(settings_obj, "rewrite_model", settings_obj.inference_model))
+                        m.record_stage("rewrite", model=_rw_m, usage=usage_rw, extra={"applied": True, "reason": ("accepted" if accepted else "rejected")})
                     if accepted:
                         effective_query = rw.get("rewritten") or message
                         logger.info("[REWRITE] (%s) accepted >=%s", log_origin, threshold)
@@ -1959,13 +2161,35 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[RERANK] (%s) Pool size=%d of %d", log_origin, pool_n, n)
         try:
             cand_text = _candidate_texts(pool)
-            prompt_text = _make_rerank_prompt(effective_query, cand_text, int(getattr(settings_obj, "reranker_chunk_size", 600)))
+            prompt_text = _make_rerank_prompt(
+                effective_query,
+                cand_text,
+                int(getattr(settings_obj, "reranker_chunk_size", 600)),
+            )
             _dbg(f"[RERANK] {log_origin} prompt:", prompt_text)
+
+            # Provider-aware rerank call via stage_specs (behavior-identical defaults).
+            _rs = (stage_specs or {}).get("rerank") or {}
+            _provider = str(_rs.get("provider") or "openai")
+            _model = str(
+                _rs.get("model")
+                or getattr(settings_obj, "re_ranker_model", settings_obj.inference_model)
+            )
+            _kwargs = dict(_rs.get("kwargs") or {})
+
+            logger.debug(
+                "[RERANK] (%s) provider=%s model=%s kwargs=%r",
+                log_origin,
+                _provider,
+                _model,
+                _kwargs,
+            )
+
             resp_rerank = _responses_create(
-                model=getattr(settings_obj, "re_ranker_model", settings_obj.inference_model),
+                provider=_provider,
+                model=_model,
                 input=prompt_text.strip(),
-                max_output_tokens=int(getattr(settings_obj, "re_ranker_max_output_tokens", 128)),
-                temperature=float(getattr(settings_obj, "re_ranker_temperature", 0.0)),
+                **_kwargs,
             )
             content = _extract_text_from_responses(resp_rerank).strip()
             _dbg(f"[RERANK] {log_origin} raw:", content)
@@ -1974,7 +2198,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             reranked = reranked[:kept]
 
             usage_rr = _extract_usage_from_responses(resp_rerank) or {}
-            m.record_stage("rerank", model=getattr(settings_obj, "re_ranker_model", "rerank"), usage=usage_rr, extra={"candidates_reranked": n})
+            # Record rerank metrics against the actual model used (from stage_specs).
+            m.record_stage(
+                "rerank",
+                model=_model,
+                usage=usage_rr,
+                extra={"candidates_reranked": n},
+            )
         except Exception as e:
             logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
             reranked = results[:kept]
