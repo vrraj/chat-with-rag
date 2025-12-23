@@ -6,6 +6,14 @@ from backend.core.schemas import PayloadUpdateRequest
 import logging
 import openai
 from backend.core.config import settings
+from backend.embeddings.specs import resolve_embedding_spec
+try:
+    from llm.llm_handler import llm_handler
+except Exception:  # pragma: no cover
+    try:
+        from backend.llm.llm_handler import llm_handler  # type: ignore[assignment]
+    except Exception:  # pragma: no cover
+        llm_handler = None  # type: ignore[assignment]
 from openai import OpenAI
 import math
 
@@ -139,20 +147,44 @@ class QdrantDB:
             raise
 
     def generate_embeddings(self, text: str) -> List[float]:
-        """
-        Generate embeddings using OpenAI's API
-        
-        Args:
-            text: Text to generate embeddings for
-            
-        Returns:
-            List of floats representing the embedding vector
+        """Generate embeddings for Qdrant queries.
+
+        Backward-compatible behavior:
+        - When `settings.embedding_model` is an OpenAI model id string
+          (legacy), we continue to use the OpenAI client created via
+          `get_openai_client()`.
+        - Newer configs may set `embedding_model` to a provider key
+          ("openai" or "gemini"); in that case we route via llm_handler.
         """
         try:
-            response = self.get_openai_client().embeddings.create(
-                input=text,
-                model=settings.embedding_model
+            spec = resolve_embedding_spec(settings)
+            provider = spec.get("provider", "openai")
+            model = spec.get("model")
+
+            # Legacy / default path: OpenAI via local OpenAI client.
+            use_legacy_openai = (
+                provider == "openai"
+                and isinstance(getattr(settings, "embedding_model", None), str)
+                and getattr(settings, "embedding_model", None) not in ("openai", "gemini")
             )
+
+            if use_legacy_openai:
+                response = self.get_openai_client().embeddings.create(
+                    input=text,
+                    model=model,
+                )
+            else:
+                if llm_handler is None:
+                    raise ValueError("llm_handler is not available for provider-aware embeddings")
+                kwargs: Dict[str, Any] = {
+                    "provider": provider,
+                    "model": model,
+                    "input": text,
+                }
+                dims = spec.get("dimensions")
+                if provider == "gemini" and isinstance(dims, int) and dims > 0:
+                    kwargs["dimensions"] = dims
+                response = llm_handler.embeddings.create(**kwargs)
             # Record token usage if the SDK returns it
             try:
                 usage = getattr(response, "usage", None)

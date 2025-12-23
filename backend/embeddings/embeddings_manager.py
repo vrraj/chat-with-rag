@@ -9,6 +9,14 @@ from backend.extractor.splitters import TextSplitter
 from qdrant_client import models
 from backend.embeddings.collection_manager import CollectionManager
 from backend.db import QdrantDB
+from backend.embeddings.specs import resolve_embedding_spec
+try:
+    from llm.llm_handler import llm_handler
+except Exception:  # pragma: no cover
+    try:
+        from backend.llm.llm_handler import llm_handler  # type: ignore[assignment]
+    except Exception:  # pragma: no cover
+        llm_handler = None  # type: ignore[assignment]
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
@@ -35,9 +43,13 @@ class EmbeddingsManager:
         self.qdrant_db.generate_embeddings = self.generate_embeddings
         # Track tokens used during a single indexing operation
         self._tokens_used: int = 0
-
+        
     def get_client(self) -> openai.OpenAI:
-        """Lazily initialize and return the OpenAI client."""
+        """Lazily initialize and return the OpenAI client for embeddings.
+
+        This preserves the existing behavior of EmbeddingsManager.generate_embeddings,
+        which expects an OpenAI client exposing `.embeddings.create(...)`.
+        """
         if self._client is None:
             logger.debug("Initializing OpenAI client for embeddings")
             try:
@@ -46,7 +58,7 @@ class EmbeddingsManager:
                 logger.exception("Failed to create OpenAI client: %s", e)
                 raise
         return self._client
-        
+
     def estimate_tokens(self, text: str) -> int:
         """Estimate the number of tokens in the text using tiktoken.
         
@@ -68,7 +80,15 @@ class EmbeddingsManager:
 
     def generate_embeddings(self, text: str) -> List[float]:
         """
-        Generate embeddings using OpenAI's API
+        Generate embeddings using the configured provider/model.
+
+        Backward-compatible behavior:
+        - If `settings.embedding_model` is a legacy OpenAI model id
+          (e.g. "text-embedding-3-small"), we continue to use the local
+          OpenAI client via `get_client()`.
+        - If `settings.embedding_model` is a provider key ("openai" or
+          "gemini"), we route through `llm_handler.embeddings.create` with
+          the spec from `resolve_embedding_spec(settings)`.
         Args:
             text: Text to embed
         Returns:
@@ -81,11 +101,50 @@ class EmbeddingsManager:
             try:
                 if settings.embeddings_call_delay_secs:
                     time.sleep(float(settings.embeddings_call_delay_secs))
-                #logger.debug("Generating embedding using model: %s", settings.embedding_model)
-                response = self.get_client().embeddings.create(
-                    input=text,
-                    model=settings.embedding_model
+                # Resolve the embedding spec so we can support both provider-mode
+                # configs and legacy model-id configs.
+                try:
+                    spec = resolve_embedding_spec(settings)
+                    provider = spec.get("provider", "openai")
+                    model = spec.get("model")
+                    dims = spec.get("dimensions")
+                except Exception:
+                    provider = "openai"
+                    model = getattr(settings, "embedding_model", None)
+                    dims = None
+
+                # Legacy path: embedding_model is a full OpenAI model id string,
+                # and not a provider key. In that case, use the local OpenAI
+                # client as before.
+                legacy_model = getattr(settings, "embedding_model", None)
+                use_legacy_openai = (
+                    provider == "openai"
+                    and isinstance(legacy_model, str)
+                    and legacy_model not in ("openai", "gemini")
                 )
+
+                if use_legacy_openai or llm_handler is None:
+                    #logger.debug("Generating embedding using OpenAI model: %s", model)
+                    response = self.get_client().embeddings.create(
+                        input=text,
+                        model=model,
+                    )
+                else:
+                    # Provider-aware path via llm_handler.
+                    kwargs: Dict[str, Any] = {
+                        "provider": provider,
+                        "model": model,
+                        "input": text,
+                    }
+                    if provider == "gemini" and isinstance(dims, int) and dims > 0:
+                        kwargs["dimensions"] = dims
+                    # Ensure llm_handler uses the same OpenAI client when provider is openai.
+                    if provider == "openai" and getattr(llm_handler, "_openai", None) is None:
+                        try:
+                            llm_handler._openai = openai.OpenAI(api_key=settings.openai_api_key)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    response = llm_handler.embeddings.create(**kwargs)
                 embedding = response.data[0].embedding
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
                 total_tokens = response.usage.total_tokens if response.usage else 0
@@ -173,6 +232,13 @@ class EmbeddingsManager:
         if chunks and hasattr(chunks[0], 'get') and 'total_chunks' in chunks[0]:
             original_total_chunks = chunks[0].get('total_chunks')
 
+        # Resolve embedding spec once per document so we can record the model name in payloads
+        try:
+            _emb_spec_doc = resolve_embedding_spec(settings)
+            _emb_model_name_doc = _emb_spec_doc.get("model")
+        except Exception:
+            _emb_model_name_doc = getattr(settings, "embedding_model", None)
+
         for idx, chunk in enumerate(chunks):
             try:
                 chunk_id = str(uuid.uuid4())
@@ -215,6 +281,10 @@ class EmbeddingsManager:
                     "title": document.get("title", ""),
                     "description": document.get("description", ""),
                 }
+
+                # Record the embedding model used for this vector (best-effort).
+                if _emb_model_name_doc:
+                    payload["embedding_model"] = _emb_model_name_doc
 
                 # Prefer provided headings; default section to "Lead" if nothing present
                 section = document.get("section") or document.get("section_title") or None
@@ -408,6 +478,12 @@ class EmbeddingsManager:
 
         # Reset token counter; generate embeddings and wrap chunks
         self._tokens_used = 0
+        # Resolve embedding spec once per batch to record the model name in payloads
+        try:
+            _emb_spec_chunks = resolve_embedding_spec(settings)
+            _emb_model_name_chunks = _emb_spec_chunks.get("model")
+        except Exception:
+            _emb_model_name_chunks = getattr(settings, "embedding_model", None)
         points = []
         failures = 0
         started_at = time.time()
@@ -427,6 +503,11 @@ class EmbeddingsManager:
                     chunk["base_url"] = base
                 if "base_url_lower" not in chunk:
                     chunk["base_url_lower"] = (base or "").lower()
+
+                # Best-effort: record the embedding model used, without overwriting
+                # any value that might already be present in the incoming chunk.
+                if _emb_model_name_chunks and "embedding_model" not in chunk:
+                    chunk["embedding_model"] = _emb_model_name_chunks
 
                 embedding = self.generate_embeddings(text)
 

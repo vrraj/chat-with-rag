@@ -135,11 +135,28 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3) Embeddings
     # -------------------------------------------------------------------------
+    # Legacy note: historically, `embedding_model` held the full OpenAI model id
+    # (e.g., "text-embedding-3-small"). For backward compatibility we preserve
+    # that behavior in the resolver. Going forward, you can also set it to a
+    # provider key ("openai" or "gemini") and use the per-provider fields
+    # below.
     # embedding_model: str = "text-embedding-3-large"  # use for higher-quality embeddings
     # vector_size: int = 3072  # use with text-embedding-3-large
-    # collection_name: str = "docs_v3_large"  # collection name for large embedding model
+    # collection_name: str = "document_index_large"  # collection name for large embedding model
 
-    embedding_model: str = "text-embedding-3-small"  # use for faster, lower-cost embeddings
+    # Default OpenAI embedding model (current behavior).
+    openai_embedding_model: str = "text-embedding-3-small"
+    # Provider selector for embeddings: "openai" or "gemini".
+    # Legacy configs may still set this to a full OpenAI model id; the
+    # resolver in backend/embeddings/specs.py remains backward-compatible.
+    embedding_model: str = "openai"
+
+    # Gemini embeddings (adapter-based) - additive, optional
+    # Default model: "gemini-embedding-001".
+    # Supported dimensions (per vendor docs): 3072, 1536, 768.
+    # The embedding adapter will default to 1536 dimensions when none are specified.
+    gemini_embedding_model: str = "gemini-embedding-001"
+    gemini_embedding_dimensions: int = 1536
 
     # Costs (USD per 1,000,000 tokens)
     embedding_cost_per_MM_tokens: float = 0.02

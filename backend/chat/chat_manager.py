@@ -72,7 +72,15 @@ from backend.stream_emit import emit_stage, close_stream
 from backend.core.config import settings
 from backend.db import QdrantDB
 from backend.chat.web_search import WebSearchClient
+from backend.embeddings.specs import resolve_embedding_spec
+
 from backend.tools import list_tools, get_executor
+try:
+    # When running as a package (e.g., `python -m backend.main`)
+    from backend.llm.llm_handler import llm_handler
+except Exception:  # pragma: no cover
+    # When running with repo root on PYTHONPATH (e.g., scripts / local runs)
+    from llm.llm_handler import llm_handler  # type: ignore
 
 # Lazy OpenAI client (initialized on first use)
 _client = None
@@ -95,6 +103,157 @@ def get_client():
             logger.error("Failed to create OpenAI client: %s", e)
             raise
     return _client
+
+
+# --- LLM call helper (OpenAI-first, via llm_handler facade) ---
+# NOTE: This is a compatibility shim only. It preserves existing behavior by reusing the
+# same OpenAI client created by `get_client()` (which uses `settings.openai_api_key`).
+# This avoids relying on environment variables inside llm_handler.
+
+def _responses_create(**kwargs: Any):
+    """Call Responses API via llm_handler while preserving existing OpenAI client config."""
+    try:
+        # Ensure llm_handler uses the same OpenAI client as the rest of chat_manager.
+        # This is best-effort and should not change functional behavior.
+        if getattr(llm_handler, "_openai", None) is None:
+            llm_handler._openai = get_client()  # type: ignore[attr-defined]
+    except Exception:
+        # Best-effort only; fall back to llm_handler's own initialization if needed.
+        pass
+    return llm_handler.responses.create(**kwargs)
+
+
+# --- Stage resolver (read-only; mirrors existing fields as-is) ---
+# Produces per-stage provider/model/kwargs, with provider defaulting to "openai".
+# Frontend params can override these later; for now we only read existing settings.
+
+def resolve_stage_specs(
+    *,
+    settings_obj: Any,
+    params: Dict[str, Any] | None,
+    enable_tools: bool,
+    prompt_input: Any,
+    message: str,
+    list_tools_fn: Any,
+) -> Dict[str, Dict[str, Any]]:
+    """Return stage specs using current flat settings (no behavior change).
+
+    Output shape:
+        {
+          "rewrite":   {"provider": "openai", "model": "...", "kwargs": {...}},
+          "summary":   {"provider": "openai", "model": "...", "kwargs": {...}},
+          "rerank":    {"provider": "openai", "model": "...", "kwargs": {...}},
+          "inference": {"provider": "openai", "model": "...", "kwargs": {...}},
+          "tools_synth": {"provider": "openai", "model": "...", "kwargs": {...}},
+          "embedding": {"provider": "openai", "model": "...", "kwargs": {...}},
+        }
+
+    NOTE: Provider selection is intentionally fixed to "openai" in this first step.
+    """
+    p = params or {}
+
+    # Existing flat fields (read as-is)
+    rewrite_model = getattr(settings_obj, "rewrite_model", getattr(settings_obj, "inference_model", ""))
+    summarizer_model = getattr(settings_obj, "summarizer_model", getattr(settings_obj, "inference_model", ""))
+    rerank_model = getattr(settings_obj, "re_ranker_model", getattr(settings_obj, "inference_model", ""))
+    inference_model = getattr(settings_obj, "inference_model", "")
+    tools_synth_model = getattr(settings_obj, "inference_tools_synthesis_model", inference_model)
+    embedding_model = getattr(settings_obj, "embedding_model", "")
+
+    # Existing flat temps/limits (read as-is)
+    rewrite_temp = float(getattr(settings_obj, "rewrite_temperature", 0.2))
+    rewrite_max_out = int(getattr(settings_obj, "rewrite_max_output_tokens", 128))
+
+    summarizer_temp = float(getattr(settings_obj, "summarizer_temperature", 0.3))
+    summarizer_max_in = int(getattr(settings_obj, "summarizer_max_input_tokens", 512))
+    summarizer_max_out = int(getattr(settings_obj, "summarizer_max_output_tokens", 128))
+
+    rerank_temp = float(getattr(settings_obj, "re_ranker_temperature", 0.0))
+    rerank_max_out = int(getattr(settings_obj, "re_ranker_max_output_tokens", 64))
+
+    inference_temp = float(getattr(settings_obj, "inference_temperature", 0.2))
+    inference_top_p = float(getattr(settings_obj, "inference_top_p", 1.0))
+    inference_max_out = int(getattr(settings_obj, "max_inference_output_tokens", 800))
+
+    # Tools kwargs are attached at the inference call site today; mirror the current logic here.
+    tools_kwargs: Dict[str, Any] = {}
+    if enable_tools and isinstance(prompt_input, list):
+        try:
+            tools = list_tools_fn()
+
+            def _is_web_search_requested(latest_user_msg: str) -> bool:
+                if not latest_user_msg:
+                    return False
+                txt = latest_user_msg.lower()
+                keys = [
+                    "use web search",
+                    "search the web",
+                    "web search",
+                    "search online",
+                    "browse the web",
+                    "do a web search",
+                    "google this",
+                    "bing this",
+                ]
+                return any(k in txt for k in keys)
+
+            if not _is_web_search_requested(message):
+                tools = [t for t in tools if (t.get("name") or t.get("function", {}).get("name")) != "web_search"]
+            tools_kwargs["tools"] = tools
+        except Exception:
+            tools_kwargs["tools"] = []
+
+    return {
+        "embedding": {
+            "provider": "openai",
+            "model": embedding_model,
+            "kwargs": {},
+        },
+        "rewrite": {
+            "provider": "openai",
+            "model": rewrite_model,
+            "kwargs": {
+                "temperature": rewrite_temp,
+                "max_output_tokens": rewrite_max_out,
+            },
+        },
+        "summary": {
+            "provider": "openai",
+            "model": summarizer_model,
+            "kwargs": {
+                "temperature": summarizer_temp,
+                "max_output_tokens": summarizer_max_out,
+                # NOTE: summarizer input budgeting is handled by prompt construction, not API args.
+                "_max_input_tokens": summarizer_max_in,
+            },
+        },
+        "rerank": {
+            "provider": "openai",
+            "model": rerank_model,
+            "kwargs": {
+                "temperature": rerank_temp,
+                "max_output_tokens": rerank_max_out,
+            },
+        },
+        "inference": {
+            "provider": "openai",
+            "model": inference_model,
+            "kwargs": {
+                "temperature": inference_temp,
+                "top_p": inference_top_p,
+                "max_output_tokens": inference_max_out,
+                **tools_kwargs,
+            },
+        },
+        "tools_synth": {
+            "provider": "openai",
+            "model": tools_synth_model,
+            "kwargs": {
+                "temperature": inference_temp,
+                "max_output_tokens": inference_max_out,
+            },
+        },
+    }
 
 # ---- Conversation totals accumulator (per-namespace, module-level) ----
 COST_BASIS = float(getattr(settings, "cost_basis_tokens", 1_000_000))
@@ -564,7 +723,7 @@ def _summarize_messages_with_cache(
         if max_output_tokens is not None:
             kwargs["max_output_tokens"] = int(max_output_tokens)
 
-        resp = get_client().responses.create(**kwargs)
+        resp = _responses_create(**kwargs)
         summary_text = _extract_text_from_responses(resp).strip()
         cache[key] = summary_text
         # Option A: record key under namespace (if tag includes namespace|...)
@@ -737,9 +896,15 @@ class Metrics:
     """
     def __init__(self, settings_obj, convo_totals_ref: Dict[str, Any]):
         self.settings = settings_obj
+        # Resolve embedding spec once so we can report the concrete model name
+        try:
+            _emb_spec = resolve_embedding_spec(settings_obj)
+            _emb_model_name = str(_emb_spec.get("model") or getattr(settings_obj, "embedding_model", "embedding"))
+        except Exception:
+            _emb_model_name = getattr(settings_obj, "embedding_model", "embedding")
         # Exact shape expected by the UI
         self.turn: Dict[str, Any] = {
-            "embedding": {"model": getattr(settings_obj, "embedding_model", "embedding"), "input_tokens": 0, "cost": 0.0},
+            "embedding": {"model": _emb_model_name, "input_tokens": 0, "cost": 0.0},
             "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "cost": 0.0},
             "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
             "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
@@ -1036,7 +1201,7 @@ def rewrite_query(
         except Exception:
             pass
         # Invoke the rewrite model with the prompt for the user's latest message for it to rewrite it
-        resp = get_client().responses.create(
+        resp = _responses_create(
             model=settings.rewrite_model,
             input=prompt,
             max_output_tokens=int(settings.rewrite_max_output_tokens),
@@ -1668,6 +1833,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
 
     logger.debug("[RETRIEVE] (%s) query=%s top_k=%s thr=%.3f", log_origin, effective_query, top_k, score_threshold)
+    # Best-effort debug log of the embedding spec used for retrieval (provider/model/dimensions).
+    try:
+        _emb_spec_dbg = resolve_embedding_spec(settings_obj)
+        logger.debug("[RETRIEVE] (%s) embedding_spec=%r", log_origin, _emb_spec_dbg)
+    except Exception:
+        pass
 
     # Stage: Retrieve Vectors
     try:
@@ -1790,7 +1961,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             cand_text = _candidate_texts(pool)
             prompt_text = _make_rerank_prompt(effective_query, cand_text, int(getattr(settings_obj, "reranker_chunk_size", 600)))
             _dbg(f"[RERANK] {log_origin} prompt:", prompt_text)
-            resp_rerank = get_client_fn().responses.create(
+            resp_rerank = _responses_create(
                 model=getattr(settings_obj, "re_ranker_model", settings_obj.inference_model),
                 input=prompt_text.strip(),
                 max_output_tokens=int(getattr(settings_obj, "re_ranker_max_output_tokens", 128)),
@@ -1981,7 +2152,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     logger.info("[INFERENCE] %s: Attempting Responses API with Inference model: %s", log_origin, _kwargs_inf["model"])
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
-    resp_inf = get_client_fn().responses.create(**_kwargs_inf)
+    resp_inf = _responses_create(**_kwargs_inf)
     _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
     usage_inf = _extract_usage_from_responses(resp_inf)
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
@@ -2106,6 +2277,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 "- Use citations like [1], [2] when using Context.\n"
                 "- Integrate Tool results where relevant (do not invent citations for tool facts).\n"
                 "- Be concise.\n"
+                "- Do not add any extra text beyond what is in the Context or Tool results.\n"
             )
 
             _kwargs_synth = {
@@ -2118,7 +2290,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             try:
                 emit_stage(req_id, "Generating Responses with Tools")
                 _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
-                resp_synth = get_client_fn().responses.create(**_kwargs_synth)
+                resp_synth = _responses_create(**_kwargs_synth)
                 _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
                 combined = _extract_text_from_responses(resp_synth).strip()
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
@@ -2127,6 +2299,11 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     answer_override = combined
                 else:
                     answer_override = _format_tool_fallback(tool_answer_text, tools_text)
+                # --- Cosmetic cleanup: do not leak tool citation label into user answer ---
+                try:
+                    answer_override = re.sub(r"\s*\[Tool results\]\s*", "", answer_override  or "").strip()
+                except Exception:
+                    pass
 
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined: %s  and answer_override %s ", combined, answer_override)
                 usage_synth = _extract_usage_from_responses(resp_synth)
