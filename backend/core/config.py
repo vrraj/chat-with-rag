@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     # Provider selector for embeddings: "openai" or "gemini".
     # Legacy configs may still set this to a full OpenAI model id; the
     # resolver in backend/embeddings/specs.py remains backward-compatible.
-    embedding_model: str = "openai"
+    embedding_model: str = "openai" # "openai" or "gemini" 
 
     # Gemini embeddings (adapter-based) - additive, optional
     # Default model: "gemini-embedding-001".
