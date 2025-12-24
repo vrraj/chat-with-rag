@@ -35,12 +35,14 @@
       }
       #embed_input_bar {
         display: flex;
-        flex-direction: column;
+        flex-direction: row;
+        align-items: flex-end;
         gap: 8px;
         padding: 8px;
         box-sizing: border-box;
       }
       #embed_chat_input {
+        flex: 1;
         width: 100%;
         box-sizing: border-box;
         resize: none; /* we handle height via JS */
@@ -49,7 +51,18 @@
         padding: 8px 10px;
       }
       #embed_send_button {
-        align-self: flex-end;
+        min-width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        border: none;
+        background: #2563eb;
+        color: #ffffff;
+        font-size: 18px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 10px 30px rgba(37, 99, 235, 0.45);
       }
       /* Ensure message bubbles wrap inside the frame */
       #embed_chat_history .bubble {
@@ -73,7 +86,8 @@
         padding-right: 0;
       }
       #embed_footer {
-        padding-top: 4px;
+        padding-top: 2px;
+        padding-bottom: 2px;
         font-size: 11px;
         color: #64748b;
       }
@@ -84,8 +98,8 @@
       <main id="embed_main" aria-label="Embedded Chat Area">
         <section id="embed_chat_history" role="log" aria-live="polite" aria-label="Chat History"></section>
         <section id="embed_input_bar" aria-label="Message Input">
-          <textarea id="embed_chat_input" rows="1" placeholder="Type a message..." spellcheck="true"></textarea>
-          <button id="embed_send_button" type="button" title="Send (Enter)">Send</button>
+          <textarea id="embed_chat_input" rows="1" placeholder="Ask a question" spellcheck="true"></textarea>
+          <button id="embed_send_button" type="button" title="Send (Enter)">➤</button>
         </section>
       </main>
 

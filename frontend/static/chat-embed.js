@@ -134,6 +134,13 @@
     } catch (_) {}
   }
 
+  function scrollHistoryToBottom() {
+    try {
+      if (!historyEl) return;
+      historyEl.scrollTop = historyEl.scrollHeight;
+    } catch (_) {}
+  }
+
   function appendMessage(role, text) {
     const wrapper = document.createElement('div');
     wrapper.className = 'msg ' + role;
@@ -306,9 +313,11 @@
       const data = await resp.json();
       const answer = data.answer || data.response || '[No answer field in response]';
       placeholderBubble.textContent = answer;
+      scrollHistoryToBottom();
     } catch (err) {
       console.error('Embedded chat: request failed', err);
       placeholderBubble.textContent = 'Error: unable to fetch answer.';
+      scrollHistoryToBottom();
     } finally {
       sendBtn.disabled = false;
       inputEl.removeAttribute('aria-busy');
