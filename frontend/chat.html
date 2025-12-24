@@ -134,19 +134,20 @@
           <div class="group-box ux-11px collapsible-group" id="models_section">
             <div class="collapsible-header models-header" tabindex="0" aria-expanded="true" role="button" onclick="toggleCollapsible(this, event)">
               <span class="subsection-title">Models Used</span>
-              <span style="flex:1 1 auto"></span>
-              <a
-                id="change_models_btn"
-                href="#"
-                class="link-button"
-                role="button"
-                onclick="if (window.__openModelsModal) { window.__openModelsModal(); } else { var m=document.getElementById('models_modal'); if(m){m.style.display='block';} } return false;"
-              >
-                Change Models
-              </a>
               <span class="chevron" aria-hidden="true">▲</span>
             </div>
             <div class="collapsible-body">
+              <div style="display:flex; justify-content:flex-start; margin-bottom:6px;">
+                <a
+                  id="change_models_btn"
+                  href="#"
+                  class="link-button"
+                  role="button"
+                  onclick="if (window.__openModelsModal) { window.__openModelsModal(); } else { var m=document.getElementById('models_modal'); if(m){m.style.display='block';} } return false;"
+                >
+                  Change Models
+                </a>
+              </div>
               <div class="form-field model-row">
                 <span class="model-label">Embedding:</span>
                 <div id="model_embedding" class="model-value" style="width:100%">text-embedding-3-small</div>

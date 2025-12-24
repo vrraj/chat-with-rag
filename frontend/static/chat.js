@@ -1064,250 +1064,88 @@
             } else {
               el.value = String(cfg[cfgKey]);
             }
+          });
+        }
+      } catch (err) {
+        // silently ignore if /api/config isn't available or fails
+        console.debug('No runtime config values available:', err && err.message);
+      }
+    } catch (error) {
+      console.error('Error in loadModelConfig:', error);
+    }
   }
-  // Also close/clear any open stage streams for the old conversation
+
+  // Load model configuration when the page loads
+  document.addEventListener('DOMContentLoaded', async () => {
+    try {
+      await loadModelConfig();
+    } finally {
+      // After backend config/labels are loaded, wire and init the models modal.
+      try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
+    }
+  });
+
+  // Ensure a conversation_id exists on load
+  document.addEventListener('DOMContentLoaded', () => { try { getConversationId(); } catch (_) {} });
+
+  // Best-effort: on page reload/close, clear server-side summaries for current conversation.
+  function _clearServerSummariesOnUnload() {
+    try {
+      const cid = getConversationId();
+      if (!cid) return;
+      const data = JSON.stringify({ conversation_id: cid });
+      if (navigator.sendBeacon) {
+        const blob = new Blob([data], { type: 'application/json' });
+        navigator.sendBeacon('/chat/clear', blob);
+      } else {
+        // Fallback: non-blocking fetch with keepalive
+        fetch('/chat/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: data,
+          keepalive: true,
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  // Trigger on unload paths
+  window.addEventListener('beforeunload', _clearServerSummariesOnUnload);
+  document.addEventListener('visibilitychange', () => {
+    try {
+      if (document.visibilityState === 'hidden') _clearServerSummariesOnUnload();
+    } catch (_) {}
+  });
+
+  // Add a minimal metrics-subsection-title override (only margin-top)
+  document.addEventListener('DOMContentLoaded', () => {
+    try {
+      document.querySelectorAll('.metrics-subsection-title').forEach(el => {
+        el.style.marginTop = '1px';
+      });
+    } catch (e) {
+      console.debug('Failed to apply metrics-subsection-title styles', e);
+    }
+  });
+
+// Best-effort: close any active streams when navigating away
+window.addEventListener('beforeunload', () => {
   try {
     if (window.__STAGE_STREAMS && window.__STAGE_STREAMS.size) {
       window.__STAGE_STREAMS.forEach((es) => { try { es.close(); } catch (_) {} });
       window.__STAGE_STREAMS.clear();
     }
   } catch (_) {}
-
-  // Clear server-side summaries for this conversation and rotate a new conversation_id
-  try {
-    const currentId = getConversationId();
-    // Best-effort: call backend to clear this conversation's summaries (non-breaking if endpoint missing)
-    fetch('/chat/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_id: currentId })
-    }).catch(() => {});
-  } catch (_) {}
-
-  // Generate a new conversation id for the next conversation
-  try { regenerateConversationId(); } catch (_) {}
 });
 
-}
-
-// Reset Parameters: re-fetch defaults from backend and apply to the form
-const resetParamsBtn = qs('#reset_params_btn');
-if (resetParamsBtn) {
-resetParamsBtn.addEventListener('click', async () => {
-  const original = resetParamsBtn.textContent;
-  resetParamsBtn.disabled = true;
-  resetParamsBtn.textContent = 'Resetting…';
-  try {
-    await loadModelConfig();
-    resetParamsBtn.textContent = 'Parameters Reset';
-  } catch (e) {
-    console.error('Failed to reset parameters', e);
-    resetParamsBtn.textContent = 'Reset failed';
-  } finally {
-    setTimeout(() => { resetParamsBtn.textContent = original; resetParamsBtn.disabled = false; }, 1000);
-  }
-});
-}
-
-// Fetch and display model configuration from backend
-async function loadModelConfig() {
-try {
-  // Initialize with all values as null - will be updated from API
-  const modelConfig = {
-    embedding_model: null,
-    re_ranker_model: null,
-    query_rewrite_model: null,
-    summarizer_model: null,
-    inference_model: null
-  };
-  
-  // Try to fetch from API
-  try {
-    const response = await fetch('/api/config');
-    if (response.ok) {
-      const config = await response.json();
-      // Only update with values that exist in the response
-      Object.keys(modelConfig).forEach(key => {
-        if (config[key] !== undefined && config[key] !== null) {
-          modelConfig[key] = config[key];
-        }
-      });
-    }
-  } catch (error) {
-    console.error('Error loading model config:', error);
-  }
-  
-  // Update the UI with the model information
-  const modelElements = {
-    'model_embedding': modelConfig.embedding_model,
-    'model_reranker': modelConfig.re_ranker_model,
-    'model_query_rewrite': modelConfig.query_rewrite_model,
-    'model_summarizer': modelConfig.summarizer_model,
-    'model_inference': modelConfig.inference_model
-  };
-  
-  // Update the UI, showing 'Not Found' for any null/undefined values
-  Object.entries(modelElements).forEach(([id, value]) => {
-    const element = document.getElementById(id);
-    if (element) {
-      element.textContent = value !== null && value !== undefined ? value : 'Not Found';
-    }
-  });
-
-  // Also try to populate parameter defaults for the form fields if provided
-  try {
-    const response = await fetch('/api/config');
-    if (response.ok) {
-      const cfg = await response.json();
-      // Map config keys to form element IDs
-      const mapping = {
-        score_threshold: 'score_threshold',
-        top_k: 'top_k',
-        summarizer_max_input_tokens: 'summarizer_max_input_tokens',
-        summarizer_max_output_tokens: 'summarizer_max_output_tokens',
-        inference_temperature: 'temperature',
-        inference_top_p: 'top_p',
-        inference_context_rows: 'inference_context_rows',
-        chat_history_window_turns: 'chat_history_window_turns',
-        raw_tail_turns: 'raw_tail_turns',
-        max_inference_output_tokens: 'max_output_tokens',
-        enable_tools: 'use_tools',
-        enable_query_rewrite: 'enable_query_rewrite',
-        rewrite_confidence_threshold: 'rewrite_confidence_threshold',
-        rewrite_tail_turns: 'rewrite_tail_turns'
-      };
-      Object.entries(mapping).forEach(([cfgKey, elId]) => {
-        if (cfg[cfgKey] === undefined) return;
-        const el = document.getElementById(elId);
-        if (!el) return;
-        if (el.type === 'checkbox') {
-          el.checked = !!cfg[cfgKey];
-        } else {
-          el.value = String(cfg[cfgKey]);
-        }
-      });
-    }
-  } catch (err) {
-    // silently ignore if /api/config isn't available or fails
-    console.debug('No runtime config values available:', err && err.message);
-  }
-} catch (error) {
-  console.error('Error in loadModelConfig:', error);
-}
-}
-
-// Load model configuration when the page loads
-document.addEventListener('DOMContentLoaded', async () => {
-try {
-  await loadModelConfig();
-} finally {
-  // After backend config/labels are loaded, wire and init the models modal.
-  try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
-}
-});
-
-// Ensure a conversation_id exists on load
-document.addEventListener('DOMContentLoaded', () => { try { getConversationId(); } catch (_) {} });
-
-// Best-effort: on page reload/close, clear server-side summaries for current conversation.
-function _clearServerSummariesOnUnload() {
-try {
-  const cid = getConversationId();
-  if (!cid) return;
-  const data = JSON.stringify({ conversation_id: cid });
-  if (navigator.sendBeacon) {
-    const blob = new Blob([data], { type: 'application/json' });
-    navigator.sendBeacon('/chat/clear', blob);
-  } else {
-    // Fallback: non-blocking fetch with keepalive
-    fetch('/chat/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: data,
-      keepalive: true,
-    }).catch(() => {});
-  }
-} catch (_) {}
-}
-
-// Minor visual tweak: metrics subsection titles
-document.addEventListener('DOMContentLoaded', () => {
-try {
-  document.querySelectorAll('.metrics-subsection-title').forEach(el => {
-    el.style.marginTop = '1px';
-  });
-} catch (e) {
-  console.debug('Failed to apply metrics-subsection-title styles', e);
-}
-});
-
-// Initialize collapsible parameter groups in the sidebar
-document.addEventListener('DOMContentLoaded', () => {
-try {
-  const groups = document.querySelectorAll('.collapsible-group');
-  if (!groups || !groups.length) return;
-
-  groups.forEach(group => {
-    const header = group.querySelector('.collapsible-header');
-    if (!header) return;
-
-    const isButtonHeader = header.tagName === 'BUTTON';
-    const toggle = (evt) => {
-      if (evt) {
-        const target = evt.target;
-        // Do not intercept clicks on nested interactive controls like Change Models or help links
-        if (target && (target.closest('.link-button') || target.closest('a.help-link'))) {
-          return;
-        }
-      }
-      const collapsed = group.classList.toggle('is-collapsed');
-      const expanded = !collapsed;
-      header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    };
-
-    if (isButtonHeader) {
-      header.addEventListener('click', toggle);
-    } else {
-      // For non-button headers (e.g., Models Used), make them clickable and keyboard-accessible
-      header.addEventListener('click', toggle);
-      header.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          toggle(e);
-        }
-      });
-    }
-  });
-} catch (e) {
-  console.debug('Failed to initialize collapsible parameter groups', e);
-}
-});
-
-// Best-effort: close any active streams when navigating away
-window.addEventListener('beforeunload', () => {
-try {
-  if (window.__STAGE_STREAMS && window.__STAGE_STREAMS.size) {
-    window.__STAGE_STREAMS.forEach((es) => { try { es.close(); } catch (_) {} });
-    window.__STAGE_STREAMS.clear();
-  }
-} catch (_) {}
-});
+})();
 
 // Global map of active stage streams (per queryId)
 window.__STAGE_STREAMS = window.__STAGE_STREAMS || new Map();
 // Lightweight stage streaming integration (additive UI) using the existing Thinking bubble
 function setupStageStreaming(queryId, bubbleEl) {
-if (!queryId) return;
-// If a stream already exists for this query, close it first (safety)
-try {
-  const prev = window.__STAGE_STREAMS.get(queryId);
-  if (prev && typeof prev.close === 'function') prev.close();
-  window.__STAGE_STREAMS.delete(queryId);
-} catch (_) {}
-try {
-  const es = new EventSource(`/chat/stream/stages?query_id=${encodeURIComponent(queryId)}`);
-  // Track this stream instance by queryId
-  window.__STAGE_STREAMS.set(queryId, es);
+  if (!queryId) return;
+  // If a stream already exists for this query, close it first (safety)
   try {
     const prev = window.__STAGE_STREAMS.get(queryId);
     if (prev && typeof prev.close === 'function') prev.close();
