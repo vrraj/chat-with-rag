@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     # Provider selector for embeddings: "openai" or "gemini".
     # Legacy configs may still set this to a full OpenAI model id; the
     # resolver in backend/embeddings/specs.py remains backward-compatible.
+    # NOTE: embedding_model is the single source of truth for both corpus indexing
+    # and query-time retrieval embeddings; changing this requires re-embedding docs
+    # so the retriever and stored vectors stay in the same embedding space.
     embedding_model: str = "openai" # "openai" or "gemini" 
 
     # Gemini embeddings (adapter-based) - additive, optional

@@ -114,25 +114,36 @@
 
           <!-- Models Information -->
           <div class="group-box ux-11px" id="models_section">
-            <div class="subsection-title">Models Used</div>
+            <div class="subsection-title models-header">
+              Models Used
+              <a
+                id="change_models_btn"
+                href="#"
+                class="link-button"
+                role="button"
+                onclick="if (window.__openModelsModal) { window.__openModelsModal(); } else { var m=document.getElementById('models_modal'); if(m){m.style.display='block';} } return false;"
+              >
+                Change Models
+              </a>
+            </div>
             <div class="form-field model-row">
-              <label for="model_embedding">Embedding:</label>
+              <span class="model-label">Embedding:</span>
               <div id="model_embedding" class="model-value" style="width:100%">text-embedding-3-small</div>
             </div>
             <div class="form-field model-row">
-              <label for="model_query_rewrite">Query Rewrite:</label>
+              <span class="model-label">Query Rewrite:</span>
               <div id="model_query_rewrite" class="model-value" style="width:100%">gpt-4o</div>
             </div>
             <div class="form-field model-row">
-              <label for="model_summarizer">Summarizer:</label>
+              <span class="model-label">Summarizer:</span>
               <div id="model_summarizer" class="model-value" style="width:100%">gpt-4o</div>
             </div>
             <div class="form-field model-row">
-              <label for="model_reranker">Reranker:</label>
+              <span class="model-label">Reranker:</span>
               <div id="model_reranker" class="model-value" style="width:100%">gpt-4o-mini</div>
             </div>
             <div class="form-field model-row">
-              <label for="model_inference">Inference:</label>
+              <span class="model-label">Inference:</span>
               <div id="model_inference" class="model-value" style="width:100%">gpt-4o</div>
             </div>
           </div>
@@ -212,6 +223,76 @@
           <button id="send_button" type="button" title="Send (Enter)">Send</button>
         </section>
       </main>
+    </div>
+
+    <!-- Models configuration modal (hidden by default) -->
+    <div id="models_modal" class="modal-backdrop" style="display:none;">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3>Configure Models</h3>
+          <button id="models_modal_close" type="button" class="close-button">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p style="margin:0 0 8px;font-size:11px;color:#64748b;">
+            The choice of models will impact responses and token costs. Please consult the relevant provider documentation.
+          </p>
+          <!-- Query Rewrite -->
+          <div class="modal-section">
+            <h4>Query Rewrite</h4>
+            <div class="form-field">
+              <label for="rewrite_provider_select">Provider</label>
+              <select id="rewrite_provider_select"></select>
+            </div>
+            <div class="form-field">
+              <label for="rewrite_model_select">Model</label>
+              <select id="rewrite_model_select"></select>
+            </div>
+          </div>
+
+          <!-- Reranker -->
+          <div class="modal-section">
+            <h4>Reranker</h4>
+            <div class="form-field">
+              <label for="rerank_provider_select">Provider</label>
+              <select id="rerank_provider_select"></select>
+            </div>
+            <div class="form-field">
+              <label for="rerank_model_select">Model</label>
+              <select id="rerank_model_select"></select>
+            </div>
+          </div>
+
+          <!-- Summarizer -->
+          <div class="modal-section">
+            <h4>Summarizer</h4>
+            <div class="form-field">
+              <label for="summary_provider_select">Provider</label>
+              <select id="summary_provider_select"></select>
+            </div>
+            <div class="form-field">
+              <label for="summary_model_select">Model</label>
+              <select id="summary_model_select"></select>
+            </div>
+          </div>
+
+          <!-- Inference -->
+          <div class="modal-section">
+            <h4>Inference</h4>
+            <div class="form-field">
+              <label for="inference_provider_select">Provider</label>
+              <select id="inference_provider_select"></select>
+            </div>
+            <div class="form-field">
+              <label for="inference_model_select">Model</label>
+              <select id="inference_model_select"></select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="models_modal_save" type="button" class="action-button">Save</button>
+          <button id="models_modal_cancel" type="button" class="secondary-button">Cancel</button>
+        </div>
+      </div>
     </div>
 
     <script src="static/chat.js"></script>

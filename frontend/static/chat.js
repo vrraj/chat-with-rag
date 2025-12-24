@@ -16,6 +16,251 @@
   const rewriteHelpLink = qs('#rewrite_help_link');
   const rewriteHelpPopup = qs('#rewrite_help_popup');
 
+  // --- Model configuration (providers/models per stage) ---
+  const changeModelsBtn = qs('#change_models_btn');
+  const modelsModal = document.getElementById('models_modal');
+  const modelsModalClose = document.getElementById('models_modal_close');
+  const modelsModalSave = document.getElementById('models_modal_save');
+  const modelsModalCancel = document.getElementById('models_modal_cancel');
+
+  const infProvSel = document.getElementById('inference_provider_select');
+  const infModelSel = document.getElementById('inference_model_select');
+  const rwProvSel = document.getElementById('rewrite_provider_select');
+  const rwModelSel = document.getElementById('rewrite_model_select');
+  const sumProvSel = document.getElementById('summary_provider_select');
+  const sumModelSel = document.getElementById('summary_model_select');
+  const rrProvSel = document.getElementById('rerank_provider_select');
+  const rrModelSel = document.getElementById('rerank_model_select');
+
+  // Providers and models are kept client-side for now (can be moved to backend later).
+  // Restrict to OpenAI and Gemini for now.
+  const PROVIDERS = ['openai', 'gemini'];
+
+  const MODELS_BY_STAGE = {
+    inference: {
+      openai: ['gpt-4o-mini', 'gpt-5-nano'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+    },
+    rewrite: {
+      openai: ['gpt-4o-mini', 'gpt-5-nano'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+    },
+    summary: {
+      openai: ['gpt-4o-mini', 'gpt-5-nano'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+    },
+    rerank: {
+      openai: ['gpt-4o-mini', 'gpt-5-nano'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+    },
+  };
+
+  // Current selections (defaults will be reconciled with backend config / labels).
+  const stageModelConfig = {
+    inference: { provider: 'openai', model: 'gpt-4o' },
+    rewrite:   { provider: 'openai', model: 'gpt-4o' },
+    summary:   { provider: 'openai', model: 'gpt-4o' },
+    rerank:    { provider: 'openai', model: 'gpt-4o-mini' },
+  };
+
+  function _populateProviderSelect(sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    PROVIDERS.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  }
+
+  function _populateModelSelect(stage, provider, sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    const byProv = MODELS_BY_STAGE[stage] || {};
+    const models = byProv[provider] || [];
+    models.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      sel.appendChild(opt);
+    });
+  }
+
+  function initModelsModalFromConfig() {
+    try {
+      // Seed from visible labels if present (keeps backend /api/config authoritative).
+      const labInf = document.getElementById('model_inference');
+      const labRw = document.getElementById('model_query_rewrite');
+      const labSum = document.getElementById('model_summarizer');
+      const labRr = document.getElementById('model_reranker');
+
+      if (labInf && labInf.textContent && labInf.textContent !== 'Not Found') {
+        stageModelConfig.inference.model = labInf.textContent.trim();
+      }
+      if (labRw && labRw.textContent && labRw.textContent !== 'Not Found') {
+        stageModelConfig.rewrite.model = labRw.textContent.trim();
+      }
+      if (labSum && labSum.textContent && labSum.textContent !== 'Not Found') {
+        stageModelConfig.summary.model = labSum.textContent.trim();
+      }
+      if (labRr && labRr.textContent && labRr.textContent !== 'Not Found') {
+        stageModelConfig.rerank.model = labRr.textContent.trim();
+      }
+
+      // Populate provider selects
+      [infProvSel, rwProvSel, sumProvSel, rrProvSel].forEach(_populateProviderSelect);
+
+      // Set initial provider selections
+      if (infProvSel) infProvSel.value = stageModelConfig.inference.provider;
+      if (rwProvSel) rwProvSel.value = stageModelConfig.rewrite.provider;
+      if (sumProvSel) sumProvSel.value = stageModelConfig.summary.provider;
+      if (rrProvSel) rrProvSel.value = stageModelConfig.rerank.provider;
+
+      // Populate model selects based on current provider+stage
+      _populateModelSelect('inference', stageModelConfig.inference.provider, infModelSel);
+      _populateModelSelect('rewrite', stageModelConfig.rewrite.provider, rwModelSel);
+      _populateModelSelect('summary', stageModelConfig.summary.provider, sumModelSel);
+      _populateModelSelect('rerank', stageModelConfig.rerank.provider, rrModelSel);
+
+      // Try to select current model if present; else fall back to first option
+      if (infModelSel) {
+        infModelSel.value = stageModelConfig.inference.model;
+        if (!infModelSel.value && infModelSel.options.length) {
+          stageModelConfig.inference.model = infModelSel.options[0].value;
+          infModelSel.value = stageModelConfig.inference.model;
+        }
+      }
+      if (rwModelSel) {
+        rwModelSel.value = stageModelConfig.rewrite.model;
+        if (!rwModelSel.value && rwModelSel.options.length) {
+          stageModelConfig.rewrite.model = rwModelSel.options[0].value;
+          rwModelSel.value = stageModelConfig.rewrite.model;
+        }
+      }
+      if (sumModelSel) {
+        sumModelSel.value = stageModelConfig.summary.model;
+        if (!sumModelSel.value && sumModelSel.options.length) {
+          stageModelConfig.summary.model = sumModelSel.options[0].value;
+          sumModelSel.value = stageModelConfig.summary.model;
+        }
+      }
+      if (rrModelSel) {
+        rrModelSel.value = stageModelConfig.rerank.model;
+        if (!rrModelSel.value && rrModelSel.options.length) {
+          stageModelConfig.rerank.model = rrModelSel.options[0].value;
+          rrModelSel.value = stageModelConfig.rerank.model;
+        }
+      }
+    } catch (e) {
+      console.debug('Failed to initialize models modal', e);
+    }
+  }
+
+  function openModelsModal() {
+    if (!modelsModal) return;
+    if (!modelsModal.style.display || modelsModal.style.display === 'none') {
+      initModelsModalFromConfig();
+    }
+    modelsModal.style.display = 'block';
+  }
+
+  // Expose as a best-effort global so HTML can call it directly if needed.
+  try {
+    window.__openModelsModal = openModelsModal;
+  } catch (_) {}
+
+  function closeModelsModal() {
+    if (!modelsModal) return;
+    modelsModal.style.display = 'none';
+  }
+
+  function wireModelsModalEvents() {
+    if (changeModelsBtn) {
+      changeModelsBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        openModelsModal();
+      });
+    }
+    if (modelsModalClose) {
+      modelsModalClose.addEventListener('click', (e) => {
+        e.preventDefault();
+        closeModelsModal();
+      });
+    }
+    if (modelsModalCancel) {
+      modelsModalCancel.addEventListener('click', (e) => {
+        e.preventDefault();
+        closeModelsModal();
+      });
+    }
+
+    // Provider change -> refresh models
+    if (infProvSel) {
+      infProvSel.addEventListener('change', () => {
+        const prov = infProvSel.value || 'openai';
+        stageModelConfig.inference.provider = prov;
+        _populateModelSelect('inference', prov, infModelSel);
+      });
+    }
+    if (rwProvSel) {
+      rwProvSel.addEventListener('change', () => {
+        const prov = rwProvSel.value || 'openai';
+        stageModelConfig.rewrite.provider = prov;
+        _populateModelSelect('rewrite', prov, rwModelSel);
+      });
+    }
+    if (sumProvSel) {
+      sumProvSel.addEventListener('change', () => {
+        const prov = sumProvSel.value || 'openai';
+        stageModelConfig.summary.provider = prov;
+        _populateModelSelect('summary', prov, sumModelSel);
+      });
+    }
+    if (rrProvSel) {
+      rrProvSel.addEventListener('change', () => {
+        const prov = rrProvSel.value || 'openai';
+        stageModelConfig.rerank.provider = prov;
+        _populateModelSelect('rerank', prov, rrModelSel);
+      });
+    }
+
+    if (modelsModalSave) {
+      modelsModalSave.addEventListener('click', (e) => {
+        e.preventDefault();
+        try {
+          // Snapshot selections back into config
+          if (infProvSel) stageModelConfig.inference.provider = infProvSel.value || 'openai';
+          if (infModelSel) stageModelConfig.inference.model = infModelSel.value || stageModelConfig.inference.model;
+          if (rwProvSel) stageModelConfig.rewrite.provider = rwProvSel.value || 'openai';
+          if (rwModelSel) stageModelConfig.rewrite.model = rwModelSel.value || stageModelConfig.rewrite.model;
+          if (sumProvSel) stageModelConfig.summary.provider = sumProvSel.value || 'openai';
+          if (sumModelSel) stageModelConfig.summary.model = sumModelSel.value || stageModelConfig.summary.model;
+          if (rrProvSel) stageModelConfig.rerank.provider = rrProvSel.value || 'openai';
+          if (rrModelSel) stageModelConfig.rerank.model = rrModelSel.value || stageModelConfig.rerank.model;
+
+          // Update visible labels under "Models Used"
+          const labInf = document.getElementById('model_inference');
+          const labRw = document.getElementById('model_query_rewrite');
+          const labSum = document.getElementById('model_summarizer');
+          const labRr = document.getElementById('model_reranker');
+          if (labInf) labInf.textContent = stageModelConfig.inference.model;
+          if (labRw) labRw.textContent = stageModelConfig.rewrite.model;
+          if (labSum) labSum.textContent = stageModelConfig.summary.model;
+          if (labRr) labRr.textContent = stageModelConfig.rerank.model;
+        } catch (err) {
+          console.debug('Failed to apply model config', err);
+        }
+        closeModelsModal();
+      });
+    }
+
+    // Close modal on ESC
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModelsModal();
+    });
+  }
+
   // Static tool help metadata for UI only (not sent to backend/model)
   const TOOL_HELP = [
     {
@@ -356,7 +601,8 @@
     };
     const useToolsEl = qs('#use_tools');
     const use_tools = useToolsEl ? !!useToolsEl.checked : false;
-    return {
+
+    const base = {
       top_k: getNum('top_k'),
       score_threshold: getNum('score_threshold'),
       summarizer_max_input_tokens: getNum('summarizer_max_input_tokens'),
@@ -371,6 +617,22 @@
       rewrite_tail_turns: getNum('rewrite_tail_turns'),
       use_tools,
     };
+
+    // Attach model/provider overrides per stage (if any). These map to backend resolve_stage_specs.
+    try {
+      base.inference_provider = stageModelConfig.inference.provider;
+      base.inference_model = stageModelConfig.inference.model;
+      base.rewrite_provider = stageModelConfig.rewrite.provider;
+      base.rewrite_model = stageModelConfig.rewrite.model;
+      base.summary_provider = stageModelConfig.summary.provider;
+      base.summary_model = stageModelConfig.summary.model;
+      base.rerank_provider = stageModelConfig.rerank.provider;
+      base.rerank_model = stageModelConfig.rerank.model;
+    } catch (e) {
+      console.debug('Failed to attach model overrides to params', e);
+    }
+
+    return base;
   }
 
   // Collect chat history from DOM bubbles.
@@ -799,7 +1061,14 @@
   }
 
   // Load model configuration when the page loads
-  document.addEventListener('DOMContentLoaded', loadModelConfig);
+  document.addEventListener('DOMContentLoaded', async () => {
+    try {
+      await loadModelConfig();
+    } finally {
+      // After backend config/labels are loaded, wire and init the models modal.
+      try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
+    }
+  });
 
   // Ensure a conversation_id exists on load
   document.addEventListener('DOMContentLoaded', () => { try { getConversationId(); } catch (_) {} });

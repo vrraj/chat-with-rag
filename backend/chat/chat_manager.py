@@ -178,6 +178,10 @@ def resolve_stage_specs(
     rerank_model_override = str(p.get("rerank_model") or "").strip()
     rewrite_provider_override = str(p.get("rewrite_provider") or "").strip()
     rewrite_model_override = str(p.get("rewrite_model") or "").strip()
+    summary_provider_override = str(p.get("summary_provider") or "").strip()
+    summary_model_override = str(p.get("summary_model") or "").strip()
+    inference_provider_override = str(p.get("inference_provider") or "").strip()
+    inference_model_override = str(p.get("inference_model") or "").strip()
 
     # Existing flat fields (read as-is)
     rewrite_model = getattr(settings_obj, "rewrite_model", getattr(settings_obj, "inference_model", ""))
@@ -194,6 +198,18 @@ def resolve_stage_specs(
     summarizer_temp = float(getattr(settings_obj, "summarizer_temperature", 0.3))
     summarizer_max_in = int(getattr(settings_obj, "summarizer_max_input_tokens", 512))
     summarizer_max_out = int(getattr(settings_obj, "summarizer_max_output_tokens", 128))
+
+    try:
+        logger.debug(
+            "[STAGE SPECS] summary provider=%s model=%s temp=%.3f max_in=%d max_out=%d",
+            (summary_provider_override or "openai"),
+            (summary_model_override or summarizer_model),
+            summarizer_temp,
+            summarizer_max_in,
+            summarizer_max_out,
+        )
+    except Exception:
+        pass
 
     rerank_temp = float(getattr(settings_obj, "re_ranker_temperature", 0.0))
     rerank_max_out = int(getattr(settings_obj, "re_ranker_max_output_tokens", 64))
@@ -245,8 +261,8 @@ def resolve_stage_specs(
             },
         },
         "summary": {
-            "provider": "openai",
-            "model": summarizer_model,
+            "provider": (summary_provider_override or "openai"),
+            "model": (summary_model_override or summarizer_model),
             "kwargs": {
                 "temperature": summarizer_temp,
                 "max_output_tokens": summarizer_max_out,
@@ -263,8 +279,8 @@ def resolve_stage_specs(
             },
         },
         "inference": {
-            "provider": "openai",
-            "model": inference_model,
+            "provider": (inference_provider_override or "openai"),
+            "model": (inference_model_override or inference_model),
             "kwargs": {
                 "temperature": inference_temp,
                 "top_p": inference_top_p,
@@ -273,7 +289,8 @@ def resolve_stage_specs(
             },
         },
         "tools_synth": {
-            "provider": "openai",
+            # Tools synthesis uses the same provider as inference, but may have its own model.
+            "provider": (inference_provider_override or "openai"),
             "model": tools_synth_model,
             "kwargs": {
                 "temperature": inference_temp,
@@ -692,6 +709,7 @@ def _summarize_messages_with_cache(
     max_output_tokens: int | None = None,
     max_input_tokens: int | None = None,
     log_prefix: str = "[SUMMARY]",
+    stage_spec: Dict[str, Any] | None = None,
 ) -> tuple[str, bool, Dict[str, int] | None]:
     """Summarize a slice of messages with a tiny prompt, caching by (messages, tag).
 
@@ -739,18 +757,33 @@ def _summarize_messages_with_cache(
             logger.debug(f"{log_prefix} summary cache HIT ({tag}); len=%d", len(cached))
             return cached, True, None
 
-        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, model)
+        _ss = stage_spec or {}
+        _provider = str(_ss.get("provider") or "openai")
+        _model = str(_ss.get("model") or model)
+
+        # Build the prompt using the effective model so token budgeting matches the selected provider/model.
+        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, _model)
         logger.debug(f"{log_prefix} applied local input budget; prompt_len_chars=%d", len(sum_prompt))
 
-        kwargs: Dict[str, Any] = {
-            "model": model,
-            "input": sum_prompt,
-            "temperature": float(temperature),
-        }
-        if max_output_tokens is not None:
-            kwargs["max_output_tokens"] = int(max_output_tokens)
+        _call_kwargs: Dict[str, Any] = dict(_ss.get("kwargs") or {})
+        if not _call_kwargs:
+            _call_kwargs = {"temperature": float(temperature)}
+            if max_output_tokens is not None:
+                _call_kwargs["max_output_tokens"] = int(max_output_tokens)
 
-        resp = _responses_create(**kwargs)
+        # Strip internal-only keys (e.g., _max_input_tokens) so they are not sent to providers.
+        try:
+            _call_kwargs = {k: v for k, v in _call_kwargs.items() if not str(k).startswith("_")}
+        except Exception:
+            # Best-effort; if filtering fails, fall back to original kwargs.
+            pass
+
+        resp = _responses_create(
+            provider=_provider,
+            model=_model,
+            input=sum_prompt,
+            **_call_kwargs,
+        )
         summary_text = _extract_text_from_responses(resp).strip()
         cache[key] = summary_text
         # Option A: record key under namespace (if tag includes namespace|...)
@@ -1851,6 +1884,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if to_sum_rw:
                     # Prefix tag with namespace if provided to isolate cache entries by conversation
                     _tag_rw = (f"{namespace}|rewrite" if namespace else "rewrite")
+                    sum_spec = (stage_specs or {}).get("summary") or {}
                     summary_rw, _from_cache_rw, _u_rw = _summarize_messages_with_cache(
                         to_sum_rw,
                         cache,
@@ -1859,8 +1893,21 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
                         max_input_tokens=int(getattr(settings_obj, "summarizer_max_input_tokens", 512)),
                         max_output_tokens=int(getattr(settings_obj, "summarizer_max_output_tokens", 128)),
-                        log_prefix=f"[REWRITE] {log_origin}"
+                        log_prefix=f"[REWRITE] {log_origin}",
+                        stage_spec=sum_spec,
                     )
+                    # Record rewrite pre-summary usage as part of the summary bucket (cache misses only).
+                    if (not _from_cache_rw) and _u_rw:
+                        _summary_model_used = str(
+                            (sum_spec or {}).get("model")
+                            or getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
+                        )
+                        m.record_stage(
+                            "summary",
+                            model=_summary_model_used,
+                            usage=_u_rw,
+                            extra={"applied": False, "reason": "rewrite_pre_summary"},
+                        )
                 if tail_rw or summary_rw:
                     rw_spec = (stage_specs or {}).get("rewrite") or {}
                     rw = rewrite_query(tail_rw, summary_rw, message, log_prefix=f"[REWRITE] {log_origin}", stage_spec=rw_spec)
@@ -2229,6 +2276,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                          log_origin, raw_tail, src_raw_tail, window_turns, src_window, sum_in, src_sum_in, sum_out, src_sum_out)
             # Prefix tag with namespace if provided to isolate cache entries by conversation
             _tag_inf = (f"{namespace}|inference" if namespace else "inference")
+            sum_spec = (stage_specs or {}).get("summary") or {}
             summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
                 to_summarize,
                 cache,
@@ -2237,10 +2285,17 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
                 max_input_tokens=sum_in,
                 max_output_tokens=sum_out,
-                log_prefix=f"[SUMMARY] {log_origin}"
+                log_prefix=f"[SUMMARY] {log_origin}",
+                stage_spec=sum_spec,
             )
             if not _from_cache_inf and _u_inf:
-                m.record_stage("summary", model=getattr(settings_obj, "summarizer_model", "summary"), usage=_u_inf, extra={"applied": True, "reason": f"prev {window_turns} turns (before last {raw_tail} turns)"})
+                _summary_model_used = str((sum_spec or {}).get("model") or getattr(settings_obj, "summarizer_model", settings_obj.inference_model))
+                m.record_stage(
+                    "summary",
+                    model=_summary_model_used,
+                    usage=_u_inf,
+                    extra={"applied": True, "reason": f"prev {window_turns} turns (before last {raw_tail} turns)"},
+                )
         if verbatim_tail:
             tail_lines: List[str] = []
             trimmed = 0
@@ -2353,12 +2408,18 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # --- Inference API call - Orchestrater stage with Tool Calls
     logger.info("[PIPELINE] emit stage: Generating Response")
     emit_stage(req_id, "Generating Response")
-    _kwargs_inf: Dict[str, Any] = {
-        "model": getattr(settings_obj, "inference_model", "gpt-4o"),
-        "input": prompt_input,
-        "temperature": float(temperature),
-        "max_output_tokens": int(max_out),
-    }
+
+    # Resolve provider/model/kwargs for inference from stage_specs (no behavior change to temps/limits).
+    inf_spec = (stage_specs or {}).get("inference") or {}
+    _inf_provider = str(inf_spec.get("provider") or "openai")
+    _inf_model = str(inf_spec.get("model") or getattr(settings_obj, "inference_model", "gpt-4o"))
+
+    _kwargs_inf: Dict[str, Any] = dict(inf_spec.get("kwargs") or {})
+
+    # Per-request overrides / additions (preserve existing semantics)
+    _kwargs_inf["input"] = prompt_input
+    _kwargs_inf["temperature"] = float(temperature)
+    _kwargs_inf["max_output_tokens"] = int(max_out)
     if top_p is not None:
         _kwargs_inf["top_p"] = float(top_p)
     if getattr(settings_obj, "inference_reasoning_model", False):
@@ -2380,14 +2441,18 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         except Exception:
             _kwargs_inf["tools"] = []
 
-    logger.info("[INFERENCE] %s: Attempting Responses API with Inference model: %s", log_origin, _kwargs_inf["model"])
+    logger.info("[INFERENCE] %s: Attempting Responses API with Inference model: %s", log_origin, _inf_model)
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
-    resp_inf = _responses_create(**_kwargs_inf)
+    resp_inf = _responses_create(
+        provider=_inf_provider,
+        model=_inf_model,
+        **_kwargs_inf,
+    )
     _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
     usage_inf = _extract_usage_from_responses(resp_inf)
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
-        m.record_stage("inference", model=_kwargs_inf["model"], usage=usage_inf)
+        m.record_stage("inference", model=_inf_model, usage=usage_inf)
 
     # Stage: Tool Calls
     # --- Tool Calls - Single pass thru all tools required
@@ -2510,17 +2575,28 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 "- Do not add any extra text beyond what is in the Context or Tool results.\n"
             )
 
-            _kwargs_synth = {
-                "model": getattr(settings_obj, "inference_tools_synthesis_model", _kwargs_inf.get("model")),
-                "input": synth_prompt,
-                "max_output_tokens": int(max_out),
-                "temperature": float(temperature),
-            }
+            ts_spec = (stage_specs or {}).get("tools_synth") or {}
+            _ts_provider = str(ts_spec.get("provider") or "openai")
+            _ts_model = str(
+                ts_spec.get("model")
+                or getattr(settings_obj, "inference_tools_synthesis_model", _kwargs_inf.get("model")),
+            )
+
+            _kwargs_synth: Dict[str, Any] = dict(ts_spec.get("kwargs") or {})
+            _kwargs_synth["input"] = synth_prompt
+            if "max_output_tokens" not in _kwargs_synth and max_out is not None:
+                _kwargs_synth["max_output_tokens"] = int(max_out)
+            if "temperature" not in _kwargs_synth:
+                _kwargs_synth["temperature"] = float(temperature)
 
             try:
                 emit_stage(req_id, "Generating Responses with Tools")
                 _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
-                resp_synth = _responses_create(**_kwargs_synth)
+                resp_synth = _responses_create(
+                    provider=_ts_provider,
+                    model=_ts_model,
+                    **_kwargs_synth,
+                )
                 _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
                 combined = _extract_text_from_responses(resp_synth).strip()
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
@@ -2538,7 +2614,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined: %s  and answer_override %s ", combined, answer_override)
                 usage_synth = _extract_usage_from_responses(resp_synth)
                 if usage_synth:
-                    m.record_stage("inference", model=_kwargs_synth["model"], usage=usage_synth)
+                    m.record_stage("inference", model=_ts_model, usage=usage_synth)
             except Exception as ex:
                 logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, ex, exc_info=True)
                 answer_override = _format_tool_fallback(tool_answer_text, tools_text)
