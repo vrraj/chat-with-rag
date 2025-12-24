@@ -262,6 +262,10 @@ For additional Make targets (logs, reset, reseed, maintenance utilities), refer 
 - the `Makefile` in the project root
 - **TECHNICAL_OVERVIEW.md**
 
+For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter contract, see:
+
+👉 **[README_CHAT_API.md](README_CHAT_API.md)**
+
 ### 🧪 2.4 Developer Mode (Optional)
 
 To enable **hot-reload** (Uvicorn reload) for active development:
