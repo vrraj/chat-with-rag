@@ -277,7 +277,46 @@ For third-party websites that can only add a `<script>` tag, `embed-loader.js` p
 
 ---
 
-## 8. Relationship to the main chat UI
+## 8. Quick testing from the browser DevTools console
+
+For fast, one-off experiments (without editing any HTML files), you can inject the embed directly from the browser console:
+
+1. Open the page where you want to preview the widget (e.g. `http://localhost:8000/search` or `http://localhost:8000/chat.html`).
+2. Open DevTools → **Console**.
+3. Paste and run:
+
+```js
+(function () {
+  const anchor = document.createElement('div');
+  anchor.id = 'embed-test-anchor';
+  anchor.style.marginTop = '24px';
+  document.body.appendChild(anchor);
+
+  const iframe = document.createElement('iframe');
+  iframe.src = 'http://localhost:8000/chat-embed.html'
+    + '?top_k=8'
+    + '&score_threshold=0.35'
+    + '&temperature=0.4'
+    + '&max_output_tokens=300'
+    + '&enable_query_rewrite=true'
+    + '&rewrite_confidence_threshold=0.67'
+    + '&rewrite_tail_turns=1'
+    + '&use_tools=false'
+    + '&show_processing_steps=true'
+    + '&namespace=devtools-test';
+  iframe.style.border = '0';
+  iframe.style.width = '100%';
+  iframe.style.height = '450px';
+
+  anchor.appendChild(iframe);
+})();
+```
+
+This appends an `<iframe>` pointing at `chat-embed.html` to the end of the page body for the current browser session only (no file changes needed).
+
+---
+
+## 9. Relationship to the main chat UI
 
 - Both `chat.html` and `chat-embed.html` send requests to **the same** `POST /chat` endpoint.
 - Both use the same `params` keys as defined in **`README_CHAT_API.md`**.

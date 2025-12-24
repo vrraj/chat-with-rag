@@ -124,19 +124,24 @@
   }
 
   // --- Rendering helpers ---
+  function autoResizeInput() {
+    try {
+      if (!inputEl) return;
+      inputEl.style.height = 'auto';
+      const max = Number.parseInt(window.getComputedStyle(inputEl).maxHeight || '0', 10) || 160;
+      const next = Math.min(inputEl.scrollHeight + 2, max);
+      inputEl.style.height = next + 'px';
+    } catch (_) {}
+  }
+
   function appendMessage(role, text) {
     const wrapper = document.createElement('div');
     wrapper.className = 'msg ' + role;
-
-    const badge = document.createElement('span');
-    badge.className = 'badge';
-    badge.textContent = role === 'user' ? 'User' : 'Assistant';
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.textContent = text;
 
-    wrapper.appendChild(badge);
     wrapper.appendChild(bubble);
     historyEl.appendChild(wrapper);
     historyEl.scrollTop = historyEl.scrollHeight;
@@ -281,9 +286,9 @@
       params: buildParams(queryId),
     };
 
-    // Disable input while request is in-flight
+    // Disable only the send button while request is in-flight; keep input usable
     inputEl.value = '';
-    inputEl.disabled = true;
+    autoResizeInput();
     sendBtn.disabled = true;
     inputEl.setAttribute('aria-busy', 'true');
 
@@ -305,7 +310,6 @@
       console.error('Embedded chat: request failed', err);
       placeholderBubble.textContent = 'Error: unable to fetch answer.';
     } finally {
-      inputEl.disabled = false;
       sendBtn.disabled = false;
       inputEl.removeAttribute('aria-busy');
       inputEl.focus();
@@ -324,4 +328,11 @@
       sendMessage();
     }
   });
+
+   inputEl.addEventListener('input', () => {
+     autoResizeInput();
+   });
+
+   // Initial sizing
+   autoResizeInput();
 })();
