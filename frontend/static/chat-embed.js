@@ -82,8 +82,8 @@
       if (c[mKey] != null) out[mKey] = String(c[mKey]);
     });
 
-    // Show processing steps: default false for embed, can be overridden
-    out.show_processing_steps = asBool(c.show_processing_steps, false);
+    // Show processing steps: default true for embed, can be overridden
+    out.show_processing_steps = asBool(c.show_processing_steps, true);
 
     // Explicit conversation id / namespace
     out.conversation_id = c.conversation_id || c.namespace || null;
