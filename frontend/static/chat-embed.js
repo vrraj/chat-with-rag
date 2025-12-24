@@ -134,6 +134,43 @@
     } catch (_) {}
   }
 
+  function renderAnswerWithSmallSources(bubbleEl, answerText) {
+    if (!bubbleEl) return;
+    try {
+      const text = String(answerText || "");
+      // Look for a trailing Sources: block on its own line; match both \n and \r\n
+      const marker = "\nSources:\n";
+      let idx = text.indexOf(marker);
+      if (idx < 0) {
+        // Fallback: try with just "\nSources:" in case formatting differs slightly
+        idx = text.indexOf("\nSources:");
+      }
+
+      if (idx < 0) {
+        bubbleEl.textContent = text;
+        return;
+      }
+
+      const mainPart = text.slice(0, idx).replace(/\s+$/, "");
+      const sourcesPart = text.slice(idx).replace(/^\s+/, "");
+
+      bubbleEl.textContent = "";
+
+      if (mainPart) {
+        bubbleEl.appendChild(document.createTextNode(mainPart));
+      }
+
+      if (sourcesPart) {
+        bubbleEl.appendChild(document.createElement("br"));
+        const small = document.createElement("small");
+        small.textContent = sourcesPart;
+        bubbleEl.appendChild(small);
+      }
+    } catch (_) {
+      bubbleEl.textContent = answerText || "";
+    }
+  }
+
   function scrollHistoryToBottom() {
     try {
       if (!historyEl) return;
@@ -312,7 +349,7 @@
 
       const data = await resp.json();
       const answer = data.answer || data.response || '[No answer field in response]';
-      placeholderBubble.textContent = answer;
+      renderAnswerWithSmallSources(placeholderBubble, answer);
       scrollHistoryToBottom();
     } catch (err) {
       console.error('Embedded chat: request failed', err);

@@ -189,7 +189,16 @@ def resolve_stage_specs(
     rerank_model = getattr(settings_obj, "re_ranker_model", getattr(settings_obj, "inference_model", ""))
     inference_model = getattr(settings_obj, "inference_model", "")
     tools_synth_model = getattr(settings_obj, "inference_tools_synthesis_model", inference_model)
-    embedding_model = getattr(settings_obj, "embedding_model", "")
+
+    # Embedding spec: settings.embedding_model is a provider key (openai/gemini).
+    # Resolve it into a provider-specific embedding model name for stage_specs consistency.
+    try:
+        _emb = resolve_embedding_spec(settings_obj)  # {provider, model, dimensions}
+    except Exception:
+        _emb = {"provider": "openai", "model": getattr(settings_obj, "openai_embedding_model", ""), "dimensions": None}
+
+    emb_provider = str((_emb or {}).get("provider") or "openai").strip() or "openai"
+    emb_model = str((_emb or {}).get("model") or "").strip()
 
     # Existing flat temps/limits (read as-is)
     rewrite_temp = float(getattr(settings_obj, "rewrite_temperature", 0.2))
@@ -248,8 +257,8 @@ def resolve_stage_specs(
 
     return {
         "embedding": {
-            "provider": "openai",
-            "model": embedding_model,
+            "provider": emb_provider,
+            "model": emb_model,
             "kwargs": {},
         },
         "rewrite": {
@@ -1810,6 +1819,20 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     history: List[Dict[str, str]] = (req or {}).get("history") or []
     params: Dict[str, Any] = (req or {}).get("params") or {}
 
+    # Per-UI control for whether to append Sources: blocks and structured sources.
+    # Mode is set by frontends (e.g. chat.js, chat-embed.js) via params.mode.
+    try:
+        mode = str(params.get("mode", "")).strip().lower() or "chat"
+    except Exception:
+        mode = "chat"
+    try:
+        if mode == "embed":
+            display_sources = bool(getattr(settings_obj, "display_sources_for_embed", False))
+        else:
+            display_sources = bool(getattr(settings_obj, "display_sources_for_chat", True))
+    except Exception:
+        display_sources = True
+
     # Per-turn control for emitting intermediate processing stages to SSE.
     # Precedence: params.show_processing_steps (per turn) overrides settings_obj.show_processing_steps (global default).
     try:
@@ -2717,6 +2740,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             sources = []
             sources_section = ""
 
+    # Final per-UI toggle: hide sources for this response if configured.
+    # This runs after tool/sentinel logic so it can override visibility per mode.
+    try:
+        if not display_sources:
+            sources = []
+            sources_section = ""
+    except Exception:
+        pass
 
     try:
         m.finalize_turn()

@@ -267,8 +267,15 @@ class Settings(BaseSettings):
     # Cache rewrites for a short time to avoid repeat calls on identical context
     rewrite_cache_ttl_s: int = 300
 
-    # Summary cache idle TTL (seconds) - will evict per-namespace summaries that haven't been used in this long
-    summary_cache_idle_ttl_seconds: int = 1800
+    # Summary cache idle TTL (seconds)    # Optional: idle eviction TTL for summary cache (seconds). Defaults to 3600 if unset.
+    summary_cache_idle_ttl_seconds: int | None = 3600
+
+    # --- UI display toggles ---
+    # Whether to append the Sources: block + structured sources for the main chat UI.
+    display_sources_for_chat: bool = True
+    # Whether to append the Sources: block + structured sources for embed-chat.
+    # Default False so embeds can opt out of inline sources while sharing the same backend.
+    display_sources_for_embed: bool = False
 
     # -------------------------------------------------------------------------
     # 9) Chunking & ingestion (shared defaults + per-source toggles)
