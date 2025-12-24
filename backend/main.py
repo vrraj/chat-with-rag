@@ -262,6 +262,19 @@ async def chat_page():
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "chat.html"))
 
+
+@app.get(
+    "/chat-embed.html",
+    tags=["1. UI Pages"],
+    summary="Embedded chat page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Embedded Chat Page</body></html>"}}}},
+)
+async def chat_embed_page():
+    """Serve the minimal embeddable chat page (chat-embed.html)."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "chat-embed.html"))
+
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(

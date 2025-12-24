@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Embedded Chat</title>
+    <link rel="stylesheet" href="static/chat.css" />
+  </head>
+  <body>
+    <div id="embed_app">
+      <main id="embed_main" aria-label="Embedded Chat Area">
+        <section id="embed_chat_history" role="log" aria-live="polite" aria-label="Chat History"></section>
+        <section id="embed_input_bar" aria-label="Message Input">
+          <textarea id="embed_chat_input" rows="1" placeholder="Type a message..." spellcheck="true"></textarea>
+          <button id="embed_send_button" type="button" title="Send (Enter)">Send</button>
+        </section>
+      </main>
+    </div>
+
+    <footer id="embed_footer" aria-label="Embed Attribution">
+      <small>Powered by this RAG chat service.</small>
+    </footer>
+
+    <script src="static/chat-embed.js"></script>
+  </body>
+</html>

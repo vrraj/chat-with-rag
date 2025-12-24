@@ -1,7 +1,7 @@
 """Simple script to sanity-check Gemini inference.
 
 Usage:
-    python scripts/test_gemini_inference.py "Your prompt here"
+    python examples/llm_tests/test_gemini_inference.py "Your prompt here"
 
 Requirements:
     - Environment variable GEMINI_API_KEY must be set (e.g. via your .env)
@@ -13,6 +13,14 @@ Requirements:
 import os
 import sys
 from typing import Optional
+
+# Make the project root importable so we can resolve `llm` and `backend` when
+# this file is executed as a script from any working directory.
+# __file__ -> examples/llm_tests/test_gemini_inference.py
+# Going up three levels lands at the repo root: chat-with-rag
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 try:
     # Prefer python-dotenv if available so the script can read from .env directly.
@@ -26,12 +34,19 @@ except Exception:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
 
 # Optional: import the shared LLM handler so we can test the Gemini path via the same abstraction
+llm_handler = None
+_llm_import_error: Optional[BaseException] = None
 try:  # pragma: no cover
-    from llm.llm_handler import llm_handler
-except Exception:  # pragma: no cover
+    from llm.llm_handler import llm_handler as _handler
+    llm_handler = _handler
+except Exception as e:  # pragma: no cover
+    _llm_import_error = e
     try:
-        from backend.llm.llm_handler import llm_handler  # type: ignore[assignment]
-    except Exception:
+        from backend.llm.llm_handler import llm_handler as _handler  # type: ignore[assignment]
+        llm_handler = _handler
+        _llm_import_error = None
+    except Exception as e2:
+        _llm_import_error = e2
         llm_handler = None  # type: ignore[assignment]
 
 
@@ -63,7 +78,6 @@ def main() -> None:
         sys.exit(1)
 
     # Allow override via env; otherwise use a reasonable default model name for your adapter.
-    model_name = os.getenv("GEMINI_MODEL_NAME", "models/gemini-2.5-flash-lite")
     model_name = os.getenv("GEMINI_MODEL_NAME", "models/gemini-2.5-flash")
 
     prompt = get_prompt_from_argv().strip()
@@ -137,6 +151,8 @@ def main() -> None:
             print(text2 or "<no text returned>")
     else:
         print("\n[INFO] llm_handler is not importable; skipping handler-based Gemini test.")
+        if _llm_import_error is not None:
+            print(f"[DEBUG] Last llm_handler import error: {_llm_import_error}")
 
 
 if __name__ == "__main__":

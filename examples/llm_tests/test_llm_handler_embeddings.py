@@ -4,7 +4,9 @@ import logging
 
 # Make the project root importable so we can resolve `llm` and `backend` when
 # this file is executed as a script from any working directory.
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# __file__ -> examples/llm_tests/test_llm_handler_embeddings.py
+# Going up three levels lands at the repo root: chat-with-rag
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 

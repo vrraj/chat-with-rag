@@ -25,7 +25,9 @@ from typing import Any, List, Dict
 
 # Make the project root importable so we can resolve `llm` and `backend` when
 # this file is executed as a script from any working directory.
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# __file__ -> examples/llm_tests/test_openai_handler.py
+# Going up three levels lands at the repo root: chat-with-rag
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -37,14 +39,18 @@ except Exception:  # pragma: no cover
 
 # Try both import layouts for the shared handler.
 llm_handler = None
+_llm_import_error: Any = None
 try:  # pragma: no cover
     from llm.llm_handler import llm_handler as _handler
     llm_handler = _handler
-except Exception:  # pragma: no cover
+except Exception as e:  # pragma: no cover
+    _llm_import_error = e
     try:
         from backend.llm.llm_handler import llm_handler as _handler  # type: ignore[assignment]
         llm_handler = _handler
-    except Exception:
+        _llm_import_error = None
+    except Exception as e2:
+        _llm_import_error = e2
         llm_handler = None  # type: ignore[assignment]
 
 
@@ -61,6 +67,8 @@ def main() -> None:
 
     if llm_handler is None:
         print("[ERROR] Could not import llm_handler from llm.llm_handler or backend.llm.llm_handler.")
+        if _llm_import_error is not None:
+            print(f"[DEBUG] Last llm_handler import error: {_llm_import_error}")
         sys.exit(1)
 
     api_key = os.getenv("OPENAI_API_KEY")
