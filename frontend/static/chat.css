@@ -42,6 +42,39 @@ body {
   border-radius: 8px;
   background: var(--surface);
 }
+.collapsible-group {
+  padding-top: 6px;
+}
+.collapsible-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.collapsible-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.collapsible-body {
+  margin-top: 2px;
+}
+.collapsible-group.is-collapsed .collapsible-body {
+  display: none;
+}
+.collapsible-header .chevron {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.collapsible-group.is-collapsed .collapsible-header .chevron {
+  transform: rotate(180deg);
+}
 .subsection-title {
   margin: 0 0 8px;
   font-weight: 600;

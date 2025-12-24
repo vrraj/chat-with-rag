@@ -19,103 +19,122 @@
         <h2 class="section-title">Parameters</h2>
         <form id="params_form" autocomplete="off">
           <!-- Retrieval group -->
-          <div class="group-box ux-11px">
-            <div class="subsection-title">Retrieval</div>
-            <div class="form-field">
-              <label for="top_k">Top K</label>
-              <input id="top_k" type="number" min="1" step="1" value="10" />
-            </div>
-            <div class="form-field">
-              <label for="score_threshold">Score Threshold</label>
-              <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
+          <div class="group-box ux-11px collapsible-group" data-section="retrieval">
+            <button type="button" class="collapsible-header" aria-expanded="true" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title">Retrieval</span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </button>
+            <div class="collapsible-body">
+              <div class="form-field">
+                <label for="top_k">Top K</label>
+                <input id="top_k" type="number" min="1" step="1" value="10" />
+              </div>
+              <div class="form-field">
+                <label for="score_threshold">Score Threshold</label>
+                <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
+              </div>
             </div>
           </div>
           <!-- Query Rewrite group -->
-          <div class="group-box ux-11px" id="query_rewrite_section" style="position:relative;">
-            <div class="rewrite-header" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
-              <div class="subsection-title" style="margin-right:6px;">Query Rewrite</div>
-            </div>
-            <div class="form-field">
-              <label for="enable_query_rewrite">Enable Rewrite</label>
-              <input id="enable_query_rewrite" type="checkbox" />
-            </div>
-            <div class="form-field rewrite-row">
-              <label for="rewrite_confidence_threshold">Rewrite Confidence Threshold</label>
-              <input id="rewrite_confidence_threshold" type="number" min="0" max="1" step="0.01" value="0.67" />
-              <div id="rewrite_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;">
-                <p>
-                  For Rewrite Tail Turns: Minimum confidence (0–1) required before a rewritten
-                  query replaces the user’s original. Lower = more rewrites, higher = more cautious.
-                </p>
-                <p>
-                  For Rewrite Confidence Threshold: Minimum confidence (0–1) required before a rewritten
-                  query replaces the user’s original. Lower = more rewrites, higher = more cautious.
-                </p>
+          <div class="group-box ux-11px collapsible-group is-collapsed" id="query_rewrite_section" style="position:relative;">
+            <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title" style="margin-right:6px;">Query Rewrite</span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </button>
+            <div class="collapsible-body">
+              <div class="form-field">
+                <label for="enable_query_rewrite">Enable Rewrite</label>
+                <input id="enable_query_rewrite" type="checkbox" />
               </div>
-            </div>
-            <div class="form-field">
-              <label for="rewrite_tail_turns">Rewrite Tail Turns</label>
-              <input id="rewrite_tail_turns" type="number" min="0" step="1" value="1" />
+              <div class="form-field rewrite-row">
+                <label for="rewrite_confidence_threshold">Rewrite Confidence Threshold</label>
+                <input id="rewrite_confidence_threshold" type="number" min="0" max="1" step="0.01" value="0.67" />
+                <div id="rewrite_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;">
+                  <p>
+                    For Rewrite Tail Turns: Minimum confidence (0–1) required before a rewritten
+                    query replaces the user’s original. Lower = more rewrites, higher = more cautious.
+                  </p>
+                  <p>
+                    For Rewrite Confidence Threshold: Minimum confidence (0–1) required before a rewritten
+                    query replaces the user’s original. Lower = more rewrites, higher = more cautious.
+                  </p>
+                </div>
+              </div>
+              <div class="form-field">
+                <label for="rewrite_tail_turns">Rewrite Tail Turns</label>
+                <input id="rewrite_tail_turns" type="number" min="0" step="1" value="1" />
+              </div>
             </div>
           </div>
           <!-- Summarizer group -->
-          <div class="group-box ux-11px">
-            <div class="subsection-title">Summarizer</div>
-            <div class="form-field">
-              <label for="chat_history_window_turns">Chat History Window Turns</label>
-              <input id="chat_history_window_turns" type="number" min="0" step="1" value="10" />
-            </div>
-            <div class="form-field">
-              <label for="raw_tail_turns">Raw Tail Turns</label>
-              <input id="raw_tail_turns" type="number" min="0" step="1" value="2" />
-            </div>
-            <div class="form-field">
-              <label for="summarizer_max_input_tokens">Summarizer Max Input Tokens</label>
-              <input id="summarizer_max_input_tokens" type="number" min="0" step="1" />
-            </div>
-            <div class="form-field">
-              <label for="summarizer_max_output_tokens">Summarizer Max Output Tokens</label>
-              <input id="summarizer_max_output_tokens" type="number" min="0" step="1" />
+          <div class="group-box ux-11px collapsible-group is-collapsed">
+            <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title">Summarizer</span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </button>
+            <div class="collapsible-body">
+              <div class="form-field">
+                <label for="chat_history_window_turns">Chat History Window Turns</label>
+                <input id="chat_history_window_turns" type="number" min="0" step="1" value="10" />
+              </div>
+              <div class="form-field">
+                <label for="raw_tail_turns">Raw Tail Turns</label>
+                <input id="raw_tail_turns" type="number" min="0" step="1" value="2" />
+              </div>
+              <div class="form-field">
+                <label for="summarizer_max_input_tokens">Summarizer Max Input Tokens</label>
+                <input id="summarizer_max_input_tokens" type="number" min="0" step="1" />
+              </div>
+              <div class="form-field">
+                <label for="summarizer_max_output_tokens">Summarizer Max Output Tokens</label>
+                <input id="summarizer_max_output_tokens" type="number" min="0" step="1" />
+              </div>
             </div>
           </div>
 
 
           <!-- Inference group -->
-          <div class="group-box ux-11px">
-            <div class="subsection-title">Inference</div>
-            <div class="form-field field-row" style="position: relative;">
-              <label for="use_tools">
-                Use tools?
-                <a href="#" id="tools_help_link" class="help-link" aria-haspopup="true" aria-controls="tools_help_popup">Help</a>
-              </label>
-              <input id="use_tools" type="checkbox" />
-              <!-- Lightweight popover container; populated by chat.js -->
-              <div id="tools_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;"></div>
-            </div>
-             <div class="form-field">
-              <label for="temperature">Temperature</label>
-              <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.4" />
-            </div>
-            <div class="form-field">
-              <label for="top_p">Top P</label>
-              <input id="top_p" type="number" min="0" max="1" step="0.01" value="0.9" />
-            </div>
-            <div class="form-field">
-              <label for="inference_context_rows">Inference Context Rows</label>
-              <input id="inference_context_rows" type="number" min="1" step="1" value="3" readonly />
-            </div>
-            <div class="form-field">
-              <label for="max_output_tokens">Max Output Tokens</label>
-              <input id="max_output_tokens" type="number" min="1" step="1" value="300" />
+          <div class="group-box ux-11px collapsible-group is-collapsed">
+            <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title">Inference</span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </button>
+            <div class="collapsible-body">
+              <div class="form-field field-row" style="position: relative;">
+                <label for="use_tools">
+                  Use tools?
+                  <a href="#" id="tools_help_link" class="help-link" aria-haspopup="true" aria-controls="tools_help_popup">Help</a>
+                </label>
+                <input id="use_tools" type="checkbox" />
+                <!-- Lightweight popover container; populated by chat.js -->
+                <div id="tools_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;"></div>
+              </div>
+               <div class="form-field">
+                <label for="temperature">Temperature</label>
+                <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.4" />
+              </div>
+              <div class="form-field">
+                <label for="top_p">Top P</label>
+                <input id="top_p" type="number" min="0" max="1" step="0.01" value="0.9" />
+              </div>
+              <div class="form-field">
+                <label for="inference_context_rows">Inference Context Rows</label>
+                <input id="inference_context_rows" type="number" min="1" step="1" value="3" readonly />
+              </div>
+              <div class="form-field">
+                <label for="max_output_tokens">Max Output Tokens</label>
+                <input id="max_output_tokens" type="number" min="1" step="1" value="300" />
+              </div>
             </div>
           </div>
 
           <!-- Buttons moved to top of sidebar -->
 
           <!-- Models Information -->
-          <div class="group-box ux-11px" id="models_section">
-            <div class="subsection-title models-header">
-              Models Used
+          <div class="group-box ux-11px collapsible-group" id="models_section">
+            <div class="collapsible-header models-header" tabindex="0" aria-expanded="true" role="button" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title">Models Used</span>
+              <span style="flex:1 1 auto"></span>
               <a
                 id="change_models_btn"
                 href="#"
@@ -125,26 +144,29 @@
               >
                 Change Models
               </a>
+              <span class="chevron" aria-hidden="true">▲</span>
             </div>
-            <div class="form-field model-row">
-              <span class="model-label">Embedding:</span>
-              <div id="model_embedding" class="model-value" style="width:100%">text-embedding-3-small</div>
-            </div>
-            <div class="form-field model-row">
-              <span class="model-label">Query Rewrite:</span>
-              <div id="model_query_rewrite" class="model-value" style="width:100%">gpt-4o</div>
-            </div>
-            <div class="form-field model-row">
-              <span class="model-label">Summarizer:</span>
-              <div id="model_summarizer" class="model-value" style="width:100%">gpt-4o</div>
-            </div>
-            <div class="form-field model-row">
-              <span class="model-label">Reranker:</span>
-              <div id="model_reranker" class="model-value" style="width:100%">gpt-4o-mini</div>
-            </div>
-            <div class="form-field model-row">
-              <span class="model-label">Inference:</span>
-              <div id="model_inference" class="model-value" style="width:100%">gpt-4o</div>
+            <div class="collapsible-body">
+              <div class="form-field model-row">
+                <span class="model-label">Embedding:</span>
+                <div id="model_embedding" class="model-value" style="width:100%">text-embedding-3-small</div>
+              </div>
+              <div class="form-field model-row">
+                <span class="model-label">Query Rewrite:</span>
+                <div id="model_query_rewrite" class="model-value" style="width:100%">gpt-4o</div>
+              </div>
+              <div class="form-field model-row">
+                <span class="model-label">Summarizer:</span>
+                <div id="model_summarizer" class="model-value" style="width:100%">gpt-4o</div>
+              </div>
+              <div class="form-field model-row">
+                <span class="model-label">Reranker:</span>
+                <div id="model_reranker" class="model-value" style="width:100%">gpt-4o-mini</div>
+              </div>
+              <div class="form-field model-row">
+                <span class="model-label">Inference:</span>
+                <div id="model_inference" class="model-value" style="width:100%">gpt-4o</div>
+              </div>
             </div>
           </div>
           <!-- Note: Controls are inert in this phase (no backend). -->
@@ -296,6 +318,26 @@
     </div>
 
     <script src="static/chat.js"></script>
+    <script>
+      function toggleCollapsible(el, evt) {
+        try {
+          if (!el) return;
+          if (evt) {
+            const target = evt.target;
+            // Do not intercept clicks on nested interactive controls like Change Models or help links
+            if (target && (target.closest('.link-button') || target.closest('a.help-link'))) {
+              return;
+            }
+          }
+          const group = el.closest('.collapsible-group');
+          if (!group) return;
+          const collapsed = group.classList.toggle('is-collapsed');
+          el.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        } catch (e) {
+          console.debug('Failed to toggle collapsible group', e);
+        }
+      }
+    </script>
   <footer class="text-center text-xs text-gray-500 mt-8">
     <p>
       Optional seed data derived from 
