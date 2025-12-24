@@ -1810,6 +1810,16 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     history: List[Dict[str, str]] = (req or {}).get("history") or []
     params: Dict[str, Any] = (req or {}).get("params") or {}
 
+    # Per-turn control for emitting intermediate processing stages to SSE.
+    # Precedence: params.show_processing_steps (per turn) overrides settings_obj.show_processing_steps (global default).
+    try:
+        if "show_processing_steps" in params:
+            show_processing_steps = bool(params.get("show_processing_steps"))
+        else:
+            show_processing_steps = bool(getattr(settings_obj, "show_processing_steps", True))
+    except Exception:
+        show_processing_steps = True
+
     # --- Stage resolver (Step 1): compute provider/model/kwargs per stage from existing settings ---
     # NOTE: This is read-only in this step (no behavior change). We compute it early so later
     # steps can pull from a single source instead of scattered getattr(...) calls.
@@ -1865,7 +1875,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if enable_query_rewrite and history:
         try:
             logger.info("[PIPELINE] emit stage: Query Rewrite")
-            emit_stage(req_id, "Query Rewrite")
+            if show_processing_steps:
+                emit_stage(req_id, "Query Rewrite")
         except Exception:
             pass
         try:
@@ -2056,13 +2067,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.info("[CLARIFY] (%s) reason=%s options=%s", log_origin, clarify_reason, clarify_options)
         # Emit a clarifier stage to SSE and immediately close this stream for the current turn
         try:
-            emit_stage(
-                req_id,
-                "Clarification Needed",
-                prompt=answer,
-                options=clarify_options,
-                reason=clarify_reason
-            )
+                emit_stage(
+                    req_id,
+                    "Clarification Needed",
+                    prompt=answer,
+                    options=clarify_options,
+                    reason=clarify_reason
+                )
         except Exception:
             pass
         try:
@@ -2096,7 +2107,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Stage: Retrieve Vectors
     try:
         logger.info("[PIPELINE] emit stage: Retrieve Vectors")
-        emit_stage(req_id, "Retrieve Vectors")
+        if show_processing_steps:
+            emit_stage(req_id, "Retrieve Vectors")
     except Exception:
         pass
     # --- Retrieve
@@ -2196,13 +2208,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if need_rerank:
         try:
             logger.info("[PIPELINE] emit stage: Rerank Retrieval Results")
-            emit_stage(req_id, "Rerank Retrieval Results")
+            if show_processing_steps:
+                emit_stage(req_id, "Rerank Retrieval Results")
         except Exception:
             pass
 
     if not need_rerank:
         _dbg(f"[RERANK] {log_origin}", f"skipping rerank: {skip_reason}")
-        emit_stage(req_id, "Skipping Rerank")
+        if show_processing_steps:
+            emit_stage(req_id, "Skipping Rerank")
         reranked = results[:kept]
     else:
         _dbg(f"[RERANK] {log_origin}", f"applying rerank over {n} candidates; pool capped to {kept}")
@@ -2263,7 +2277,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 # Stage: History Summary
     try:
         logger.info("[PIPELINE] emit stage: Summarize Chat History")
-        emit_stage(req_id, "Summarize Chat History")
+        if show_processing_steps:
+            emit_stage(req_id, "Summarize Chat History")
     except Exception:
         pass
     # --- History summary slices
@@ -2324,7 +2339,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     web_context: List[Dict[str, Any]] = []
     try:
         if use_web_search:
-            emit_stage(req_id, "Establish Web Context")
+            if show_processing_steps:
+                emit_stage(req_id, "Establish Web Context")
             web_context = get_web_context_fn(effective_query, results or [])
     except Exception as e:
         logger.debug("[WEB] (%s) ignored web context due to error: %s", log_origin, e)
@@ -2353,7 +2369,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     # Stage: Inference Prompt Build
     # --- Prompt build
-    emit_stage(req_id, "Inference Prompt Build")
+    if show_processing_steps:
+        emit_stage(req_id, "Inference Prompt Build")
     strict_rag_prompt = (
         "You are a question-answering assistant for a retrieval-augmented system.\n"
         "STRICT RULES:\n"
@@ -2411,7 +2428,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Stage: Inference API call
     # --- Inference API call - Orchestrater stage with Tool Calls
     logger.info("[PIPELINE] emit stage: Generating Response")
-    emit_stage(req_id, "Generating Response")
+    if show_processing_steps:
+        emit_stage(req_id, "Generating Response")
 
     # Resolve provider/model/kwargs for inference from stage_specs (no behavior change to temps/limits).
     inf_spec = (stage_specs or {}).get("inference") or {}
@@ -2477,7 +2495,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         # NOTE: Single-pass tool execution.
         # The previous bounded while-loop was ineffective because `resp_inf` is not updated in-loop,
         # and we already synthesize once per turn. Keep behavior identical via a single pass.
-        emit_stage(req_id, "Tool Calls")
+        if show_processing_steps:
+            emit_stage(req_id, "Tool Calls")
         try:
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
@@ -2505,7 +2524,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 args = parse_tool_args(call.get("args"))
                 logger.debug("[TOOLS] Tool call: name=%s id=%s args=%s", name, call_id, args)
 
-                emit_stage(req_id, f"Calling Tool: {name}")
+                if show_processing_steps:
+                    emit_stage(req_id, f"Calling Tool: {name}")
                 executor = get_executor_fn(name)
                 logger.debug("[TOOLS] Found executor for %s: %s", name, "Yes" if executor else "No")
 
@@ -2602,7 +2622,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 _kwargs_synth["temperature"] = float(temperature)
 
             try:
-                emit_stage(req_id, "Generating Responses with Tools")
+                if show_processing_steps:
+                    emit_stage(req_id, "Generating Responses with Tools")
                 _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
                 resp_synth = _responses_create(
                     provider=_ts_provider,

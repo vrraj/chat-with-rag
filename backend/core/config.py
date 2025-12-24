@@ -341,6 +341,7 @@ class Settings(BaseSettings):
     debug_verbose: bool = False  # gates noisy logs (prompts, raw outputs)
     debug_log_keys: bool = False  # gates any API key suffix logging
     debug_log_truncate_chars: int = 200  # max chars to print when debug_verbose is True
+    show_processing_steps: bool = True  # controls whether intermediate SSE processing stages are emitted
 
     # -------------------------------------------------------------------------
     # 12) Pydantic settings model config (preserved)

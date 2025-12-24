@@ -618,6 +618,15 @@
       use_tools,
     };
 
+    try {
+      const showProcEl = qs('#show_processing_steps');
+      if (showProcEl) {
+        base.show_processing_steps = !!showProcEl.checked;
+      }
+    } catch (e) {
+      console.debug('Failed to read show_processing_steps checkbox', e);
+    }
+
     // Attach model/provider overrides per stage (if any). These map to backend resolve_stage_specs.
     try {
       base.inference_provider = stageModelConfig.inference.provider;
