@@ -208,6 +208,27 @@ Relies entirely on backend defaults; uses a generated `conversation_id`.
 
 This will use `params.conversation_id = "docs-help"` for all turns in that iframe.
 
+### 5.5 Overriding processing steps and top_k
+
+You can control whether processing stages are shown and how many documents are retrieved by passing `show_processing_steps` and `top_k` in the iframe URL:
+
+```html
+<iframe
+  src="https://YOUR_DOMAIN/chat-embed.html
+       ?top_k=5
+       &show_processing_steps=true
+       &max_output_tokens=256
+       &namespace=docs-help"
+  style="border:0;width:100%;height:450px;"
+></iframe>
+```
+
+In this example:
+
+- `top_k=5` reduces the number of retrieved chunks.
+- `show_processing_steps=true` enables the streaming visualizer in the embed (you can also turn it off with `show_processing_steps=false`).
+- Other parameters (`max_output_tokens`, `namespace`) are also overridden from their defaults.
+
 ---
 
 ## 6. Using `embed-loader.js` on a host site
