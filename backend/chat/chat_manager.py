@@ -77,10 +77,10 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 try:
     # When running as a package (e.g., `python -m backend.main`)
-    from backend.llm.llm_handler import llm_handler
+    from backend.llm.llm_handler import llm_handler, LLMError
 except Exception:  # pragma: no cover
     # When running with repo root on PYTHONPATH (e.g., scripts / local runs)
-    from llm.llm_handler import llm_handler  # type: ignore
+    from llm.llm_handler import llm_handler, LLMError  # type: ignore
 
 # Lazy OpenAI client (initialized on first use)
 _client = None
@@ -1426,7 +1426,8 @@ def rewrite_query(
         )
         usage = _extract_usage_from_responses(resp)
         raw = _extract_text_from_responses(resp).strip()
-        logger.debug("[REWRITE] response output raw=%s", raw[:400])
+        # Log the raw JSON candidate before parsing so we can debug provider outputs.
+        logger.debug("[REWRITE] JSON candidate before parsing=%s", raw)
         try:
             if isinstance(usage, dict):
                 pt = int(usage.get("prompt_tokens") or 0)
@@ -1619,9 +1620,12 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     """Extract tool/function calls from a Responses API object or dict.
     Returns a list of {name, args, id}.
     """
+    # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_handler)
+    # so we always inspect the provider-native object for tool_calls.
+    base = getattr(resp, "raw", resp)
     calls: List[Dict[str, Any]] = []
     try:
-        output = getattr(resp, "output", None) if not isinstance(resp, dict) else resp.get("output")
+        output = getattr(base, "output", None) if not isinstance(base, dict) else base.get("output")
         if isinstance(output, list):
             for item in output:
                 it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
@@ -1650,7 +1654,7 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     except Exception:
         pass
     try:
-        choices = getattr(resp, "choices", None) if not isinstance(resp, dict) else resp.get("choices")
+        choices = getattr(base, "choices", None) if not isinstance(base, dict) else base.get("choices")
         if isinstance(choices, list) and choices:
             msg = getattr(choices[0], "message", None) if not isinstance(choices[0], dict) else choices[0].get("message")
             tc = getattr(msg, "tool_calls", None) if not isinstance(msg, dict) else msg.get("tool_calls")
@@ -2427,7 +2431,9 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     if enable_tools and isinstance(prompt_input, list):
         try:
+            logger.debug("[PIPELINE] Before Tools list function")
             tools = list_tools_fn()
+            logger.debug("[PIPELINE] After Tools list function %s ", tools[:100])
             # Avoid web_search unless explicitly requested in the message
             def _is_web_search_requested(latest_user_msg: str) -> bool:
                 if not latest_user_msg:
@@ -2441,13 +2447,19 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         except Exception:
             _kwargs_inf["tools"] = []
 
-    logger.info("[INFERENCE] %s: Attempting Responses API with Inference model: %s", log_origin, _inf_model)
+    logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
     resp_inf = _responses_create(
         provider=_inf_provider,
         model=_inf_model,
         **_kwargs_inf,
     )
+    try:
+        # Log the provider-native response object for debugging tool-calls behavior.
+        _raw = getattr(resp_inf, "raw", resp_inf)
+        logger.debug("[INFERENCE] (%s) raw response: %r", log_origin, _raw)
+    except Exception:
+        pass
     _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
     usage_inf = _extract_usage_from_responses(resp_inf)
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
@@ -2816,7 +2828,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[PIPELINE] handle_chat running pipeline orchestrator")
 
         out = run_pipeline(deps=deps, req=req)
-        
+
         # Log cache size after the pipeline completes
         try:
             _post_bytes = 0
@@ -2842,6 +2854,45 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
             "conversation_totals": out.get("conversation_totals", {}),
             "tools_used": out.get("tools_used", []),
             "rewrite_display": out.get("rewrite_display", {}),
+        }
+    except LLMError as e:
+        # Fatal provider/config/LLM failure (e.g., missing API key, unsupported provider).
+        # Surface a clear, structured error back to the caller while preserving
+        # the existing SSE shutdown behavior.
+        logger.error(
+            "[PIPELINE] handle_chat fatal LLMError: provider=%s model=%s kind=%s code=%s msg=%s",
+            getattr(e, "provider", None),
+            getattr(e, "model", None),
+            getattr(e, "kind", None),
+            getattr(e, "code", None),
+            str(e),
+            exc_info=True,
+        )
+        err_text = str(e) or "LLM error during inference."
+        try:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=err_text)
+        except Exception:
+            pass
+        try:
+            emit_stage(req_id, "Done", final=True)
+        except Exception:
+            pass
+        try:
+            close_stream(req_id)
+        except Exception:
+            pass
+        return {
+            "answer": err_text,
+            "response": err_text,
+            "metrics": {"vectors_retrieved": 0},
+            "error": {
+                "stage": "inference",
+                "provider": getattr(e, "provider", None),
+                "model": getattr(e, "model", None),
+                "kind": getattr(e, "kind", None),
+                "code": getattr(e, "code", None),
+                "message": str(e) or "LLM error during inference.",
+            },
         }
     except Exception as e:
         logger.exception("[PIPELINE] handle_chat orchestrator failed: %s", e)

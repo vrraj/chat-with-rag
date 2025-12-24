@@ -135,11 +135,6 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3) Embeddings
     # -------------------------------------------------------------------------
-    # Legacy note: historically, `embedding_model` held the full OpenAI model id
-    # (e.g., "text-embedding-3-small"). For backward compatibility we preserve
-    # that behavior in the resolver. Going forward, you can also set it to a
-    # provider key ("openai" or "gemini") and use the per-provider fields
-    # below.
     # embedding_model: str = "text-embedding-3-large"  # use for higher-quality embeddings
     # vector_size: int = 3072  # use with text-embedding-3-large
     # collection_name: str = "document_index_large"  # collection name for large embedding model
@@ -147,12 +142,10 @@ class Settings(BaseSettings):
     # Default OpenAI embedding model (current behavior).
     openai_embedding_model: str = "text-embedding-3-small"
     # Provider selector for embeddings: "openai" or "gemini".
-    # Legacy configs may still set this to a full OpenAI model id; the
-    # resolver in backend/embeddings/specs.py remains backward-compatible.
     # NOTE: embedding_model is the single source of truth for both corpus indexing
     # and query-time retrieval embeddings; changing this requires re-embedding docs
     # so the retriever and stored vectors stay in the same embedding space.
-    embedding_model: str = "openai" # "openai" or "gemini" 
+    embedding_model: str = "openai"  # "openai" or "gemini"
 
     # Gemini embeddings (adapter-based) - additive, optional
     # Default model: "gemini-embedding-001".
@@ -266,7 +259,7 @@ class Settings(BaseSettings):
     rewrite_confidence_threshold: float = 0.65
 
     # Keep rewrite outputs tiny and structured (JSON)
-    rewrite_max_output_tokens: int = 80
+    rewrite_max_output_tokens: int = 200
 
     # How many most‑recent turns the rewriter sees (can differ from raw_tail_turns if desired)
     rewrite_tail_turns: int = 2

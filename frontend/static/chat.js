@@ -39,19 +39,19 @@
   const MODELS_BY_STAGE = {
     inference: {
       openai: ['gpt-4o-mini', 'gpt-5-nano'],
-      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
     },
     rewrite: {
       openai: ['gpt-4o-mini', 'gpt-5-nano'],
-      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
     },
     summary: {
       openai: ['gpt-4o-mini', 'gpt-5-nano'],
-      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
     },
     rerank: {
       openai: ['gpt-4o-mini', 'gpt-5-nano'],
-      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-3-flash'],
+      gemini: ['models/gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'],
     },
   };
 
@@ -813,8 +813,22 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
+
+      let data;
+      try {
+        data = await resp.json();
+      } catch (_) {
+        data = null;
+      }
+
+      // If backend surfaced a structured error, prefer that message.
+      if (!resp.ok || (data && data.error)) {
+        const err = (data && data.error) || {};
+        const msg = err.message || 'Request failed. Please try again.';
+        bubble.textContent = msg;
+        toast(msg);
+        return;
+      }
 
       // Replace placeholder bubble with answer
       const answerText = (
@@ -842,8 +856,9 @@
       // Update single-line rewrite placeholder if present in HTML
       try { renderRewriteLine(data && data.rewrite_display); } catch (_) {}
     } catch (e) {
-      bubble.textContent = 'Error. Try again.';
-      toast('Request failed. Please try again.');
+      const msg = 'Request failed. Please try again.';
+      bubble.textContent = msg;
+      toast(msg);
     } finally {
       input.disabled = false;
       sendBtn.disabled = false;
