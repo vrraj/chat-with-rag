@@ -284,14 +284,14 @@ class Settings(BaseSettings):
     # Example for dev + prod:
     #   "http://localhost:8000,https://chat-with-rag.com"
     # When empty/None, origin-based checks are disabled.
-    allowed_origins: Optional[str] = "http://localhost:8000"
+    allowed_origins: Optional[str] = "http://localhost:8000,http://chat-with-rag:8000"
 
     # Comma-separated list of allowed hosts (hostname or hostname:port) for
     # requests hitting critical API routes such as /chat and ingestion.
     # Example:
     #   "localhost:8000,chat-with-rag.com"
     # When empty/None, host-based checks are disabled.
-    allowed_hosts: Optional[str] = "localhost:8000"
+    allowed_hosts: Optional[str] = "localhost:8000,chat-with-rag:8000"
 
     # -------------------------------------------------------------------------
     # 10) Chunking & ingestion (shared defaults + per-source toggles)

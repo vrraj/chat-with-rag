@@ -205,15 +205,26 @@ if (val === d.base_url) {
   const copyBtn = document.createElement('span');
   copyBtn.className = 'copy-btn';
   copyBtn.textContent = 'Copy';
-  copyBtn.onclick = (e) => {
+  copyBtn.onclick = async (e) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(d.base_url).then(() => {
+    try {
+      await navigator.clipboard.writeText(d.base_url);
       const originalText = copyBtn.textContent;
       copyBtn.textContent = 'Copied!';
+      copyBtn.style.backgroundColor = '#10B981'; // Green color for success
       setTimeout(() => {
         copyBtn.textContent = originalText;
+        copyBtn.style.backgroundColor = ''; // Revert to original color
       }, 2000);
-    });
+    } catch (err) {
+      console.error('Failed to copy URL: ', err);
+      copyBtn.textContent = 'Failed!';
+      copyBtn.style.backgroundColor = '#EF4444'; // Red color for error
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy';
+        copyBtn.style.backgroundColor = ''; // Revert to original color
+      }, 2000);
+    }
   };
   container.appendChild(copyBtn);
   
