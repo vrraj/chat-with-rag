@@ -154,10 +154,6 @@ If provided, they are passed through as strings to the backend and interpreted t
   - Optional string tag, defaults to `embed`.
   - Sent as `params.mode` for logging / analytics.
 
-### 4.8 Internal fields added by the client
-
-`chat-embed.js` always adds:
-
 - `query_id` – an 8-character ID per turn, generated in the browser.
 - `conversation_id` – chosen using this logic:
 
@@ -343,3 +339,24 @@ This appends an `<iframe>` pointing at `chat-embed.html` to the end of the page 
 - Both use the same `params` keys as defined in **`README_CHAT_API.md`**.
 - `chat-embed.html` is intentionally **minimal** and is suitable for iframes and third-party widgets.
 - Any future changes to the backend `/chat` contract should be reflected in **both** `README_CHAT_API.md` and this document, to keep embed integrators aligned.
+
+---
+
+## 10. Auth & Security (summary)
+
+The embeddable chat shares the same FastAPI backend as the main UI. The
+**canonical description** of authentication and security posture for this
+project lives in the root `README.md` under the *Auth & Security Note* near the
+Technical Overview.
+
+In short:
+
+- `chat-embed.html` is a thin iframe UI that issues `POST /chat` requests.
+- There is currently **no built-in authentication or rate limiting** in this
+  repository for `/chat` or ingestion routes.
+- Any client that can reach your deployment and copy the iframe snippet can, in
+  principle, send traffic to `/chat`.
+
+When moving beyond local or controlled environments, you should apply the same
+protections discussed in `README.md` (origin/host allowlists, user auth, rate
+limiting, etc.) to the embed usage as well.

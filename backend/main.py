@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 # Precedence: OS env vars win; .env is a fallback.
 load_dotenv(override=False)
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Any
 import uvicorn
 import re
 import requests
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, urlparse
 from qdrant_client.http import models
 from backend.core import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
@@ -37,6 +37,7 @@ from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from pydantic import BaseModel
 
+
 class ClearChatRequest(BaseModel):
     conversation_id: str | None = None
     user_id: str | None = None
@@ -46,6 +47,79 @@ from backend.core.logging import LOGGING_CONFIG
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
+
+
+# --- Origin / host allowlist helper (initial protection for critical routes) ---
+
+def _parse_allowed_list(raw: str | None) -> set[str]:
+    """Return a set of stripped items from a comma-separated config string."""
+    try:
+        if not raw:
+            return set()
+        return {item.strip() for item in str(raw).split(',') if item and item.strip()}
+    except Exception:
+        return set()
+
+
+_ALLOWED_ORIGINS = _parse_allowed_list(getattr(settings, "allowed_origins", None))
+_ALLOWED_HOSTS = _parse_allowed_list(getattr(settings, "allowed_hosts", None))
+
+
+def enforce_origin_host(request: Request) -> None:
+    """Best-effort origin/host check for critical FastAPI routes.
+
+    When no allowlists are configured, this is a no-op. Otherwise, it will allow
+    a request if either the full Origin header value matches an entry in
+    settings.allowed_origins OR the parsed origin host / Host header matches an
+    entry in settings.allowed_hosts.
+    """
+
+    # Fast path: no configuration => no additional enforcement
+    
+    if not _ALLOWED_ORIGINS and not _ALLOWED_HOSTS:
+        logger.warning("SECURITY: Origin/Host Blocked; ALLOWLIST origins=%s hosts=%s; got origin=%s host=%s",
+               _ALLOWED_ORIGINS, _ALLOWED_HOSTS, origin, host_hdr)
+        return
+
+    try:
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        host_hdr = request.headers.get("host") or ""
+
+        origin_ok = False
+        host_ok = False
+
+        # Direct Origin match (scheme + host[:port])
+        if origin and _ALLOWED_ORIGINS:
+            origin_ok = origin in _ALLOWED_ORIGINS
+
+        # Host-based checks
+        if _ALLOWED_HOSTS:
+            origin_host = ""
+            if origin:
+                try:
+                    parsed = urlparse(origin)
+                    if parsed.hostname:
+                        origin_host = parsed.hostname
+                        if parsed.port:
+                            origin_host = f"{parsed.hostname}:{parsed.port}"
+                except Exception:
+                    origin_host = ""
+
+            if origin_host and origin_host in _ALLOWED_HOSTS:
+                host_ok = True
+            elif host_hdr and host_hdr in _ALLOWED_HOSTS:
+                host_ok = True
+
+        if not (origin_ok or host_ok):
+            logger.warning("SECURITY: origin not ok or host not ok Origin/Host Blocked; ALLOWLIST origins=%s hosts=%s; got origin=%s host=%s",
+               _ALLOWED_ORIGINS, _ALLOWED_HOSTS, origin, host_hdr)
+            raise HTTPException(status_code=403, detail="Origin/host not allowed")
+    except HTTPException:
+        raise
+    except Exception:
+        # On any unexpected error in enforcement, fail open to avoid breaking dev.
+        return
+
 
 # --- Swagger/OpenAPI tags & UI ordering ---
 tags_metadata = [
@@ -291,12 +365,16 @@ async def chat_embed_example_page():
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(
-    mediawiki_input: MediaWikiURLInput
+    mediawiki_input: MediaWikiURLInput,
+    request: Request,
 ):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
     You can override the target MediaWiki API with `api_url` and the User-Agent with `ua` per request.
     """
+    # Enforce origin/host allowlist for this ingestion endpoint.
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         #logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
@@ -401,7 +479,7 @@ async def index_mediawiki_url(
 
 
 @app.post("/chat/clear", tags=["3. Search & Chat"], summary="6. Clear conversation summaries (stateless)")
-async def clear_chat_summaries(payload: ClearChatRequest):
+async def clear_chat_summaries(payload: ClearChatRequest, request: Request):
     """Clear server-side summary cache for a conversation namespace.
 
     Namespace rule (Option A):
@@ -409,6 +487,8 @@ async def clear_chat_summaries(payload: ClearChatRequest):
     - Else: conversation_id only
     - If conversation_id missing/empty: no-op
     """
+    enforce_origin_host(request)
+
     try:
         from backend.chat import chat_manager as cm
         cid = (payload.conversation_id or "").strip()
@@ -430,9 +510,12 @@ async def clear_chat_summaries(payload: ClearChatRequest):
 
 @app.post("/pdf", tags=["2. Ingest"], summary="1c. Index PDF (upload or URL)")
 async def index_pdf(
-    pdf_input: PDFInput
+    pdf_input: PDFInput,
+    request: Request,
 ):
     """Index a PDF either by uploaded file or by URL."""
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
@@ -670,7 +753,7 @@ class ChatSessionManager:
 chat_session_manager = ChatSessionManager()
 
 @app.post("/chat/session", tags=["3. Search & Chat"], summary="1. Create chat session")
-async def create_chat_session():
+async def create_chat_session(request: Request):
     """Create a new chat session"""
     session_id = chat_session_manager.create_session()
     return {"session_id": session_id}
@@ -682,11 +765,13 @@ async def create_chat_session():
     summary="Reset chat totals/state",
     status_code=200
 )
-async def reset_chat_totals():
+async def reset_chat_totals(request: Request):
     """
     Reset conversation-level metrics/state for the stateless chat path used by chat.html.
     This resets the chat history, parameters, and clears the conversation window.
     """
+    enforce_origin_host(request)
+
     global chat_manager
     if chat_manager is None:
         chat_manager = ChatManager()
@@ -700,8 +785,9 @@ async def reset_chat_totals():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{session_id}", tags=["3. Search & Chat"], summary="2. Chat (session)")
-async def chat_endpoint(session_id: str, chat_request: ChatRequest):
+async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Request):
     """Process a chat message with context"""
+    enforce_origin_host(request)
     try:
         # Get session context
         session = chat_session_manager.get_session(session_id)
@@ -753,8 +839,9 @@ async def get_chat_history(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{session_id}/reset", tags=["3. Search & Chat"], summary="Reset chat session state")
-async def reset_chat_session(session_id: str):
+async def reset_chat_session(session_id: str, request: Request):
     """Reset server-side chat session messages/context for the given session."""
+    enforce_origin_host(request)
     try:
         chat_session_manager.reset_session(session_id)
         return {"ok": True}
@@ -763,8 +850,10 @@ async def reset_chat_session(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index", tags=["2. Ingest"], summary="2. Index URLs / PDFs")
-async def index_content(url_input: URLInput):
+async def index_content(url_input: URLInput, request: Request):
     """Index content from URLs (HTML or PDF)"""
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
@@ -1022,8 +1111,10 @@ async def search_content(search_request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat", tags=["3. Search & Chat"], summary="5. Chat (stateless)")
-async def chat_with_content(chat_request: ChatRequest):
+async def chat_with_content(chat_request: ChatRequest, request: Request):
     """Chat with the indexed content"""
+    enforce_origin_host(request)
+
     global chat_manager
     if chat_manager is None:
         chat_manager = ChatManager()
@@ -1045,8 +1136,10 @@ async def chat_with_content(chat_request: ChatRequest):
 
 
 @app.post("/embed", tags=["2. Ingest"], summary="3. Embed single document")
-async def generate_embedding(embedding_request: EmbeddingRequest):
+async def generate_embedding(embedding_request: EmbeddingRequest, request: Request):
     """Generate embedding for a specific document"""
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
@@ -1305,6 +1398,7 @@ def delete_preview(url: str = Query(..., description="Full URL of the document t
     - Counts all matching chunks via `base_url_lower`.
     - Returns up to `sample_limit` example chunks for review.
     """
+
     global qdrant_db
     if qdrant_db is None:
         qdrant_db = QdrantDB(
@@ -1343,7 +1437,7 @@ def delete_preview(url: str = Query(..., description="Full URL of the document t
     tags=["4. Index Admin"],
     summary="Delete Qdrant chunks by base_url_lower",
 )
-def delete_by_base_url(request: DeleteByBaseURLRequest):
+def delete_by_base_url(request: DeleteByBaseURLRequest, http_request: Request):
     """Delete all Qdrant chunks whose `base_url_lower` matches the derived base URL.
 
     You can provide either:
@@ -1643,7 +1737,7 @@ async def process_item(item, request, settings):
         500: {"description": "Internal server error"}
     }
 )
-async def batch_process_docs(request: BatchRequest):
+async def batch_process_docs(batch_request: BatchRequest, request: Request):
     """
     Process multiple documents (PDFs, web pages, or MediaWiki) with streaming updates.
     
@@ -1652,8 +1746,10 @@ async def batch_process_docs(request: BatchRequest):
     - Per-document skip_sections customization
     - Streams progress updates in real-time
     """
+    enforce_origin_host(request)
+
     async def stream_results():
-        total_items = len(request.items)
+        total_items = len(batch_request.items)
         successful = 0
         errors = 0
         total_chunks = 0
@@ -1661,7 +1757,7 @@ async def batch_process_docs(request: BatchRequest):
         total_cost = 0.0
         
         # Process each item one by one
-        for i, item in enumerate(request.items):
+        for i, item in enumerate(batch_request.items):
             # Send progress update
             progress = (i / total_items) * 100
             yield json.dumps({
@@ -1700,7 +1796,7 @@ async def batch_process_docs(request: BatchRequest):
         # Send final summary
         summary = {
             "summary": {
-                "type": "estimate" if request.estimate else "index",
+                "type": "estimate" if batch_request.estimate else "index",
                 "total_items": total_items,
                 "successful_items": successful,
                 "failed_items": errors,
@@ -1716,7 +1812,7 @@ async def batch_process_docs(request: BatchRequest):
     return StreamingResponse(stream_results(), media_type="text/event-stream")
 
 @app.post("/batch/list-pdfs", tags=["2. Ingest"])
-async def list_pdfs(folder_path: str = Form(...)):
+async def list_pdfs(request: Request, folder_path: str = Form(...)):
     """
     List all PDF files in the specified directory.
     
@@ -1726,6 +1822,8 @@ async def list_pdfs(folder_path: str = Form(...)):
     Returns:
         List of PDF files with their paths and metadata
     """
+    enforce_origin_host(request)
+
     if not os.path.isdir(folder_path):
         raise HTTPException(status_code=400, detail="Invalid directory path")
     
@@ -1753,10 +1851,12 @@ if __name__ == "__main__":
 from fastapi import HTTPException
 
 @app.post("/update_payload", tags=["4. Index Admin"], summary="1. Bulk update payload by URL")
-async def update_payload_field(update_request: PayloadUpdateRequest):
+async def update_payload_field(update_request: PayloadUpdateRequest, request: Request):
     """
     Update a specific payload field for all chunks matching the given URL.
     """
+    enforce_origin_host(request)
+
     global qdrant_db
     if qdrant_db is None:
         qdrant_db = QdrantDB(

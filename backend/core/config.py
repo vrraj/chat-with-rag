@@ -278,7 +278,23 @@ class Settings(BaseSettings):
     display_sources_for_embed: bool = False
 
     # -------------------------------------------------------------------------
-    # 9) Chunking & ingestion (shared defaults + per-source toggles)
+    # 9) Initial origin/host-based protection for critical FastAPI routes
+    # -------------------------------------------------------------------------
+    # Comma-separated list of allowed Origin header values.
+    # Example for dev + prod:
+    #   "http://localhost:8000,https://chat-with-rag.com"
+    # When empty/None, origin-based checks are disabled.
+    allowed_origins: Optional[str] = "http://localhost:8000"
+
+    # Comma-separated list of allowed hosts (hostname or hostname:port) for
+    # requests hitting critical API routes such as /chat and ingestion.
+    # Example:
+    #   "localhost:8000,chat-with-rag.com"
+    # When empty/None, host-based checks are disabled.
+    allowed_hosts: Optional[str] = "localhost:8000"
+
+    # -------------------------------------------------------------------------
+    # 10) Chunking & ingestion (shared defaults + per-source toggles)
     # -------------------------------------------------------------------------
     max_urls: int = 10 # legacy - remove when refactoring
     default_chunk_size: int = 500

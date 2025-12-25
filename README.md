@@ -74,6 +74,19 @@ The screenshot below illustrates how these **pipeline stages** surface in the mu
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
 
+> **Auth & Security Note**
+>
+> The current demo stack intentionally keeps the core FastAPI routes simple:
+> there is no built-in authentication or rate limiting in this repository. Any
+> client that can reach your deployment can, in principle, call critical
+> endpoints such as `/chat` or indexing routes, and can embed `chat-embed.html`.
+>
+> When deploying beyond local/dev environments, you should layer additional
+> protections (origin/host allowlists, user auth, rate limiting, etc.) around
+> these routes according to your risk model. This section is the canonical
+> overview of auth/security for the application; feature-specific docs (such as
+> `README_CHAT_EMBED.md`) refer back here.
+
 ## ✨ Features
 
 An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to synthesize raw documents into structured intelligence, featuring a high-fidelity ingestion engine and live observability for verifiable, context-grounded insights.
