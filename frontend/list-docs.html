@@ -205,24 +205,76 @@ if (val === d.base_url) {
   const copyBtn = document.createElement('span');
   copyBtn.className = 'copy-btn';
   copyBtn.textContent = 'Copy';
-  copyBtn.onclick = async (e) => {
+  copyBtn.onclick = (e) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(d.base_url);
-      const originalText = copyBtn.textContent;
+    const textToCopy = d.base_url;
+    const originalText = copyBtn.textContent;
+    
+    // Try the modern clipboard API first
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        showCopySuccess();
+      }).catch(() => {
+        // If clipboard API fails, fall back to exeCommand
+        fallbackCopyTextToClipboard(textToCopy);
+      });
+    } else {
+      // Fallback for older browsers
+      fallbackCopyTextToClipboard(textToCopy);
+    }
+    
+    function showCopySuccess() {
       copyBtn.textContent = 'Copied!';
-      copyBtn.style.backgroundColor = '#10B981'; // Green color for success
+      copyBtn.style.backgroundColor = '#10B981';
       setTimeout(() => {
         copyBtn.textContent = originalText;
-        copyBtn.style.backgroundColor = ''; // Revert to original color
+        copyBtn.style.backgroundColor = '';
       }, 2000);
-    } catch (err) {
-      console.error('Failed to copy URL: ', err);
-      copyBtn.textContent = 'Failed!';
-      copyBtn.style.backgroundColor = '#EF4444'; // Red color for error
+    }
+    
+    function fallbackCopyTextToClipboard(text) {
+      // Create a temporary textarea element
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      
+      // Make the textarea out of viewport
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-9999px';
+      textArea.style.top = '0';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+          showCopySuccess();
+        } else {
+          showCopyError();
+        }
+      } catch (err) {
+        console.error('Fallback copy failed:', err);
+        showCopyError();
+      }
+      
+      document.body.removeChild(textArea);
+    }
+    
+    function showCopyError() {
+      copyBtn.textContent = 'Press Ctrl+C';
+      copyBtn.style.backgroundColor = '#F59E0B'; // Yellow for warning
+      
+      // Select the text for the user to manually copy
+      const range = document.createRange();
+      range.selectNodeContents(urlSpan);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      
       setTimeout(() => {
-        copyBtn.textContent = 'Copy';
-        copyBtn.style.backgroundColor = ''; // Revert to original color
+        copyBtn.textContent = originalText;
+        copyBtn.style.backgroundColor = '';
+        selection.removeAllRanges();
       }, 2000);
     }
   };
