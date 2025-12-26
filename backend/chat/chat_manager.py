@@ -64,7 +64,6 @@ import re
 import uuid
 import tiktoken
 import time
-from openai import OpenAI
 from collections import defaultdict
 # NOTE: SSE stage emission is centralized in backend/stream_emit.py so chat_manager stays agnostic of registry details.
 # Stream emission helpers (centralized in backend/stream_emit.py)
@@ -73,36 +72,14 @@ from backend.core.config import settings
 from backend.db import QdrantDB
 from backend.chat.web_search import WebSearchClient
 from backend.embeddings.specs import resolve_embedding_spec
-
 from backend.tools import list_tools, get_executor
-try:
-    # When running as a package (e.g., `python -m backend.main`)
-    from backend.llm.llm_handler import llm_handler, LLMError
-except Exception:  # pragma: no cover
-    # When running with repo root on PYTHONPATH (e.g., scripts / local runs)
-    from llm.llm_handler import llm_handler, LLMError  # type: ignore
+from backend.llm.llm_handler import llm_handler, LLMError
 
-# Lazy OpenAI client (initialized on first use)
-_client = None
-
-# Module-level cache for summaries
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
 _SUMMARY_NS_INDEX: Dict[str, Set[str]] = defaultdict(set)
 # Option A support: last-seen timestamp per namespace for idle eviction
 _SUMMARY_NS_LAST_SEEN: Dict[str, float] = {}
-
-
-def get_client():
-    global _client
-    if _client is None:
-        logger.debug("Initializing OpenAI client")
-        try:
-            _client = OpenAI(api_key=settings.openai_api_key)
-        except Exception as e:
-            logger.error("Failed to create OpenAI client: %s", e)
-            raise
-    return _client
 
 
 # --- LLM call helper (OpenAI-first, via llm_handler facade) ---
@@ -116,7 +93,6 @@ def _responses_create(provider: str | None = None, **kwargs: Any):
 
     Default behavior (no provider provided):
       - Preserve existing behavior by routing to `llm_handler.responses.create(**kwargs)`
-      - Best-effort reuse the OpenAI client created by `get_client()` (settings-driven)
 
     Optional behavior (provider provided):
       - Route via `llm_handler.create(provider=..., model=..., input=..., stream=..., **kwargs)`
@@ -125,13 +101,6 @@ def _responses_create(provider: str | None = None, **kwargs: Any):
     NOTE: In this step we do not change any callers; provider defaults to None.
     """
     prov = (provider or "openai").strip().lower()
-
-    # Always try to pin the OpenAI client to the settings-driven instance to avoid env drift.
-    try:
-        if getattr(llm_handler, "_openai", None) is None:
-            llm_handler._openai = get_client()  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
     # Preserve existing Responses API path when provider is not explicitly set (or is openai).
     if provider is None or prov == "openai":
@@ -1561,7 +1530,6 @@ class ChatManager:
                 "db": self.qdrant_db,
                 "cache": self._summary_cache,
                 "settings": settings,
-                "get_client": get_client,
                 "list_tools": list_tools,
                 "get_executor": get_executor,
                 "get_web_context": (lambda q, existing: self._get_web_context(q, existing)) if use_web_search else (lambda q, existing: []),
@@ -1774,7 +1742,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
       - db: QdrantDB-like (must support search_similar)
       - cache: dict-like for summaries
       - settings: Settings object
-      - get_client: callable() -> OpenAI client
       - list_tools: callable() -> list of tools
       - get_executor: callable(name) -> tool executor
       - get_web_context: callable(query, existing_context) -> list (optional)
@@ -1796,7 +1763,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     enable_query_rewrite = bool(deps.get("enable_query_rewrite", False))
     use_web_search = bool(deps.get("use_web_search", False))
     get_web_context_fn = deps.get("get_web_context") or (lambda q, existing: [])
-    get_client_fn = deps.get("get_client", get_client)
     list_tools_fn = deps.get("list_tools", list_tools)
     get_executor_fn = deps.get("get_executor", get_executor)
     log_origin = str(deps.get("log_origin", "pipeline"))
@@ -2849,7 +2815,6 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         "db": db,
         "cache": _SUMMARY_CACHE,
         "settings": settings,
-        "get_client": get_client,
         "list_tools": list_tools,
         "get_executor": get_executor,
         "get_web_context": (lambda q, existing: []),  # stateless: no auto web

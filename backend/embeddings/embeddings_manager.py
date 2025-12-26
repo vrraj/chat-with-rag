@@ -10,13 +10,7 @@ from qdrant_client import models
 from backend.embeddings.collection_manager import CollectionManager
 from backend.db import QdrantDB
 from backend.embeddings.specs import resolve_embedding_spec
-try:
-    from llm.llm_handler import llm_handler
-except Exception:  # pragma: no cover
-    try:
-        from backend.llm.llm_handler import llm_handler  # type: ignore[assignment]
-    except Exception:  # pragma: no cover
-        llm_handler = None  # type: ignore[assignment]
+from backend.llm.llm_handler import llm_handler
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)

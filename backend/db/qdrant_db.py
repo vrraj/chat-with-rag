@@ -7,13 +7,7 @@ import logging
 import openai
 from backend.core.config import settings
 from backend.embeddings.specs import resolve_embedding_spec
-try:
-    from llm.llm_handler import llm_handler
-except Exception:  # pragma: no cover
-    try:
-        from backend.llm.llm_handler import llm_handler  # type: ignore[assignment]
-    except Exception:  # pragma: no cover
-        llm_handler = None  # type: ignore[assignment]
+from backend.llm.llm_handler import llm_handler
 from openai import OpenAI
 import math
 
