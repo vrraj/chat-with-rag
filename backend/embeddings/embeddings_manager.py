@@ -61,12 +61,8 @@ class EmbeddingsManager:
         Generate embeddings using the configured provider/model.
 
         Backward-compatible behavior:
-        - If `settings.embedding_model` is a legacy OpenAI model id
-          (e.g. "text-embedding-3-small"), we continue to use the local
-          OpenAI client via `get_client()`.
-        - If `settings.embedding_model` is a provider key ("openai" or
-          "gemini"), we route through `llm_handler.embeddings.create` with
-          the spec from `resolve_embedding_spec(settings)`.
+        - All embeddings now route through `llm_handler.embeddings.create()` regardless of model type.
+        - The handler automatically handles both legacy OpenAI model ids and provider keys.
         Args:
             text: Text to embed
         Returns:
