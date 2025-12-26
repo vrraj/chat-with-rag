@@ -4,11 +4,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from backend.core.schemas import PayloadUpdateRequest
 import logging
-import openai
 from backend.core.config import settings
 from backend.embeddings.specs import resolve_embedding_spec
 from backend.llm.llm_handler import llm_handler
-from openai import OpenAI
 import math
 
 logger = logging.getLogger(__name__)
@@ -25,7 +23,6 @@ class QdrantDB:
         """
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
-        self._openai_client = None  # lazy init
         self.last_embedding_usage: Dict[str, int] = {"input_tokens": 0, "total_tokens": 0}
         
         # Ensure target exists. Use get_collection so aliases resolve correctly.
@@ -43,17 +40,7 @@ class QdrantDB:
                 logger.exception("Failed to create collection %s", collection_name)
                 raise
 
-    def get_openai_client(self):
-        """Lazily initialize and return the OpenAI client."""
-        if self._openai_client is None:
-            logger.debug("Initializing OpenAI client for embeddings")
-            try:
-                self._openai_client = OpenAI(api_key=settings.openai_api_key)
-            except Exception as e:
-                logger.exception("Failed to create OpenAI client: %s", e)
-                raise
-        return self._openai_client
-
+    
     def _build_filter(self, query_filter: Optional[Dict]) -> Optional[models.Filter]:
         """Translate a simple dict (e.g., {"url": "...", "source": "..."})
         into a Qdrant Filter. Special-case: `url` maps to `url_lower` and is
@@ -145,8 +132,7 @@ class QdrantDB:
 
         Backward-compatible behavior:
         - When `settings.embedding_model` is an OpenAI model id string
-          (legacy), we continue to use the OpenAI client created via
-          `get_openai_client()`.
+          (legacy), we route via llm_handler.
         - Newer configs may set `embedding_model` to a provider key
           ("openai" or "gemini"); in that case we route via llm_handler.
         """
@@ -163,9 +149,10 @@ class QdrantDB:
             )
 
             if use_legacy_openai:
-                response = self.get_openai_client().embeddings.create(
+                response = llm_handler.embeddings.create(
                     input=text,
                     model=model,
+                    provider="openai",
                 )
             else:
                 if llm_handler is None:

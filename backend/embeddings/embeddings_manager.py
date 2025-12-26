@@ -1,5 +1,4 @@
 from typing import List, Dict, Any, Optional
-import openai
 import uuid
 import logging
 import time
@@ -26,32 +25,17 @@ class EmbeddingsManager:
     def __init__(self):
         self.qdrant: QdrantStorage = QdrantStorage()
         self.collection_manager = CollectionManager(self.qdrant.client)
-        self._client = None  # lazy init; use get_client()
         # Initialize QdrantDB without the callback first
         self.qdrant_db = QdrantDB(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
-            collection_name=settings.collection_name
+            collection_name=settings.collection_name,
         )
         # Now set the callback after the method is defined
         self.qdrant_db.generate_embeddings = self.generate_embeddings
         # Track tokens used during a single indexing operation
         self._tokens_used: int = 0
         
-    def get_client(self) -> openai.OpenAI:
-        """Lazily initialize and return the OpenAI client for embeddings.
-
-        This preserves the existing behavior of EmbeddingsManager.generate_embeddings,
-        which expects an OpenAI client exposing `.embeddings.create(...)`.
-        """
-        if self._client is None:
-            logger.debug("Initializing OpenAI client for embeddings")
-            try:
-                self._client = openai.OpenAI(api_key=settings.openai_api_key)
-            except Exception as e:
-                logger.exception("Failed to create OpenAI client: %s", e)
-                raise
-        return self._client
 
     def estimate_tokens(self, text: str) -> int:
         """Estimate the number of tokens in the text using tiktoken.
@@ -107,38 +91,19 @@ class EmbeddingsManager:
                     model = getattr(settings, "embedding_model", None)
                     dims = None
 
-                # Legacy path: embedding_model is a full OpenAI model id string,
-                # and not a provider key. In that case, use the local OpenAI
-                # client as before.
-                legacy_model = getattr(settings, "embedding_model", None)
-                use_legacy_openai = (
-                    provider == "openai"
-                    and isinstance(legacy_model, str)
-                    and legacy_model not in ("openai", "gemini")
-                )
-
-                if use_legacy_openai or llm_handler is None:
-                    #logger.debug("Generating embedding using OpenAI model: %s", model)
-                    response = self.get_client().embeddings.create(
-                        input=text,
-                        model=model,
-                    )
-                else:
-                    # Provider-aware path via llm_handler.
-                    kwargs: Dict[str, Any] = {
-                        "provider": provider,
-                        "model": model,
-                        "input": text,
-                    }
-                    if provider == "gemini" and isinstance(dims, int) and dims > 0:
-                        kwargs["dimensions"] = dims
-                    # Ensure llm_handler uses the same OpenAI client when provider is openai.
-                    if provider == "openai" and getattr(llm_handler, "_openai", None) is None:
-                        try:
-                            llm_handler._openai = openai.OpenAI(api_key=settings.openai_api_key)  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
-                    response = llm_handler.embeddings.create(**kwargs)
+                if llm_handler is None:
+                    raise ValueError("llm_handler is not available for embeddings generation")
+                
+                # Always use llm_handler for embeddings
+                kwargs: Dict[str, Any] = {
+                    "provider": provider,
+                    "model": model,
+                    "input": text,
+                }
+                if provider == "gemini" and isinstance(dims, int) and dims > 0:
+                    kwargs["dimensions"] = dims
+                
+                response = llm_handler.embeddings.create(**kwargs)
                 embedding = response.data[0].embedding
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
                 total_tokens = response.usage.total_tokens if response.usage else 0

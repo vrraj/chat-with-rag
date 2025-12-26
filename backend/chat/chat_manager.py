@@ -83,9 +83,9 @@ _SUMMARY_NS_LAST_SEEN: Dict[str, float] = {}
 
 
 # --- LLM call helper (OpenAI-first, via llm_handler facade) ---
-# NOTE: This is a compatibility shim only. It preserves existing behavior by reusing the
-# same OpenAI client created by `get_client()` (which uses `settings.openai_api_key`).
-# This avoids relying on environment variables inside llm_handler.
+# NOTE: This is a compatibility shim only. It preserves existing behavior by routing to
+# `llm_handler.responses.create(**kwargs)`. This avoids relying on environment variables
+# inside llm_handler.
 
 
 def _responses_create(provider: str | None = None, **kwargs: Any):

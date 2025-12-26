@@ -14,6 +14,7 @@ import re
 from collections import Counter
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
+from backend.llm.llm_handler import llm_handler
 
 logger = logging.getLogger("backend.chat.overview")
 
@@ -285,7 +286,6 @@ def run_overview(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     """
     settings = deps.get("settings")
     db = deps.get("db")
-    get_client = deps.get("get_client")
     log_origin = str(deps.get("log_origin", "overview"))
     req_id = deps.get("request_id", "")
 
@@ -321,9 +321,8 @@ def run_overview(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     temperature = float(getattr(settings, "inference_temperature", 0.3))
     max_out = int(getattr(settings, "max_inference_output_tokens", 300))
 
-    client = get_client()
     logger.info("[OVERVIEW] (%s#%s) Attempting Responses API with model=%s", log_origin, req_id, model)
-    resp = client.responses.create(
+    resp = llm_handler.responses.create(
         model=model,
         input=prompt,
         temperature=temperature,
