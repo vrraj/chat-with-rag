@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from pydantic import BaseModel
+from backend.api.endpoints import model_keys as model_keys_endpoint
 
 
 class ClearChatRequest(BaseModel):
@@ -147,6 +148,9 @@ try:
     app.include_router(stream_stages_router, prefix="/chat")
 except Exception as _e:
     logger.warning("SSE stream routes could not be registered: %s", _e)
+
+# Expose backend model registry for frontend consumption
+app.include_router(model_keys_endpoint.router, tags=["3. Search & Chat"])
 
 # Configure static file serving
 # This allows the frontend to be served from the same server as the API
@@ -1470,12 +1474,21 @@ def delete_by_base_url(request: DeleteByBaseURLRequest, http_request: Request):
 
 class ModelConfig(BaseModel):
     """Model configuration response model."""
+    # Concrete model names (for debug / compatibility)
     embedding_model: Optional[str] = None
     re_ranker_model: Optional[str] = None
     query_rewrite_model: Optional[str] = None
     summarizer_model: Optional[str] = None
     inference_model: Optional[str] = None
-    # runtime defaults exposed for frontend
+
+    # Stable model profile keys from Settings (source of truth for defaults)
+    embedding_model_key: Optional[str] = None
+    rewrite_model_key: Optional[str] = None
+    rerank_model_key: Optional[str] = None
+    summarizer_model_key: Optional[str] = None
+    inference_model_key: Optional[str] = None
+
+    # Runtime defaults exposed for frontend controls
     score_threshold: Optional[float] = None
     top_k: Optional[int] = None
     summarizer_max_input_tokens: Optional[int] = None
@@ -1500,13 +1513,34 @@ async def get_model_config():
         value = getattr(settings, name, None)
         return value if value is not None else None
     
+    # Resolve embedding model from provider key to actual model name
+    embedding_model_display = None
+    try:
+        from backend.embeddings.specs import resolve_embedding_spec
+        emb_spec = resolve_embedding_spec(settings)
+        if emb_spec and emb_spec.get("model"):
+            embedding_model_display = emb_spec["model"]
+    except Exception as e:
+        logger.debug("Failed to resolve embedding spec for display: %s", e)
+        # Fallback to provider key if resolution fails
+        embedding_model_display = get_model_setting("embedding_model")
+    
     return ModelConfig(
-        embedding_model=get_model_setting("embedding_model"),
+        # Concrete model names
+        embedding_model=embedding_model_display,
         re_ranker_model=get_model_setting("re_ranker_model"),
         query_rewrite_model=get_model_setting("rewrite_model"),
         summarizer_model=get_model_setting("summarizer_model"),
         inference_model=get_model_setting("inference_model"),
-        # expose a small set of runtime defaults so the frontend can pre-populate form fields
+
+        # Stable model profile keys from Settings
+        embedding_model_key=get_model_setting("embedding_model_key"),
+        rewrite_model_key=get_model_setting("rewrite_model_key"),
+        rerank_model_key=get_model_setting("rerank_model_key"),
+        summarizer_model_key=get_model_setting("summarizer_model_key"),
+        inference_model_key=get_model_setting("inference_model_key"),
+
+        # Runtime defaults so the frontend can pre-populate form fields
         score_threshold=get_model_setting("score_threshold"),
         top_k=get_model_setting("top_k"),
         summarizer_max_input_tokens=get_model_setting("summarizer_max_input_tokens"),

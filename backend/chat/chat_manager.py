@@ -33,7 +33,7 @@ Conversation State:
 - Automatic summarization of older messages
 """
 
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, TypedDict, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,13 @@ from backend.db import QdrantDB
 from backend.chat.web_search import WebSearchClient
 from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
+
 from backend.llm.llm_handler import llm_handler, LLMError
+# Best-effort model registry for provider+model pricing (falls back to stage pricing if unavailable)
+try:  # pragma: no cover
+    from backend.llm import model_registry as _model_registry
+except Exception:  # pragma: no cover
+    _model_registry = None  # type: ignore
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
@@ -91,6 +97,16 @@ def _responses_create(provider: str | None = None, **kwargs: Any):
     return llm_handler.create(provider=prov, model=model, input=inp, stream=stream, **kwargs)
 
 
+class StageSpec(TypedDict):
+    """Type definition for stage configuration dictionaries.
+    
+    Each stage has a provider, model, and additional keyword arguments.
+    """
+    provider: str
+    model: str
+    kwargs: Dict[str, Any]
+
+
 # --- Stage resolver (read-only; mirrors existing fields as-is) ---
 # Produces per-stage provider/model/kwargs, with provider defaulting to "openai".
 # Frontend params can override these later; for now we only read existing settings.
@@ -103,7 +119,7 @@ def resolve_stage_specs(
     prompt_input: Any,
     message: str,
     list_tools_fn: Any,
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, StageSpec]:
     """Return stage specs using current flat settings (no behavior change).
 
     Output shape:
@@ -130,12 +146,17 @@ def resolve_stage_specs(
     inference_provider_override = str(p.get("inference_provider") or "").strip()
     inference_model_override = str(p.get("inference_model") or "").strip()
 
-    # Existing flat fields (read as-is)
+    # Base models from settings (stage defaults)
     rewrite_model = getattr(settings_obj, "rewrite_model", getattr(settings_obj, "inference_model", ""))
     summarizer_model = getattr(settings_obj, "summarizer_model", getattr(settings_obj, "inference_model", ""))
     rerank_model = getattr(settings_obj, "re_ranker_model", getattr(settings_obj, "inference_model", ""))
+
+    # Inference model: allow per-request override to affect downstream defaults.
     inference_model = getattr(settings_obj, "inference_model", "")
-    tools_synth_model = getattr(settings_obj, "inference_tools_synthesis_model", inference_model)
+    effective_inference_model = (inference_model_override or inference_model)
+
+    # Tools synthesis model defaults to the *effective* inference model unless explicitly set in settings.
+    tools_synth_model = getattr(settings_obj, "inference_tools_synthesis_model", effective_inference_model)
 
     # Embedding spec: settings.embedding_model is a provider key (openai/gemini).
     # Resolve it into a provider-specific embedding model name for stage_specs consistency.
@@ -278,6 +299,14 @@ CONVO_TOTALS = {
 # Per-conversation/session totals, keyed by namespace (typically user_id:conversation_id or conversation_id)
 _CONVO_TOTALS_BY_NS: Dict[str, Dict[str, Any]] = {}
 
+class StageSpec(TypedDict):
+    """Type definition for stage configuration dictionaries.
+    
+    Each stage has a provider, model, and additional keyword arguments.
+    """
+    provider: str
+    model: str
+    kwargs: Dict[str, Any]
 
 def _new_convo_totals() -> Dict[str, Any]:
     return {
@@ -861,8 +890,79 @@ def _evict_idle_namespaces(now: float | None = None, max_idle_seconds: int | Non
 
 
 # --- Cost breakdown utility ---
-def _compute_stage_cost(stage: str, prompt_tokens: int = 0, completion_tokens: int = 0, cached_tokens: int = 0) -> Dict[str, float]:
-    """Return cost breakdown for a stage using per-million rates and COST_BASIS."""
+def _compute_stage_cost(
+    stage: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    cached_tokens: int = 0,
+    model: str | None = None,
+    provider: str | None = None,
+    model_key: str | None = None,
+) -> Dict[str, float]:
+    """Return cost breakdown for a stage using per-million rates and COST_BASIS.
+
+    Pricing resolution order:
+      1) If `backend.llm.model_registry` is available and `model` can be resolved, use provider+model pricing.
+      2) Otherwise, fall back to the existing stage-based pricing fields in settings.
+
+    NOTE: This function only affects cost math. It does NOT change any runtime behavior.
+    """
+
+    # --- 1) Model-registry pricing (preferred) ---
+    mi = None
+    try:
+        if _model_registry is not None:
+            reg = getattr(_model_registry, "REGISTRY", {}) or {}
+
+            # (a) Prefer explicit model_key when provided.
+            mk = str(model_key).strip() if model_key else ""
+            if mk and mk in reg:
+                mi = reg.get(mk)
+
+            # (b) Fall back to matching on the provider-native model string.
+            if mi is None and model:
+                m = str(model).strip()
+                p = str(provider).strip().lower() if provider else ""
+
+                # Direct key hit (supports legacy registries keyed by model name)
+                if m in reg:
+                    mi = reg.get(m)
+                else:
+                    # Match by provider+model name
+                    for _k, _v in reg.items():
+                        try:
+                            if not _v:
+                                continue
+                            if str(getattr(_v, "model", "")) == m:
+                                if not p or str(getattr(_v, "provider", "")).lower() == p:
+                                    mi = _v
+                                    break
+                        except Exception:
+                            continue
+    except Exception:
+        mi = None
+
+    if mi is not None:
+        try:
+            pricing = getattr(mi, "pricing", None)
+            in_rate = float(getattr(pricing, "input_per_mm", 0.0) or 0.0)
+            out_rate = float(getattr(pricing, "output_per_mm", 0.0) or 0.0)
+            cached_rate = float(getattr(pricing, "cached_input_per_mm", 0.0) or 0.0)
+        except Exception:
+            in_rate = out_rate = cached_rate = 0.0
+
+        cost_prompt = (prompt_tokens / COST_BASIS) * in_rate
+        cost_cached = (cached_tokens / COST_BASIS) * cached_rate
+        cost_completion = (completion_tokens / COST_BASIS) * out_rate
+        total = cost_prompt + cost_cached + cost_completion
+        return {
+            "cost_prompt": round(cost_prompt, 8),
+            "cost_cached": round(cost_cached, 8),
+            "cost_completion": round(cost_completion, 8),
+            "cost_total": round(total, 8),
+        }
+
+    # --- 2) Stage-based pricing fallback (existing behavior) ---
     if stage == "inference":
         in_rate = float(settings.inference_cost_per_MM_tokens_input)
         out_rate = float(settings.inference_cost_per_MM_tokens_output)
@@ -961,14 +1061,31 @@ class Metrics:
             "total_tokens": int(u.get("total_tokens", 0) or 0),
         }
 
-    def _cost(self, stage: str, pt: int, ct: int, cached: int) -> Dict[str, float]:
+    def _cost(self, stage: str, model: str, pt: int, ct: int, cached: int, model_key: str | None = None) -> Dict[str, float]:
         # Delegate to existing utility for a single source of truth
-        return _compute_stage_cost(stage, prompt_tokens=pt, completion_tokens=ct, cached_tokens=cached)
+        # NOTE: Costs are resolved via model_registry when possible.
+        return _compute_stage_cost(
+            stage,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            cached_tokens=cached,
+            model=model,
+            model_key=model_key,
+        )
 
     # --- Public API ---
-    def record_stage(self, stage: str, *, model: str, usage: Any | None = None,
-                     pt: int | None = None, ct: int | None = None, cached: int | None = None,
-                     extra: Dict[str, Any] | None = None) -> None:
+    def record_stage(
+        self,
+        stage: str,
+        *,
+        model: str,
+        usage: Any | None = None,
+        pt: int | None = None,
+        ct: int | None = None,
+        cached: int | None = None,
+        model_key: str | None = None,
+        extra: Dict[str, Any] | None = None,
+    ) -> None:
         """Record metrics for a pipeline stage.
         Either pass a `usage` (response or usage dict) or explicit pt/ct/cached counts.
         `extra` lets callers set fields like candidates_reranked/applied/reason.
@@ -988,22 +1105,22 @@ class Metrics:
         if stage == "embedding":
             # input-only; we treat provided pt as input_tokens
             self.turn[stage]["input_tokens"] = pt
-            c = self._cost("embedding", pt, 0, 0)
+            c = self._cost("embedding", model, pt, 0, 0, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_prompt"]
         elif stage == "rerank":
             self.turn[stage]["input_tokens"] = pt + cached
             self.turn[stage]["output_tokens"] = ct
-            c = self._cost("rerank", pt, ct, cached)
+            c = self._cost("rerank", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "summary":
             self.turn[stage]["input_tokens"] = pt + cached
             self.turn[stage]["output_tokens"] = ct
-            c = self._cost("summary", pt, ct, cached)
+            c = self._cost("summary", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "rewrite":
             self.turn[stage]["input_tokens"] = pt + cached
             self.turn[stage]["output_tokens"] = ct
-            c = self._cost("rewrite", pt, ct, cached)
+            c = self._cost("rewrite", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "inference":
             # Accumulate tokens and costs across multiple inference calls in a single turn.
@@ -1020,7 +1137,7 @@ class Metrics:
             self.turn[stage]["completion_tokens"] = ct_total
 
             # Cost for this specific call
-            c = self._cost("inference", pt, ct, cached)
+            c = self._cost("inference", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost_prompt"] = float(self.turn[stage].get("cost_prompt", 0.0)) + c["cost_prompt"]
             self.turn[stage]["cost_cached"] = float(self.turn[stage].get("cost_cached", 0.0)) + c["cost_cached"]
             self.turn[stage]["cost_completion"] = float(self.turn[stage].get("cost_completion", 0.0)) + c["cost_completion"]
@@ -1763,6 +1880,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     history: List[Dict[str, str]] = (req or {}).get("history") or []
     params: Dict[str, Any] = (req or {}).get("params") or {}
 
+    # --- Model registry keys (cost-only) ---
+    # Optional stable model aliases from params, used ONLY for accurate cost lookup.
+    _mk = lambda k: (str(params.get(k)).strip() or None) if params.get(k) is not None else None
+    _stage_model_keys = {s: _mk(f"{s}_model_key") for s in ("embedding", "rewrite", "summary", "rerank", "inference", "tools_synth")}
+    _stage_model_keys["tools_synth"] = _stage_model_keys.get("tools_synth") or _stage_model_keys.get("inference")
+
     # Per-UI control for whether to append Sources: blocks and structured sources.
     # Mode is set by frontends (e.g. chat.js, chat-embed.js) via params.mode.
     try:
@@ -1882,13 +2005,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     if (not _from_cache_rw) and _u_rw:
                         _summary_model_used = str(
                             (sum_spec or {}).get("model")
-                            or getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
+                            or getattr(settings_obj, "summarizer_model", settings_obj.inference_model)
                         )
                         m.record_stage(
                             "summary",
                             model=_summary_model_used,
                             usage=_u_rw,
                             extra={"applied": False, "reason": "rewrite_pre_summary"},
+                            model_key=(_stage_model_keys or {}).get("summary"),
                         )
                 if tail_rw or summary_rw:
                     rw_spec = (stage_specs or {}).get("rewrite") or {}
@@ -1898,7 +2022,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     accepted = bool(rw.get("changed")) and (not rw.get("ambiguous")) and (float(rw.get("confidence", 0.0) or 0.0) >= threshold)
                     if usage_rw:
                         _rw_m = str(((rw_spec or {}).get("model")) or getattr(settings_obj, "rewrite_model", settings_obj.inference_model))
-                        m.record_stage("rewrite", model=_rw_m, usage=usage_rw, extra={"applied": True, "reason": ("accepted" if accepted else "rejected")})
+                        m.record_stage(
+                            "rewrite", 
+                            model=_rw_m, 
+                            usage=usage_rw, 
+                            extra={"applied": True, "reason": ("accepted" if accepted else "rejected")},
+                            model_key=(_stage_model_keys or {}).get("rewrite"),
+                            )
                     if accepted:
                         effective_query = rw.get("rewritten") or message
                         logger.info("[REWRITE] (%s) accepted >=%s", log_origin, threshold)
@@ -2099,7 +2229,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
     except Exception:
         embed_tokens = 0
-    m.record_stage("embedding", model=getattr(settings_obj, "embedding_model", "embedding"), pt=embed_tokens)
+    m.record_stage(
+        "embedding", 
+        model=getattr(settings_obj, "embedding_model", "embedding"), 
+        pt=embed_tokens,
+        model_key=(_stage_model_keys or {}).get("embedding"),
+    )
 
 # Stage: Rerank Retrieval Results
     
@@ -2236,6 +2371,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 model=_model,
                 usage=usage_rr,
                 extra={"candidates_reranked": n},
+                model_key=(_stage_model_keys or {}).get("rerank"),
             )
         except Exception as e:
             logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
@@ -2281,7 +2417,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     model=_summary_model_used,
                     usage=_u_inf,
                     extra={"applied": True, "reason": f"prev {window_turns} turns (before last {raw_tail} turns)"},
-                )
+                    model_key=(_stage_model_keys or {}).get("summary"),
+                    )
         if verbatim_tail:
             tail_lines: List[str] = []
             trimmed = 0
@@ -2449,7 +2586,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     usage_inf = _extract_usage_from_responses(resp_inf)
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
-        m.record_stage("inference", model=_inf_model, usage=usage_inf)
+        m.record_stage(
+            "inference",
+            model=_inf_model,
+            usage=usage_inf,
+            model_key=(_stage_model_keys or {}).get("inference"),
+        )
 
     # Stage: Tool Calls
     # --- Tool Calls - Single pass thru all tools required
@@ -2614,7 +2756,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined: %s  and answer_override %s ", combined, answer_override)
                 usage_synth = _extract_usage_from_responses(resp_synth)
                 if usage_synth:
-                    m.record_stage("inference", model=_ts_model, usage=usage_synth)
+                    m.record_stage(
+                        "inference",
+                        model=_ts_model,
+                        usage=usage_synth,
+                        model_key=(_stage_model_keys or {}).get("tools_synth"),
+                    )
             except Exception as ex:
                 logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, ex, exc_info=True)
                 answer_override = _format_tool_fallback(tool_answer_text, tools_text)

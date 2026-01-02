@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     openai_api_key: str
     openai_api_base: str = "https://api.openai.com/v1"  # for future use
+    gemini_api_key: str
+    gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta/openai/"  # for future use
+
     frontend: FrontendConfig = FrontendConfig()  # Configuration for frontend forms and document indexing (HTML/PDF/MediaWiki)
 
     # -------------------------------------------------------------------------
@@ -131,6 +134,7 @@ class Settings(BaseSettings):
     top_k: int = 8  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
+
 
     # -------------------------------------------------------------------------
     # 3) Embeddings
@@ -159,6 +163,25 @@ class Settings(BaseSettings):
 
     # Cost basis tokens
     cost_basis_tokens: int = 1_000_000
+
+    # -------------------------------------------------------------------------
+    # 3B) LLM model profiles (registry keys)
+    # -------------------------------------------------------------------------
+    # Model keys are stable aliases that map to provider/model/pricing in model_registry.py.
+    # Examples: "openai:fast", "openai:best", "gemini:fast", "openai:embed_small".
+
+    # Embeddings profile key (should align with `embedding_model` provider selector).
+    embedding_model_key: str = "openai:embed_small"
+
+    # Stage model profile keys
+    rewrite_model_key: str = "openai:fast"
+    rerank_model_key: str = "openai:fast"
+    summarizer_model_key: str = "openai:fast"
+
+    inference_model_key: str = "openai:fast"
+
+    # If unset, tools synthesis inherits the inference model_key.
+    tools_synth_model_key: str | None = None
 
     # -------------------------------------------------------------------------
     # 4) Re-ranker

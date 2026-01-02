@@ -1,9 +1,19 @@
-# Data Attribution
+# 📄 Data Attribution & Licensing
 
-The optional seed dataset (`data/docs-index-seed.jsonl`) includes content derived from [Wikipedia](https://www.wikipedia.org/). Links to the 55 specific source URLs, necessary for author attribution, are included as metadata within the dataset file itself.
+This project utilizes a sample knowledge base to demonstrate its RAG capabilities. We believe in transparent data sourcing and respect for open-content creators.
 
-This content is licensed under the
-[Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/).
+## 📚 Wikipedia Content
+The optional seed dataset (`data/docs-index-seed.jsonl`) contains content derived from [Wikipedia](https://www.wikipedia.org/). 
 
-Changes have been made for demonstration purposes (e.g., segmentation, cleaning, and conversion to vector embeddings).  
-This project is not affiliated with or endorsed by the Wikimedia Foundation.
+* **Source:** 55 specific articles across diverse topics.
+* **Attribution:** Individual source URLs and author attribution metadata are preserved within the metadata fields of the `.jsonl` file and the Qdrant vector payload.
+* **License:** This content is licensed under the [Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/).
+
+## ⚖️ Derivative Work & License Notice
+In accordance with the **Share-Alike (SA)** provision of the CC BY-SA 4.0 license:
+1.  **Modifications:** The original text has been transformed through cleaning, semantic segmentation (chunking), and conversion into vector embeddings for use within this RAG pipeline.
+2.  **Dataset License:** The resulting derivative dataset (`data/docs-index-seed.jsonl`) is hereby released under the same **CC BY-SA 4.0** license.
+3.  **Disclaimer:** This project is an independent educational tool and is not affiliated with, sponsored by, or endorsed by the Wikimedia Foundation.
+
+---
+*For questions regarding the data processing pipeline, please refer to the [Technical Overview](./TECHNICAL_OVERVIEW.md).*
