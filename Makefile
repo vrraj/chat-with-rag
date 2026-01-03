@@ -50,7 +50,7 @@ start:
 
 	@echo "Qdrant and Chat application started successfully."
 	@echo "Access the application at: http://localhost:8000"
-	echo "Qdrant and Chat application started successfully."
+	@echo "Qdrant and Chat application started successfully."
 
 # Stop the application - all Docker containers
 stop:

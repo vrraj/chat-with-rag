@@ -1,0 +1,33 @@
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+virtualenv/
+
+# --- Python Junk ---
+**/__pycache__/
+**/*.py[cod]
+**/*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Secrets and Config ---
+.env
+.env.*
+!.env.example
+secrets.json
+
+# --- Git ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Project Artifacts ---
+logs/
+app_logs/
+qdrant_storage/
+
+# --- OS Junk ---
+.DS_Store
+Thumbs.db
