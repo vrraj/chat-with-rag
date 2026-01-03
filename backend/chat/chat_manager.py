@@ -1024,7 +1024,28 @@ class Metrics:
             "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "cost": 0.0},
             "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
             "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
-            "inference": {"model": settings_obj.inference_model, "prompt_tokens": 0, "prompt_cached_tokens": 0, "completion_tokens": 0, "cost_prompt": 0.0, "cost_cached": 0.0, "cost_completion": 0.0, "cost_total": 0.0},
+            # Inference pass #1 (initial answer / tool-planning)
+            "inference": {
+                "model": settings_obj.inference_model,
+                "prompt_tokens": 0,
+                "prompt_cached_tokens": 0,
+                "completion_tokens": 0,
+                "cost_prompt": 0.0,
+                "cost_cached": 0.0,
+                "cost_completion": 0.0,
+                "cost_total": 0.0,
+            },
+            # Inference pass #2 (tool synthesis). Mirrors inference shape for UI consistency.
+            "inference_tools_synth": {
+                "model": getattr(settings_obj, "inference_tools_synthesis_model", settings_obj.inference_model),
+                "prompt_tokens": 0,
+                "prompt_cached_tokens": 0,
+                "completion_tokens": 0,
+                "cost_prompt": 0.0,
+                "cost_cached": 0.0,
+                "cost_completion": 0.0,
+                "cost_total": 0.0,
+            },
             "totals": {"tokens": {"turn_total": 0}, "cost": {"turn_total": 0.0}},
         }
         # Module-level accumulator reference (shared per process)
@@ -1122,7 +1143,7 @@ class Metrics:
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rewrite", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
-        elif stage == "inference":
+        elif stage in ("inference", "inference_tools_synth"):
             # Accumulate tokens and costs across multiple inference calls in a single turn.
             prev_pt = int(self.turn[stage].get("prompt_tokens") or 0)
             prev_ck = int(self.turn[stage].get("prompt_cached_tokens") or 0)
@@ -1136,7 +1157,7 @@ class Metrics:
             self.turn[stage]["prompt_cached_tokens"] = ck_total
             self.turn[stage]["completion_tokens"] = ct_total
 
-            # Cost for this specific call
+            # Cost for this specific call (still priced under the "inference" stage)
             c = self._cost("inference", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost_prompt"] = float(self.turn[stage].get("cost_prompt", 0.0)) + c["cost_prompt"]
             self.turn[stage]["cost_cached"] = float(self.turn[stage].get("cost_cached", 0.0)) + c["cost_cached"]
@@ -1158,9 +1179,21 @@ class Metrics:
         sout = int(self.turn["summary"].get("output_tokens") or 0)
         rwin = int(self.turn["rewrite"].get("input_tokens") or 0)
         rwout = int(self.turn["rewrite"].get("output_tokens") or 0)
-        ip = int(self.turn["inference"].get("prompt_tokens") or 0)
-        ik = int(self.turn["inference"].get("prompt_cached_tokens") or 0)
-        ic = int(self.turn["inference"].get("completion_tokens") or 0)
+
+        # Inference pass #1
+        ip1 = int(self.turn["inference"].get("prompt_tokens") or 0)
+        ik1 = int(self.turn["inference"].get("prompt_cached_tokens") or 0)
+        ic1 = int(self.turn["inference"].get("completion_tokens") or 0)
+
+        # Inference pass #2 (tool synthesis)
+        ip2 = int(self.turn["inference_tools_synth"].get("prompt_tokens") or 0)
+        ik2 = int(self.turn["inference_tools_synth"].get("prompt_cached_tokens") or 0)
+        ic2 = int(self.turn["inference_tools_synth"].get("completion_tokens") or 0)
+
+        # Combined for totals/conversation metrics
+        ip = ip1 + ip2
+        ik = ik1 + ik2
+        ic = ic1 + ic2
 
         # NOTE: cached tokens are a subset of prompt/input tokens; do NOT add them again to totals.
         total_tokens = emb + rin + rout + sin + sout + rwin + rwout + ip + ic
@@ -1172,6 +1205,7 @@ class Metrics:
             + float(self.turn["summary"].get("cost") or 0.0)
             + float(self.turn["rewrite"].get("cost") or 0.0)
             + float(self.turn["inference"].get("cost_total") or 0.0)
+            + float(self.turn["inference_tools_synth"].get("cost_total") or 0.0)
         )
         self.turn["totals"]["cost"]["turn_total"] = round(total_cost, 8)
 
@@ -2757,7 +2791,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 usage_synth = _extract_usage_from_responses(resp_synth)
                 if usage_synth:
                     m.record_stage(
-                        "inference",
+                        "inference_tools_synth",
                         model=_ts_model,
                         usage=usage_synth,
                         model_key=(_stage_model_keys or {}).get("tools_synth"),

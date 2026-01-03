@@ -221,14 +221,24 @@
 
           
           <!-- Inference -->
-          <div class="metric group-label">Inference</div>
+          <div class="metric group-label">Inference #1</div>
           <div class="metric"><span class="metric-label">Prompt Tokens</span><span id="prompt_tokens" class="metric-value" data-metric="turn_metrics.inference.prompt_tokens">0</span></div>
-          <div class="metric"><span class="metric-label">Cached Tokens</span><span id="inference_cached_tokens" class="metric-value" data-metric="turn_metrics.inference.prompt_cached_tokens">0</span></div>
-          <div class="metric"><span class="metric-label">Completion Tokens</span><span id="completion_tokens" class="metric-value" data-metric="turn_metrics.inference.completion_tokens">0</span></div>
+          <div class="metric"><span class="metric-label">Output Tokens</span><span id="completion_tokens" class="metric-value" data-metric="turn_metrics.inference.completion_tokens">0</span></div>
           <div class="metric"><span class="metric-label">Total Tokens</span><span id="total_tokens" class="metric-value" data-sum="turn_metrics.inference.prompt_tokens, turn_metrics.inference.prompt_cached_tokens, turn_metrics.inference.completion_tokens">0</span></div>
           <div class="metric"><span class="metric-label">Prompt Cost</span><span id="prompt_cost" class="metric-value" data-metric="turn_metrics.inference.cost_prompt">0</span></div>
-          <div class="metric"><span class="metric-label">Completion Cost</span><span id="completion_cost" class="metric-value" data-metric="turn_metrics.inference.cost_completion">0</span></div>
+          <div class="metric"><span class="metric-label">Output Cost</span><span id="completion_cost" class="metric-value" data-metric="turn_metrics.inference.cost_completion">0</span></div>
           <div class="metric"><span class="metric-label">Inference <b>Total</b> Cost</span><span id="total_cost" class="metric-value" data-metric="turn_metrics.inference.cost_total">0</span></div>
+
+          <!-- Inference #2 (Tool Synthesis) - optional, shown when backend provides metrics -->
+          <div id="inference2_block">
+            <div class="metric group-label">Inference #2 (Tool Synthesis)</div>
+            <div class="metric"><span class="metric-label">Prompt Tokens</span><span class="metric-value" data-metric="turn_metrics.inference_tools_synth.prompt_tokens">0</span></div>
+            <div class="metric"><span class="metric-label">Output Tokens</span><span class="metric-value" data-metric="turn_metrics.inference_tools_synth.completion_tokens">0</span></div>
+            <div class="metric"><span class="metric-label">Total Tokens</span><span class="metric-value" data-sum="turn_metrics.inference_tools_synth.prompt_tokens, turn_metrics.inference_tools_synth.prompt_cached_tokens, turn_metrics.inference_tools_synth.completion_tokens">0</span></div>
+            <div class="metric"><span class="metric-label">Prompt Cost</span><span class="metric-value" data-metric="turn_metrics.inference_tools_synth.cost_prompt">0</span></div>
+            <div class="metric"><span class="metric-label">Output Cost</span><span class="metric-value" data-metric="turn_metrics.inference_tools_synth.cost_completion">0</span></div>
+            <div class="metric"><span class="metric-label">Inference #2 <b>Total</b> Cost</span><span class="metric-value" data-metric="turn_metrics.inference_tools_synth.cost_total">0</span></div>
+          </div>
 
           <div class="metric sep"></div>
  

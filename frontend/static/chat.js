@@ -534,6 +534,28 @@
       el.textContent = total;
     });
 
+    // Optionally hide Inference #2 (Tool Synthesis) block when all its metrics are zero.
+    try {
+      const block = document.getElementById('inference2_block');
+      if (block) {
+        const paths = [
+          'turn_metrics.inference_tools_synth.prompt_tokens',
+          'turn_metrics.inference_tools_synth.prompt_cached_tokens',
+          'turn_metrics.inference_tools_synth.completion_tokens',
+          'turn_metrics.inference_tools_synth.cost_prompt',
+          'turn_metrics.inference_tools_synth.cost_completion',
+          'turn_metrics.inference_tools_synth.cost_total',
+        ];
+        const anyNonZero = paths.some(p => {
+          const v = deepGet(data, p, 0);
+          return toNumber(v, 0) !== 0;
+        });
+        block.style.display = anyNonZero ? '' : 'none';
+      }
+    } catch (e) {
+      console.debug('Failed to toggle inference2_block visibility', e);
+    }
+
     // Backward-compat: if only legacy metrics were returned, map what we can.
     if (!data.turn_metrics && data.metrics) {
       const m = data.metrics;
