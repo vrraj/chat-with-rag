@@ -782,6 +782,10 @@ def _summarize_messages_with_cache(
         logger.debug(f"{log_prefix} summary cache MISS -> stored; len=%d", len(summary_text))
         usage = _extract_usage_from_responses(resp)
         return summary_text, False, usage
+    except LLMError:
+        # Let LLMError (including rate_limit) propagate so outer callers can
+        # apply consistent quota handling and surface clear messages.
+        raise
     except Exception as e:
         logger.warning(f"{log_prefix} summary failed: %s", e, exc_info=True)
         return "", False, None
@@ -1574,6 +1578,51 @@ def rewrite_query(
             "reason": reason,
             "_usage": usage,
         }
+    except LLMError as e:
+        # Special-case provider rate limits so callers can surface a clear message
+        # instead of treating this as an ambiguous query.
+        try:
+            kind = getattr(e, "kind", "") or ""
+            provider = getattr(e, "provider", "") or ""
+            model = getattr(e, "model", "") or ""
+        except Exception:
+            kind = ""
+            provider = ""
+            model = ""
+
+        if kind == "rate_limit":
+            logger.warning(
+                "%s provider rate limit in rewrite: provider=%s model=%s error=%s",
+                log_prefix,
+                provider,
+                model,
+                e,
+                exc_info=True,
+            )
+            # Mark as a rate-limit condition without flagging ambiguity so the
+            # pipeline can handle this distinctly (e.g., by emitting a final
+            # quota-exceeded message instead of entering Clarify).
+            return {
+                "rewritten": message,
+                "changed": False,
+                "confidence": 0.0,
+                "ambiguous": False,
+                "reason": "llm_rate_limit",
+                "_usage": None,
+                "_provider": provider,
+                "_model": model,
+            }
+
+        # Non-rate-limit LLMErrors are treated as generic rewrite failures.
+        logger.warning("[REWRITE] failed with LLMError; using original: %s", e, exc_info=True)
+        return {
+            "rewritten": message,
+            "changed": False,
+            "confidence": 0.0,
+            "ambiguous": True,
+            "reason": "rewrite_error_or_ambiguous",
+            "_usage": None,
+        }
     except Exception as e:
         # Never let rewrite failures affect the main flow
         logger.warning("[REWRITE] failed to parse/produce JSON: %s", e, exc_info=True)
@@ -2024,17 +2073,78 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     # Prefix tag with namespace if provided to isolate cache entries by conversation
                     _tag_rw = (f"{namespace}|rewrite" if namespace else "rewrite")
                     sum_spec = (stage_specs or {}).get("summary") or {}
-                    summary_rw, _from_cache_rw, _u_rw = _summarize_messages_with_cache(
-                        to_sum_rw,
-                        cache,
-                        tag=_tag_rw,
-                        model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
-                        temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
-                        max_input_tokens=int(getattr(settings_obj, "summarizer_max_input_tokens", 512)),
-                        max_output_tokens=int(getattr(settings_obj, "summarizer_max_output_tokens", 128)),
-                        log_prefix=f"[REWRITE] {log_origin}",
-                        stage_spec=sum_spec,
-                    )
+                    try:
+                        summary_rw, _from_cache_rw, _u_rw = _summarize_messages_with_cache(
+                            to_sum_rw,
+                            cache,
+                            tag=_tag_rw,
+                            model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
+                            temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
+                            max_input_tokens=int(getattr(settings_obj, "summarizer_max_input_tokens", 512)),
+                            max_output_tokens=int(getattr(settings_obj, "summarizer_max_output_tokens", 128)),
+                            log_prefix=f"[REWRITE] {log_origin}",
+                            stage_spec=sum_spec,
+                        )
+                    except LLMError as e:
+                        # Surface rate limits from the summarizer used during rewrite pre-summary.
+                        kind = getattr(e, "kind", "") or ""
+                        if kind == "rate_limit":
+                            try:
+                                _prov = str(getattr(e, "provider", "") or "").strip() or "the summarizer provider"
+                                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified summarizer model)"
+                                quota_msg = (
+                                    f"Our summarizer model (provider={_prov}, model={_model}) "
+                                    "is currently over its rate-limit or quota. I couldn't "
+                                    "prepare the query rewrite safely, so this turn has been "
+                                    "stopped. Please try again later or contact the "
+                                    "administrator to increase the quota."
+                                )
+                            except Exception:
+                                quota_msg = (
+                                    "The summarizer model is currently over its rate limit or quota. "
+                                    "Please try again later."
+                                )
+
+                            try:
+                                emit_stage(
+                                    req_id,
+                                    "Final Answer",
+                                    final=True,
+                                    finalContent=quota_msg,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                close_stream(req_id)
+                            except Exception:
+                                pass
+                            try:
+                                m.finalize_turn()
+                                turn_metrics, convo_snapshot = m.snapshot()
+                            except Exception:
+                                turn_metrics = m.turn
+                                convo_snapshot = {
+                                    "tokens": {
+                                        "embedding": 0,
+                                        "llm_input": 0,
+                                        "llm_output": 0,
+                                        "conversation_total": 0,
+                                    },
+                                    "cost": {"conversation_total": 0.0},
+                                }
+                            return {
+                                "answer": quota_msg,
+                                "sources": [],
+                                "turn_metrics": turn_metrics,
+                                "conversation_totals": convo_snapshot,
+                                "metrics": {"vectors_retrieved": 0},
+                                "tools_used": [],
+                                "rewrite_display": rewrite_display,
+                            }
+
+                        # Non-rate-limit LLMErrors fall back to the outer rewrite error handler.
+                        raise
+
                     # Record rewrite pre-summary usage as part of the summary bucket (cache misses only).
                     if (not _from_cache_rw) and _u_rw:
                         _summary_model_used = str(
@@ -2053,6 +2163,63 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     rw = rewrite_query(tail_rw, summary_rw, message, log_prefix=f"[REWRITE] {log_origin}", stage_spec=rw_spec)
                     threshold = float(thr)
                     usage_rw = rw.get("_usage") if isinstance(rw, dict) else None
+
+                    # If the rewrite step hit a provider rate limit (e.g., Gemini quota),
+                    # short-circuit the turn with a clear, user-visible message rather
+                    # than entering the Clarify path.
+                    if isinstance(rw, dict) and rw.get("reason") == "llm_rate_limit":
+                        try:
+                            _prov = str(rw.get("_provider") or "").strip() or "the rewrite provider"
+                            _model = str(rw.get("_model") or "").strip() or "(unspecified model)"
+                            quota_msg = (
+                                f"Our query rewrite model (provider={_prov}, model={_model}) "
+                                "is currently over its rate-limit or quota. I couldn't safely rewrite your "
+                                "question, so this turn has been stopped. Please try again later "
+                                "or contact the administrator to increase the quota."
+                            )
+                        except Exception:
+                            quota_msg = (
+                                "The rewrite model is currently over its rate limit or quota. "
+                                "Please try again later."
+                            )
+
+                        try:
+                            emit_stage(
+                                req_id,
+                                "Final Answer",
+                                final=True,
+                                finalContent=quota_msg,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            close_stream(req_id)
+                        except Exception:
+                            pass
+                        try:
+                            m.finalize_turn()
+                            turn_metrics, convo_snapshot = m.snapshot()
+                        except Exception:
+                            turn_metrics = m.turn
+                            convo_snapshot = {
+                                "tokens": {
+                                    "embedding": 0,
+                                    "llm_input": 0,
+                                    "llm_output": 0,
+                                    "conversation_total": 0,
+                                },
+                                "cost": {"conversation_total": 0.0},
+                            }
+                        return {
+                            "answer": quota_msg,
+                            "sources": [],
+                            "turn_metrics": turn_metrics,
+                            "conversation_totals": convo_snapshot,
+                            "metrics": {"vectors_retrieved": 0},
+                            "tools_used": [],
+                            "rewrite_display": rewrite_display,
+                        }
+
                     accepted = bool(rw.get("changed")) and (not rw.get("ambiguous")) and (float(rw.get("confidence", 0.0) or 0.0) >= threshold)
                     if usage_rw:
                         _rw_m = str(((rw_spec or {}).get("model")) or getattr(settings_obj, "rewrite_model", settings_obj.inference_model))
@@ -2243,14 +2410,75 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     except Exception:
         pass
     # --- Retrieve
-    results = db.search_similar(
-        query=effective_query,
-        limit=int(top_k),
-        score_threshold=float(score_threshold),
-        with_vectors=False,
-        with_payload=True,
-        exact=True,
-    )
+    try:
+        results = db.search_similar(
+            query=effective_query,
+            limit=int(top_k),
+            score_threshold=float(score_threshold),
+            with_vectors=False,
+            with_payload=True,
+            exact=True,
+        )
+    except LLMError as e:
+        # Surface embedding/provider rate limits that occur during retrieval.
+        kind = getattr(e, "kind", "") or ""
+        if kind == "rate_limit":
+            try:
+                _prov = str(getattr(e, "provider", "") or "").strip() or "the embedding provider"
+                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified embedding model)"
+                quota_msg = (
+                    f"Our embedding model (provider={_prov}, model={_model}) "
+                    "is currently over its rate-limit or quota. I couldn't "
+                    "retrieve context safely, so this turn has been stopped. "
+                    "Please try again later or contact the administrator to "
+                    "increase the quota."
+                )
+            except Exception:
+                quota_msg = (
+                    "The embedding model is currently over its rate limit or quota. "
+                    "Please try again later."
+                )
+
+            try:
+                emit_stage(
+                    req_id,
+                    "Final Answer",
+                    final=True,
+                    finalContent=quota_msg,
+                )
+            except Exception:
+                pass
+            try:
+                close_stream(req_id)
+            except Exception:
+                pass
+            try:
+                m.finalize_turn()
+                turn_metrics, convo_snapshot = m.snapshot()
+            except Exception:
+                turn_metrics = m.turn
+                convo_snapshot = {
+                    "tokens": {
+                        "embedding": 0,
+                        "llm_input": 0,
+                        "llm_output": 0,
+                        "conversation_total": 0,
+                    },
+                    "cost": {"conversation_total": 0.0},
+                }
+            return {
+                "answer": quota_msg,
+                "sources": [],
+                "turn_metrics": turn_metrics,
+                "conversation_totals": convo_snapshot,
+                "metrics": {"vectors_retrieved": 0},
+                "tools_used": [],
+                "rewrite_display": rewrite_display,
+            }
+
+        # Non-rate-limit LLMErrors fall back to the outer handler.
+        raise
+
     n = len(results) if results else 0
     logger.debug("[RETRIEVE] (%s) Qdrant returned %d", log_origin, n)
 
@@ -2407,6 +2635,65 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 extra={"candidates_reranked": n},
                 model_key=(_stage_model_keys or {}).get("rerank"),
             )
+        except LLMError as e:
+            # Surface provider rate limits with a clear final answer instead of silently
+            # falling back when the rerank model is over its rate limit or quota.
+            kind = getattr(e, "kind", "") or ""
+            if kind == "rate_limit":
+                try:
+                    _prov = str(getattr(e, "provider", "") or "").strip() or "the rerank provider"
+                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                    quota_msg = (
+                        f"Our rerank model (provider={_prov}, model={_model}) "
+                        "is currently over its rate-limit or quota. I couldn't rerank "
+                        "your results safely, so this turn has been stopped. Please try "
+                        "again later or contact the administrator to increase the quota."
+                    )
+                except Exception:
+                    quota_msg = (
+                        "The rerank model is currently over its rate limit or quota. "
+                        "Please try again later."
+                    )
+
+                try:
+                    emit_stage(
+                        req_id,
+                        "Final Answer",
+                        final=True,
+                        finalContent=quota_msg,
+                    )
+                except Exception:
+                    pass
+                try:
+                    close_stream(req_id)
+                except Exception:
+                    pass
+                try:
+                    m.finalize_turn()
+                    turn_metrics, convo_snapshot = m.snapshot()
+                except Exception:
+                    turn_metrics = m.turn
+                    convo_snapshot = {
+                        "tokens": {
+                            "embedding": 0,
+                            "llm_input": 0,
+                            "llm_output": 0,
+                            "conversation_total": 0,
+                        },
+                        "cost": {"conversation_total": 0.0},
+                    }
+                return {
+                    "answer": quota_msg,
+                    "sources": [],
+                    "turn_metrics": turn_metrics,
+                    "conversation_totals": convo_snapshot,
+                    "metrics": {"vectors_retrieved": 0},
+                    "tools_used": [],
+                    "rewrite_display": rewrite_display,
+                }
+
+            logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
+            reranked = results[:kept]
         except Exception as e:
             logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
             reranked = results[:kept]
@@ -2433,17 +2720,78 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             # Prefix tag with namespace if provided to isolate cache entries by conversation
             _tag_inf = (f"{namespace}|inference" if namespace else "inference")
             sum_spec = (stage_specs or {}).get("summary") or {}
-            summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
-                to_summarize,
-                cache,
-                tag=_tag_inf,
-                model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
-                temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
-                max_input_tokens=sum_in,
-                max_output_tokens=sum_out,
-                log_prefix=f"[SUMMARY] {log_origin}",
-                stage_spec=sum_spec,
-            )
+            try:
+                summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
+                    to_summarize,
+                    cache,
+                    tag=_tag_inf,
+                    model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
+                    temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
+                    max_input_tokens=sum_in,
+                    max_output_tokens=sum_out,
+                    log_prefix=f"[SUMMARY] {log_origin}",
+                    stage_spec=sum_spec,
+                )
+            except LLMError as e:
+                # Surface rate limits from the summarizer model as a clear final answer.
+                kind = getattr(e, "kind", "") or ""
+                if kind == "rate_limit":
+                    try:
+                        _prov = str(getattr(e, "provider", "") or "").strip() or "the summarizer provider"
+                        _model = str(getattr(e, "model", "") or "").strip() or "(unspecified summarizer model)"
+                        quota_msg = (
+                            f"Our summarizer model (provider={_prov}, model={_model}) "
+                            "is currently over its rate-limit or quota. I couldn't "
+                            "summarize the chat history safely, so this turn has been "
+                            "stopped. Please try again later or contact the "
+                            "administrator to increase the quota."
+                        )
+                    except Exception:
+                        quota_msg = (
+                            "The summarizer model is currently over its rate limit or quota. "
+                            "Please try again later."
+                        )
+
+                    try:
+                        emit_stage(
+                            req_id,
+                            "Final Answer",
+                            final=True,
+                            finalContent=quota_msg,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        close_stream(req_id)
+                    except Exception:
+                        pass
+                    try:
+                        m.finalize_turn()
+                        turn_metrics, convo_snapshot = m.snapshot()
+                    except Exception:
+                        turn_metrics = m.turn
+                        convo_snapshot = {
+                            "tokens": {
+                                "embedding": 0,
+                                "llm_input": 0,
+                                "llm_output": 0,
+                                "conversation_total": 0,
+                            },
+                            "cost": {"conversation_total": 0.0},
+                        }
+                    return {
+                        "answer": quota_msg,
+                        "sources": [],
+                        "turn_metrics": turn_metrics,
+                        "conversation_totals": convo_snapshot,
+                        "metrics": {"vectors_retrieved": 0},
+                        "tools_used": [],
+                        "rewrite_display": rewrite_display,
+                    }
+
+                # Non-rate-limit LLMErrors fall through to the generic summary error handler.
+                raise
+
             if not _from_cache_inf and _u_inf:
                 _summary_model_used = str((sum_spec or {}).get("model") or getattr(settings_obj, "summarizer_model", settings_obj.inference_model))
                 m.record_stage(
@@ -2605,11 +2953,70 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
-    resp_inf = _responses_create(
-        provider=_inf_provider,
-        model=_inf_model,
-        **_kwargs_inf,
-    )
+    try:
+        resp_inf = _responses_create(
+            provider=_inf_provider,
+            model=_inf_model,
+            **_kwargs_inf,
+        )
+    except LLMError as e:
+        kind = getattr(e, "kind", "") or ""
+        if kind == "rate_limit":
+            try:
+                _prov = str(getattr(e, "provider", "") or "").strip() or "the inference provider"
+                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                quota_msg = (
+                    f"Our inference model (provider={_prov}, model={_model}) "
+                    "is currently over its rate-limit or quota. I couldn't "
+                    "generate a response safely, so this turn has been stopped. "
+                    "Please try again later or contact the administrator to "
+                    "increase the quota."
+                )
+            except Exception:
+                quota_msg = (
+                    "The inference model is currently over its rate limit or quota. "
+                    "Please try again later."
+                )
+
+            try:
+                emit_stage(
+                    req_id,
+                    "Final Answer",
+                    final=True,
+                    finalContent=quota_msg,
+                )
+            except Exception:
+                pass
+            try:
+                close_stream(req_id)
+            except Exception:
+                pass
+            try:
+                m.finalize_turn()
+                turn_metrics, convo_snapshot = m.snapshot()
+            except Exception:
+                turn_metrics = m.turn
+                convo_snapshot = {
+                    "tokens": {
+                        "embedding": 0,
+                        "llm_input": 0,
+                        "llm_output": 0,
+                        "conversation_total": 0,
+                    },
+                    "cost": {"conversation_total": 0.0},
+                }
+            return {
+                "answer": quota_msg,
+                "sources": [],
+                "turn_metrics": turn_metrics,
+                "conversation_totals": convo_snapshot,
+                "metrics": {"vectors_retrieved": 0},
+                "tools_used": [],
+                "rewrite_display": rewrite_display,
+            }
+
+        # Non-rate-limit LLMErrors fall back to the outer handler.
+        raise
     try:
         # Log the provider-native response object for debugging tool-calls behavior.
         _raw = getattr(resp_inf, "raw", resp_inf)
@@ -2796,6 +3203,64 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         usage=usage_synth,
                         model_key=(_stage_model_keys or {}).get("tools_synth"),
                     )
+            except LLMError as e:
+                kind = getattr(e, "kind", "") or ""
+                if kind == "rate_limit":
+                    try:
+                        _prov = str(getattr(e, "provider", "") or "").strip() or "the tools synthesis provider"
+                        _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                        quota_msg = (
+                            f"Our tools synthesis model (provider={_prov}, model={_model}) "
+                            "is currently over its rate-limit or quota. I couldn't "
+                            "combine the tool results safely, so this turn has been "
+                            "stopped. Please try again later or contact the "
+                            "administrator to increase the quota."
+                        )
+                    except Exception:
+                        quota_msg = (
+                            "The tools synthesis model is currently over its rate limit or quota. "
+                            "Please try again later."
+                        )
+
+                    try:
+                        emit_stage(
+                            req_id,
+                            "Final Answer",
+                            final=True,
+                            finalContent=quota_msg,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        close_stream(req_id)
+                    except Exception:
+                        pass
+                    try:
+                        m.finalize_turn()
+                        turn_metrics, convo_snapshot = m.snapshot()
+                    except Exception:
+                        turn_metrics = m.turn
+                        convo_snapshot = {
+                            "tokens": {
+                                "embedding": 0,
+                                "llm_input": 0,
+                                "llm_output": 0,
+                                "conversation_total": 0,
+                            },
+                            "cost": {"conversation_total": 0.0},
+                        }
+                    return {
+                        "answer": quota_msg,
+                        "sources": [],
+                        "turn_metrics": turn_metrics,
+                        "conversation_totals": convo_snapshot,
+                        "metrics": {"vectors_retrieved": 0},
+                        "tools_used": tools_out,
+                        "rewrite_display": rewrite_display,
+                    }
+
+                logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, e, exc_info=True)
+                answer_override = _format_tool_fallback(tool_answer_text, tools_text)
             except Exception as ex:
                 logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, ex, exc_info=True)
                 answer_override = _format_tool_fallback(tool_answer_text, tools_text)

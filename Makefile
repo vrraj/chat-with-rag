@@ -10,9 +10,9 @@ endif
 UNAME := $(shell uname)
 
 # Start the full application stack using Docker Compose
-# - Qdrant database runs in a Docker container
-# - Web application runs in a container with local code bind-mounted
-# - Use run.py  in docker-compose.yml for auto app code reload, and start.py to run in production
+# Qdrant database runs in a Docker container
+# Web application runs in a container with local code bind-mounted
+# Use run.py  in docker-compose.yml for auto app code reload, and start.py to run in production
 # Prerequisites: Docker and Docker Compose must be installed
 # Usage: make start
 start:

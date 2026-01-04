@@ -6,6 +6,12 @@ from typing import Any, Dict, Optional, Iterator
 # ModelSpec import: support both `backend/llm/ModelSpec.py` and `llm/ModelSpec.py` layouts.
 from backend.llm.ModelSpec import ModelSpec
 
+# Model registry for parameter mapping
+try:  # pragma: no cover
+    from backend.llm import model_registry as _model_registry
+except Exception:  # pragma: no cover
+    _model_registry = None  # type: ignore
+
 class LLMError(Exception):
     """Structured error raised for provider or configuration failures.
 
@@ -125,6 +131,45 @@ class LLMHandler:
         self.responses = _ResponsesFacade(self)
         # New additive facade for embeddings; does not affect existing behavior.
         self.embeddings = _EmbeddingsFacade(self)
+
+    def _get_max_tokens_parameter(self, model: str) -> str:
+        """Get the correct max_tokens parameter name for a model from registry."""
+        if _model_registry is None:
+            # If registry is not available, default to max_tokens
+            return "max_tokens"
+        
+        # Try to find model in registry by model name
+        for model_info in _model_registry.REGISTRY.values():
+            if model_info.model == model:
+                return model_info.max_tokens_parameter
+        
+        # If model not found in registry, default to max_tokens
+        return "max_tokens"
+
+    def _get_model_capabilities(self, model: str) -> Dict[str, Any]:
+        """Get model capabilities from registry."""
+        if _model_registry is None:
+            # If registry is not available, return empty capabilities (no filtering)
+            return {}
+        
+        # Try to find model in registry by model name
+        for model_info in _model_registry.REGISTRY.values():
+            if model_info.model == model:
+                return model_info.capabilities
+        
+        # If model not found in registry, return empty capabilities (no filtering)
+        return {}
+
+    def _filter_kwargs_by_capabilities(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter kwargs based on model capabilities from registry."""
+        capabilities = self._get_model_capabilities(model)
+        filtered_kwargs = {}
+        
+        for param, value in kwargs.items():
+            if capabilities.get(param, False):
+                filtered_kwargs[param] = value
+        
+        return filtered_kwargs
 
     # ---- lazy client getters (singletons inside the singleton) ----
     def _get_openai(self):
@@ -264,8 +309,12 @@ class LLMHandler:
     # ---- provider calls ----
     def _openai_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
         client = self._get_openai()
+        
+        # Filter kwargs based on model capabilities
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+        
         try:
-            return client.responses.create(model=model, input=input, stream=stream, **kwargs)
+            return client.responses.create(model=model, input=input, stream=stream, **filtered_kwargs)
         except Exception as e:
             # Preserve existing behavior (exception type) while also exposing
             # a structured LLMError for call sites that wish to distinguish
@@ -286,16 +335,18 @@ class LLMHandler:
         client = self._get_anthropic()
         messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
 
-        max_tokens = kwargs.pop("max_tokens", None)
-        if max_tokens is None:
-            max_tokens = kwargs.pop("max_output_tokens", 1024)
+        # Filter kwargs based on model capabilities
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+        
+        # Handle max_output_tokens conversion for Anthropic (always uses max_tokens)
+        max_tokens = filtered_kwargs.pop("max_output_tokens", filtered_kwargs.pop("max_tokens", 1024))
         max_tokens = int(max_tokens)
 
         if not stream:
-            return client.messages.create(model=model, messages=messages, max_tokens=max_tokens, **kwargs)
+            return client.messages.create(model=model, messages=messages, max_tokens=max_tokens, **filtered_kwargs)
 
         def gen() -> Iterator[str]:
-            with client.messages.stream(model=model, messages=messages, max_tokens=max_tokens, **kwargs) as sref:
+            with client.messages.stream(model=model, messages=messages, max_tokens=max_tokens, **filtered_kwargs) as sref:
                 for chunk in sref.text_stream:
                     yield chunk
 
@@ -307,12 +358,15 @@ class LLMHandler:
         Implement a concrete mapping when Anthropic exposes or you adopt
         a specific embedding endpoint.
         """
+        # Filter kwargs based on model capabilities (for consistency)
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+        
         raise LLMError(
             provider="anthropic",
             model=model,
             kind="config",
-            code="embeddings_not_configured",
-            message="Anthropic embeddings are not configured in this deployment",
+            code="unsupported_provider_embeddings",
+            message=f"Provider 'anthropic' not supported for embeddings",
         )
 
     def _gemini_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
@@ -389,12 +443,8 @@ class LLMHandler:
                 # Best-effort only; fall back to original tools on any failure.
                 pass
 
-        # Normalize token naming.
-        # - Pipeline may pass `max_output_tokens` (Responses-style)
-        # - Chat Completions expects `max_tokens`
-        max_output_tokens = kwargs.pop("max_output_tokens", None)
-        if max_output_tokens is not None and "max_tokens" not in kwargs:
-            kwargs["max_tokens"] = max_output_tokens
+        # Keep max_output_tokens consistent - let each provider handle conversion internally
+        # OpenAI chat completions will use model registry to determine correct parameter name
 
         # --- OpenAI-adapter path (chat.completions) ---
         if hasattr(client, "chat") and hasattr(getattr(client, "chat"), "completions"):
@@ -403,8 +453,13 @@ class LLMHandler:
                 messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
 
                 if not stream:
+                    # Apply capability filtering and max_tokens conversion
+                    call_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+                    if "max_output_tokens" in call_kwargs:
+                        max_tokens_param = self._get_max_tokens_parameter(model)
+                        call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
                     try:
-                        resp = create_fn(model=model, messages=messages, **kwargs)
+                        resp = create_fn(model=model, messages=messages, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
                         # Map Gemini adapter rate limits into a structured LLMError
                         # so callers (e.g., handle_chat) can surface a clear message.
@@ -470,8 +525,13 @@ class LLMHandler:
                     return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=resp)
 
                 def event_gen() -> Iterator[AdapterEvent]:
+                    # Apply capability filtering and max_tokens conversion
+                    call_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+                    if "max_output_tokens" in call_kwargs:
+                        max_tokens_param = self._get_max_tokens_parameter(model)
+                        call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
                     try:
-                        stream_obj = create_fn(model=model, messages=messages, stream=True, **kwargs)
+                        stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
                         raise LLMError(
                             provider="gemini",
@@ -507,14 +567,14 @@ class LLMHandler:
         # --- Native Gemini SDK fallback (only if an injected client supports it) ---
         contents = input
 
-        if max_output_tokens is not None:
-            kwargs.setdefault("max_output_tokens", max_output_tokens)
+        # Apply capability filtering for native Gemini SDK
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
 
         if not stream:
             if hasattr(client, "generate_content"):
-                resp = client.generate_content(model=model, contents=contents, **kwargs)
+                resp = client.generate_content(model=model, contents=contents, **filtered_kwargs)
             elif hasattr(client, "generateContent"):
-                resp = client.generateContent(model=model, contents=contents, **kwargs)
+                resp = client.generateContent(model=model, contents=contents, **filtered_kwargs)
             else:
                 raise LLMError(
                     provider="gemini",
@@ -542,7 +602,7 @@ class LLMHandler:
 
         def native_event_gen() -> Iterator[AdapterEvent]:
             if hasattr(client, "generate_content_stream"):
-                stream_iter = client.generate_content_stream(model=model, contents=contents, **kwargs)
+                stream_iter = client.generate_content_stream(model=model, contents=contents, **filtered_kwargs)
                 for chunk in stream_iter:
                     delta = chunk if isinstance(chunk, str) else getattr(chunk, "text", "") or ""
                     if delta:
@@ -551,7 +611,7 @@ class LLMHandler:
                 return
 
             if hasattr(client, "generate_content"):
-                stream_iter = client.generate_content(model=model, contents=contents, stream=True, **kwargs)
+                stream_iter = client.generate_content(model=model, contents=contents, stream=True, **filtered_kwargs)
                 for chunk in stream_iter:
                     delta = chunk if isinstance(chunk, str) else getattr(chunk, "text", "") or ""
                     if delta:
