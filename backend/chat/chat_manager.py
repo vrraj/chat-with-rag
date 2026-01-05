@@ -97,16 +97,6 @@ def _responses_create(provider: str | None = None, **kwargs: Any):
     return llm_handler.create(provider=prov, model=model, input=inp, stream=stream, **kwargs)
 
 
-class StageSpec(TypedDict):
-    """Type definition for stage configuration dictionaries.
-    
-    Each stage has a provider, model, and additional keyword arguments.
-    """
-    provider: str
-    model: str
-    kwargs: Dict[str, Any]
-
-
 # --- Stage resolver (read-only; mirrors existing fields as-is) ---
 # Produces per-stage provider/model/kwargs, with provider defaulting to "openai".
 # Frontend params can override these later; for now we only read existing settings.
@@ -154,6 +144,10 @@ def resolve_stage_specs(
     # Inference model: allow per-request override to affect downstream defaults.
     inference_model = getattr(settings_obj, "inference_model", "")
     effective_inference_model = (inference_model_override or inference_model)
+    
+    # Inference provider: allow per-request override to affect downstream defaults.
+    inference_provider = getattr(settings_obj, "inference_provider", "openai")
+    effective_inference_provider = (inference_provider_override or inference_provider)
 
     # Tools synthesis model uses the same model as inference
     tools_synth_model = effective_inference_model
@@ -256,7 +250,7 @@ def resolve_stage_specs(
             },
         },
         "inference": {
-            "provider": (inference_provider_override or "openai"),
+            "provider": effective_inference_provider,
             "model": (inference_model_override or inference_model),
             "kwargs": {
                 "temperature": inference_temp,
@@ -268,7 +262,7 @@ def resolve_stage_specs(
         },
         "tools_synth": {
             # Tools synthesis uses the same provider as inference, but may have its own model.
-            "provider": (inference_provider_override or "openai"),
+            "provider": effective_inference_provider,
             "model": tools_synth_model,
             "kwargs": {
                 "temperature": inference_temp,
@@ -1131,9 +1125,9 @@ class Metrics:
                 "cost_completion": 0.0,
                 "cost_total": 0.0,
             },
-            # Inference pass #2 (tool synthesis). Mirrors inference shape for UI consistency.
+            # Inference pass #2 (tool synthesis). Uses same model as inference for consistency.
             "inference_tools_synth": {
-                "model": getattr(settings_obj, "inference_tools_synthesis_model", settings_obj.inference_model),
+                "model": settings_obj.inference_model,
                 "prompt_tokens": 0,
                 "prompt_cached_tokens": 0,
                 "completion_tokens": 0,
@@ -3395,10 +3389,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
             ts_spec = (stage_specs or {}).get("tools_synth") or {}
             _ts_provider = str(ts_spec.get("provider") or "openai")
-            _ts_model = str(
-                ts_spec.get("model")
-                or getattr(settings_obj, "inference_tools_synthesis_model", _kwargs_inf.get("model")),
-            )
+            _ts_model = str(ts_spec.get("model"))
 
             _kwargs_synth: Dict[str, Any] = dict(ts_spec.get("kwargs") or {})
             _kwargs_synth["input"] = synth_prompt
@@ -3510,14 +3501,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             logger.debug(f"[TOOLS] {log_origin} Falling back to tool answer text %s ", tool_answer_text[:100])
             answer_override = tool_answer_text
 
-    
+    # Normalize tool usage for downstream rendering/metadata
+    tools_out = sorted({t for t in used_tools if t}) if used_tools else []
+
     # Stage: Final answer and packing
     # Principle:
     # - If tools ran, `answer_override` is considered the authoritative final answer.
     # - If tools did not run, the first inference answer may carry NO_SUPPORTED_SOURCES and we suppress sources accordingly.
-
-    # Normalize tool usage for downstream rendering/metadata
-    tools_out = sorted({t for t in used_tools if t}) if used_tools else []
 
     # Default sources are the retrieved + optional web context
     sources = (reranked or []) + (web_context or [])

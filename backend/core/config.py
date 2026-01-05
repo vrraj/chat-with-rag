@@ -222,7 +222,7 @@ class Settings(BaseSettings):
     # 6) Inference model
     # -------------------------------------------------------------------------
     inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
-    inference_tools_synthesis_model: str = "gpt-4o-mini" # 
+    inference_tools_synthesis_model: str = "gpt-4o-mini" # Deprecated: Inference with Tool Synthsis will always use inference model to maintain consistency at inference stages 
 
     inference_temperature: float = 0.4  # Decoding temperature
     inference_top_p: float = 0.7  # Nucleus sampling top-p
