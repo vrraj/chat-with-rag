@@ -160,7 +160,7 @@ if [ "${SKIP_OPENAI_SMOKE_TEST:-0}" = "1" ]; then
 else
   echo
   echo "🧪 Running OpenAI API smoke test (auth check) ..."
-  if python3 scripts/api_smoke_test.py; then
+  if python3 scripts/api_smoke_test_openai.py; then
     echo "✅ Smoke test passed"
   else
     echo "⚠️  Smoke test failed. Setup is still complete, but your API key, budget, or network may need attention." >&2

@@ -601,6 +601,8 @@ import openai  # Uses OpenAI client pointed at Gemini adapter
 
 ### Tested Models and Compatibility
 
+The LLM handler has been extensively tested with various reasoning and non-reasoning models from both OpenAI and Gemini. Below are the models that have been verified to work with the system.
+
 #### OpenAI Models - Fully Tested
 ```python
 # Production-ready models with extensive testing
@@ -683,6 +685,48 @@ import openai  # Uses OpenAI client pointed at Gemini adapter
 ),
 ```
 
+#### Gemini Thinking Models - Tested
+```python
+# Gemini models with thinking/reasoning capabilities
+"gemini:thinking_flash": ModelInfo(
+    key="gemini:thinking_flash",
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",
+    endpoint="chat_completions",  # OpenAI adapter
+    capabilities={
+        "tools": True,           # ✅ Tools work via OpenAI adapter
+        "stream": True,           # ✅ Streaming verified
+        "temperature": True,       # ✅ Temperature control works
+        "reasoning_effort": True,  # ✅ Thinking budget parameter works
+        "top_p": True,            # ✅ Nucleus sampling works
+    },
+    tested_features=["tools", "streaming", "temperature", "reasoning_effort"],
+    compatibility_status="production",  # ✅ Production ready via adapter
+    test_notes="Flash model with thinking capabilities. Fast response times with reasoning.",
+),
+
+"gemini:thinking_pro": ModelInfo(
+    key="gemini:thinking_pro",
+    provider="gemini", 
+    model="models/gemini-2.5-pro",
+    endpoint="chat_completions",  # OpenAI adapter
+    capabilities={
+        "tools": True,           # ✅ Tools work via OpenAI adapter
+        "stream": True,           # ✅ Streaming verified
+        "temperature": True,       # ✅ Temperature control works
+        "reasoning_effort": True,  # ✅ Thinking level parameter works
+        "top_p": True,            # ✅ Nucleus sampling works
+    },
+    tested_features=["tools", "streaming", "temperature", "reasoning_effort"],
+    compatibility_status="production",  # ✅ Production ready via adapter
+    test_notes="Pro model with advanced thinking capabilities. Higher quality responses.",
+),
+
+# Gemini Thinking models support different reasoning parameter formats:
+# - Flash models: thinking_budget (numeric token count)
+# - Pro models: thinking_level (string: "low", "medium", "high")
+```
+
 #### Gemini Models - Native SDK Testing
 ```python
 # Direct Gemini SDK testing (limited scope)
@@ -730,7 +774,9 @@ import openai  # Uses OpenAI client pointed at Gemini adapter
 | OpenAI | gpt-4o-mini | ✅ Production | tools, streaming, temperature, top_p | Fully tested |
 | OpenAI | o3-mini | ✅ Production | reasoning_effort only | No tools/streaming/temp |
 | Gemini | gemini-2.5-flash-lite | ✅ Production | tools, streaming, temperature, reasoning | Via OpenAI adapter |
+| Gemini | gemini-2.5-flash-lite (thinking) | ✅ Production | tools, streaming, temperature, thinking_budget | Fast reasoning model |
 | Gemini | gemini-2.5-pro | ✅ Production | tools, streaming, temperature, reasoning | Via OpenAI adapter |
+| Gemini | gemini-2.5-pro (thinking) | ✅ Production | tools, streaming, temperature, thinking_level | Advanced reasoning model |
 | Gemini | gemini-2.5-pro (native) | 🟡 Beta | tools, streaming, temperature, reasoning | Native SDK tested |
 | OpenAI | text-embedding-3-small | ✅ Production | embeddings only | 1536 dimensions |
 | Gemini | gemini-embedding-001 | ✅ Production | embeddings only | 768 dimensions |

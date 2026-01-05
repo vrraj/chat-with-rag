@@ -194,10 +194,42 @@ cd chat-with-rag
 
 ```
 
-#### 2.1.3 Configure OpenAI API & Costs
+#### 2.1.3 Choose Your AI Provider(s)
 
+This application supports **multiple AI providers** with different capabilities:
+
+| Provider | Default Use | Key Features | Requirements |
+|----------|---------------|---------------|---------------|
+| **OpenAI** | ✅ Default provider | Standard models, reasoning models, native API | OpenAI Platform account |
+| **Gemini** | ✅ Optional provider | Thinking models, OpenAI-compatible API | Google AI Platform account |
+
+> **Note**: You can use **either** provider or **both** for different pipeline stages.
+
+### **Key Features by Provider:**
+
+#### **OpenAI Models**
+- **Standard Models**: gpt-4o, gpt-4o-mini
+- **Reasoning Models**: o1-mini, o3-mini
+- **Embeddings**: text-embedding-3-small, text-embedding-3-large
+- **Query Rewrite**: gpt-4o-mini (recommended for optimal performance)
+
+#### **Gemini Models**
+- **Standard Models**: gemini-2.5-flash-lite, gemini-2.5-pro
+- **Thinking Models**: gemini-2.5-flash-lite (thinking_budget), gemini-2.5-pro (thinking_level)
+- **Embeddings**: gemini-embedding-001
+
+### **Configuration Options:**
+- **OpenAI-only**: Use all features with default setup
+- **Gemini-only**: Requires embedding model change (see 2.1.4)
+- **Mixed**: Use different providers for different stages
+
+#### 2.1.4 Configure API Keys & Costs
+
+Choose your provider(s) and set up appropriate API keys:
+
+##### Option A: OpenAI (Recommended for Getting Started)
 > [!IMPORTANT]
-> This application requires an **OpenAI API Platform** account (different from a ChatGPT Plus subscription). It is strongly recommended to set a **hard usage limit** in your [OpenAI Dashboard](https://platform.openai.com/api-keys) to stay within your desired budget.
+> Required for **default configuration** and sample data testing.
 
 | Recommendation | Action | Rationale |
 | :--- | :--- | :--- |
@@ -205,26 +237,73 @@ cd chat-with-rag
 | **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
 | **Alerts** | Set a 50% notification. | Provides proactive cost control. |
 
+##### Option B: Gemini (Alternative Provider)
+> [!IMPORTANT]
+> Optional alternative to OpenAI. Requires configuration changes for full compatibility.
 
+| Recommendation | Action | Rationale |
+| :--- | :--- | :--- |
+| **Quota** | Set a **daily quota limit** based on your budget. | Prevents unexpected cost overruns. |
+| **Dedicated Key** | Name it `chat-with-rag-gemini`. | Isolates usage tracking for this project. |
+| **Monitoring** | Enable **usage alerts** in Google Cloud Console. | Provides proactive cost visibility. |
 
-#### 2.1.4) Set up local environment variables
+> **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
 
-Copy the example environment file and add your API key.
+##### Option C: Both Providers (Advanced)
+> Use different providers for different pipeline stages:
+> - OpenAI for embeddings (default sample data compatibility)
+> - Gemini for inference models (thinking capabilities)
 
-> **Note:** Optional: Advanced users may instead set `OPENAI_API_KEY` as an OS environment variable.  
-> If set, it will take precedence over the value in `.env`.
-> If you used the one-command setup script above, it will prompt for the key and write it into your local .env automatically.
+#### 2.1.5 Set up local environment variables
+
+Copy the example environment file and add your API key(s).
+
+> **Note:** Optional: Advanced users may instead set API keys as OS environment variables.  
+> If set, they will take precedence over the values in `.env`.
+> If you used the one-command setup script above, it will prompt for OpenAI key and write it into your local .env automatically.
 
 ```bash
 cp .env.example .env
-# IMPORTANT: Open .env and add your OPENAI_API_KEY
+# IMPORTANT: Open .env and add your API keys
 vi .env   # or use 'nano .env' / your preferred text editor
 
+# Add one or both keys:
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-#### 2.1.5) Start Infrastructure
-This launches the Qdrant vector database and the FastAPI web application.
+#### 2.1.6 Provider-Specific Configuration
 
+##### Using Gemini as Primary Provider
+If you prefer Gemini over OpenAI:
+
+1. **Update Embedding Model** (in `backend/core/config.py`):
+   ```python
+   embedding_model = "gemini:embed"  # Change from "openai:embed_small"
+   ```
+
+2. **Re-index Sample Data**:
+   ```bash
+   # Export current data
+   # Visit frontend/list-docs.html → Export as JSON
+   
+   # Process with new embeddings
+   # Visit frontend/process-batch-docs.html → Import JSON
+   ```
+
+##### Mixed Provider Setup
+Use OpenAI for embeddings (sample data compatibility) + Gemini for inference:
+
+```python
+# In config - no embedding change needed
+embedding_model = "openai:embed_small"  # Keep default
+
+# In UI or API calls - use Gemini models
+provider="gemini"
+model="models/gemini-2.5-flash-lite"
+```
+
+#### 2.1.7 Start Infrastructure
 
 ```bash
 make start
@@ -234,7 +313,7 @@ make start
 > `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-#### 2.1.6) Initialize environment and seed data
+#### 2.1.8 Initialize environment and seed data
 
 To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
 
@@ -580,6 +659,68 @@ Both model types support the same tools:
    - Query rewrite stage (use non-reasoning models)
    - Simple retrieval tasks
    - Real-time applications requiring sub-second responses
+
+---
+
+## 🤖 LLM Handler Architecture
+
+This system features a **unified LLM handler** that provides a consistent interface for multiple AI providers through a centralized architecture.
+
+### Core Components
+
+#### **LLM Handler** (`backend/llm/llm_handler.py`)
+- **Unified Interface**: Single entry point for all LLM calls across providers
+- **Automatic Parameter Mapping**: Handles provider-specific parameter differences
+- **Capability Filtering**: Automatically filters unsupported parameters per model
+- **Error Handling**: Structured error responses with provider-specific context
+
+#### **Model Registry** (`backend/llm/model_registry.py`)
+- **Centralized Metadata**: All model configurations in one place
+- **Provider Support**: Currently supports **OpenAI** and **Gemini** APIs
+- **Extensible Design**: Easy to add new providers and models
+- **Capability Definitions**: Feature support flags per model (tools, streaming, reasoning)
+
+### Supported Providers
+
+#### **OpenAI Integration**
+- **Native API Support**: Direct integration with OpenAI's Responses API
+- **Model Coverage**: GPT-4o, GPT-4o-mini, o1, o3, reasoning models
+- **Full Feature Set**: Tools, streaming, temperature control, reasoning parameters
+
+#### **Gemini Integration**
+- **OpenAI-Compatible API**: Uses OpenAI adapter for Gemini models
+- **Current Approach**: Standardized interface via OpenAI client library
+- **Future Support**: Architecture ready for native Gemini SDK integration
+- **Model Coverage**: Gemini 2.5 Flash, Gemini 2.5 Pro, embedding models
+
+### Key Benefits
+
+✅ **Provider Agnostic**: Same code works across OpenAI and Gemini  
+✅ **Automatic Adaptation**: Parameter differences handled automatically  
+✅ **Future Proof**: Easy to extend to additional providers  
+✅ **Type Safety**: Structured responses and error handling  
+✅ **Performance**: Optimized routing and capability caching  
+
+### Usage Example
+
+```python
+from backend.llm.llm_handler import llm_handler
+
+# Works across providers with same interface
+response = llm_handler.create(
+    provider="openai",     # or "gemini"
+    model="gpt-4o-mini",   # or "models/gemini-2.5-flash-lite"
+    input="Explain quantum computing",
+    temperature=0.7,
+    max_output_tokens=1000
+)
+```
+
+### Detailed Documentation
+
+For comprehensive documentation on the LLM handler architecture, provider-specific features, model compatibility, and extension guidelines, see:
+
+👉 **[README_LLM_HANDLER.md](README_LLM_HANDLER.md)**
 
 ---
 

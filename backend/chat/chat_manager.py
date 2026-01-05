@@ -34,6 +34,14 @@ Conversation State:
 """
 
 from typing import List, Dict, Any, Set, TypedDict, Optional
+class StageSpec(TypedDict):
+    """Type definition for stage configuration dictionaries.
+
+    Each stage has a provider, model, and additional keyword arguments.
+    """
+    provider: str
+    model: str
+    kwargs: Dict[str, Any]
 import logging
 
 logger = logging.getLogger(__name__)
@@ -293,15 +301,6 @@ CONVO_TOTALS = {
 
 # Per-conversation/session totals, keyed by namespace (typically user_id:conversation_id or conversation_id)
 _CONVO_TOTALS_BY_NS: Dict[str, Dict[str, Any]] = {}
-
-class StageSpec(TypedDict):
-    """Type definition for stage configuration dictionaries.
-    
-    Each stage has a provider, model, and additional keyword arguments.
-    """
-    provider: str
-    model: str
-    kwargs: Dict[str, Any]
 
 def _new_convo_totals() -> Dict[str, Any]:
     return {
