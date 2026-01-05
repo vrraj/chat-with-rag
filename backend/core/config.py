@@ -282,7 +282,7 @@ class Settings(BaseSettings):
     rewrite_confidence_threshold: float = 0.65
 
     # Keep rewrite outputs tiny and structured (JSON)
-    rewrite_max_output_tokens: int = 200
+    rewrite_max_output_tokens: int = 500
 
     # How many most‑recent turns the rewriter sees (can differ from raw_tail_turns if desired)
     rewrite_tail_turns: int = 2

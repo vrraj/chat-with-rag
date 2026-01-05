@@ -472,7 +472,116 @@ chat-with-rag/
 3. Start with `"estimate": true` to preview processing before actual ingestion
 4. Check the web interface's "View Documents" page to verify successful ingestion
 
---
+---
+
+## 🧠 Reasoning vs Non-Reasoning Models
+
+This system supports both traditional LLMs and advanced reasoning models, with different behaviors and optimizations for each type.
+
+### Model Categories
+
+#### **Non-Reasoning Models (Traditional LLMs)**
+- **Examples**: `gpt-4o-mini`, `gpt-4`, `claude-3-haiku`, `gemini-1.5-flash`
+- **Characteristics**: Fast, direct response generation
+- **Use Case**: General Q&A, quick responses, cost-effective queries
+
+#### **Reasoning Models (Advanced LLMs)**
+- **Examples**: `gpt-5-mini`, `o3-mini`, `o3`, `gpt-5`
+- **Characteristics**: Slower, deeper analysis, step-by-step reasoning
+- **Use Case**: Complex queries, multi-step problems, analytical tasks
+
+### Key Differences
+
+#### **Query Rewrite**
+- **Non-Reasoning**: Uses reasoning models for query optimization
+- **Reasoning**: **Do NOT use reasoning models for query rewrite** - they're reserved for the final response generation
+
+#### **Tool Calls**
+- **Non-Reasoning**: Standard tool execution via ChatCompletions API
+- **Reasoning**: **Uses OpenAI Responses API format** with special handling:
+  ```python
+  # Non-Reasoning (ChatCompletions):
+  choices[0].message.tool_calls = [{"function": {...}}]
+  
+  # Reasoning (Responses API):
+  output = [
+      ResponseReasoningItem(type="reasoning", ...),
+      ResponseOutputMessage(type="message", content=[
+          ResponseOutputText(...),
+          ResponseToolCall(name="get_weather", arguments={...})
+      ])
+  ]
+  ```
+
+#### **Prompt Engineering**
+- **Non-Reasoning**: Standard RAG prompt with tool encouragement
+- **Reasoning**: **Modified prompts to encourage tool usage**:
+  ```python
+  # Before: "If context insufficient, reply exactly with: I couldn't find..."
+  # After:  "If context insufficient, USE THE AVAILABLE TOOLS to gather information"
+  ```
+
+#### **Response Format**
+- **Non-Reasoning**: Direct text response with citations
+- **Reasoning**: Structured response with reasoning steps:
+  ```python
+  output = [
+      ResponseReasoningItem(type="reasoning", summary=[...]),
+      ResponseOutputMessage(type="message", content=[...])
+  ]
+  ```
+
+### Performance Considerations
+
+#### **Speed**
+- **Non-Reasoning**: 1-3 seconds typical
+- **Reasoning**: 5-15 seconds typical (due to reasoning process)
+
+#### **Cost**
+- **Non-Reasoning**: Lower cost per query
+- **Reasoning**: Higher cost but higher accuracy for complex tasks
+
+#### **Token Usage**
+- **Non-Reasoning**: Input + Output tokens
+- **Reasoning**: Input + Output + **Reasoning tokens** (additional cost for thinking process)
+
+### Configuration
+
+#### **Model Selection**
+```python
+# Non-Reasoning (fast, cost-effective)
+inf_spec = {"model": "openai:gpt-4o-mini"}
+
+# Reasoning (complex queries)
+inf_spec = {"model": "openai:gpt-5-mini"}
+```
+
+#### **Tool Integration**
+Both model types support the same tools:
+- `get_weather` - Weather information
+- `web_search` - Web search
+- `get_nearby_airports` - Airport finder
+
+#### **Best Practices**
+
+1. **Use Non-Reasoning for**:
+   - Simple factual questions
+   - Quick lookups
+   - Cost-sensitive applications
+   - High-volume queries
+
+2. **Use Reasoning for**:
+   - Complex analytical tasks
+   - Multi-step problems
+   - Queries requiring deep reasoning
+   - When accuracy is more important than speed
+
+3. **Avoid Reasoning for**:
+   - Query rewrite stage (use non-reasoning models)
+   - Simple retrieval tasks
+   - Real-time applications requiring sub-second responses
+
+---
 
 ## 🏗️ Technical Overview
 

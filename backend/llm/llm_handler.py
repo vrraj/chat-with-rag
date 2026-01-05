@@ -1,7 +1,10 @@
 from openai import OpenAI
 import openai
 import os
+import logging
 from typing import Any, Dict, Optional, Iterator
+
+logger = logging.getLogger(__name__)
 
 # ModelSpec import: support both `backend/llm/ModelSpec.py` and `llm/ModelSpec.py` layouts.
 from backend.llm.ModelSpec import ModelSpec
@@ -123,27 +126,60 @@ class LLMHandler:
     stored on the instance) so multiple users/sessions can safely use different models.
     """
 
-    def __init__(self, *, openai_client=None, gemini_client=None, anthropic_client=None):
+    def __init__(self, *, openai_client=None, gemini_client=None):
         self._openai = openai_client
         self._gemini = gemini_client
-        self._anthropic = anthropic_client
         # Facade for compatibility with existing `client.responses.create(...)` call sites.
         self.responses = _ResponsesFacade(self)
         # New additive facade for embeddings; does not affect existing behavior.
         self.embeddings = _EmbeddingsFacade(self)
 
+    def _get_reasoning_parameter(self, model: str) -> tuple[str, Any] | None:
+        """Get reasoning parameter name and default from model registry."""
+        if _model_registry is None:
+            return None
+        
+        # First try to find by registry key (most reliable)
+        if model in _model_registry.REGISTRY:
+            return _model_registry.REGISTRY[model].reasoning_parameter
+        
+        # Second try to find by exact model name
+        for model_info in _model_registry.REGISTRY.values():
+            if model_info.model == model:
+                return model_info.reasoning_parameter
+        
+        # Third try to find by registry key pattern (provider:model format)
+        for key, model_info in _model_registry.REGISTRY.items():
+            if key.endswith(f":{model}") or key == model:
+                return model_info.reasoning_parameter
+        
+        return None
+
     def _get_max_tokens_parameter(self, model: str) -> str:
         """Get the correct max_tokens parameter name for a model from registry."""
         if _model_registry is None:
-            # If registry is not available, default to max_tokens
+            # Fallback: check if it's an o1/o3 model
+            if model and (model.startswith("o1") or model.startswith("o3")):
+                return "max_completion_tokens"
             return "max_tokens"
         
-        # Try to find model in registry by model name
+        # First try to find by registry key (most reliable)
+        if model in _model_registry.REGISTRY:
+            return _model_registry.REGISTRY[model].max_tokens_parameter
+        
+        # Second try to find by exact model name
         for model_info in _model_registry.REGISTRY.values():
             if model_info.model == model:
                 return model_info.max_tokens_parameter
         
-        # If model not found in registry, default to max_tokens
+        # Third try to find by registry key pattern (provider:model format)
+        for key, model_info in _model_registry.REGISTRY.items():
+            if key.endswith(f":{model}") or key == model:
+                return model_info.max_tokens_parameter
+        
+        # Fallback to model name detection
+        if model and (model.startswith("o1") or model.startswith("o3")):
+            return "max_completion_tokens"
         return "max_tokens"
 
     def _get_model_capabilities(self, model: str) -> Dict[str, Any]:
@@ -152,24 +188,155 @@ class LLMHandler:
             # If registry is not available, return empty capabilities (no filtering)
             return {}
         
-        # Try to find model in registry by model name
+        # First try to find by registry key (most reliable)
+        if model in _model_registry.REGISTRY:
+            return _model_registry.REGISTRY[model].capabilities
+        
+        # Second try to find by exact model name
         for model_info in _model_registry.REGISTRY.values():
             if model_info.model == model:
                 return model_info.capabilities
         
+        # Third try to find by registry key pattern (provider:model format)
+        for key, model_info in _model_registry.REGISTRY.items():
+            if key.endswith(f":{model}") or key == model:
+                return model_info.capabilities
+        
         # If model not found in registry, return empty capabilities (no filtering)
         return {}
+
+    def _resolve_model_name(self, model: str) -> str:
+        """Resolve a model identifier to the provider-native model name.
+
+        Accepts either:
+          - Registry key (e.g., "openai:best", "gemini:fast")
+          - Provider-native model name (e.g., "gpt-4o-mini", "models/gemini-2.5-flash-lite")
+
+        If the registry is unavailable or the identifier is not found, returns `model` unchanged.
+        """
+        if not model:
+            return model
+        if _model_registry is None:
+            return model
+        try:
+            if model in _model_registry.REGISTRY:
+                return _model_registry.REGISTRY[model].model
+        except Exception:
+            return model
+        return model
 
     def _filter_kwargs_by_capabilities(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Filter kwargs based on model capabilities from registry."""
         capabilities = self._get_model_capabilities(model)
         filtered_kwargs = {}
         
+        # Special case: always allow token limit parameters (fundamental to all models)
+        token_params = {"max_output_tokens", "max_tokens", "max_completion_tokens"}
+        
         for param, value in kwargs.items():
-            if capabilities.get(param, False):
+            if param in token_params or capabilities.get(param, False):
                 filtered_kwargs[param] = value
         
         return filtered_kwargs
+
+    def _convert_reasoning_value(self, model: str, value: Any) -> Any:
+        """Convert reasoning_effort value to model-specific format."""
+        if _model_registry is None:
+            return value
+
+        # Resolve model_info either by registry key or by provider-native model name.
+        model_info = None
+        if model in _model_registry.REGISTRY:
+            model_info = _model_registry.REGISTRY[model]
+        else:
+            for info in _model_registry.REGISTRY.values():
+                if info.model == model:
+                    model_info = info
+                    break
+
+        if model_info is None:
+            return value
+
+        param_name, default_value = model_info.reasoning_parameter
+
+        # Convert based on default value type
+        if isinstance(default_value, (int, float)):
+            # Convert string to number for token-based models
+            mapping = {"low": 1000, "medium": 2000, "high": 5000}
+            return mapping.get(str(value).lower(), default_value)
+
+        # Keep as string for models that expect string
+        return str(value).lower()
+
+    def _map_reasoning_parameter_with_default(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Map reasoning_effort to model-specific parameter with defaults."""
+        if _model_registry is None:
+            return kwargs
+        
+        # First try to find by registry key (most reliable)
+        if model in _model_registry.REGISTRY:
+            model_info = _model_registry.REGISTRY[model]
+            param_name, default_value = model_info.reasoning_parameter
+            mapped_kwargs = kwargs.copy()
+
+            # Handle reasoning_effort parameter
+            if "reasoning_effort" in kwargs:
+                # Use passed value, convert if needed
+                reasoning_value = kwargs["reasoning_effort"]
+                converted_value = self._convert_reasoning_value(model, reasoning_value)
+                mapped_kwargs[param_name] = converted_value
+                # Only pop the original key if we mapped it to a different param name.
+                if param_name != "reasoning_effort":
+                    mapped_kwargs.pop("reasoning_effort", None)
+            elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+                # Use registry default when no value passed and capability is supported
+                mapped_kwargs[param_name] = default_value
+
+            return mapped_kwargs
+
+        # Second try to find by exact model name
+        for model_info in _model_registry.REGISTRY.values():
+            if model_info.model == model:
+                param_name, default_value = model_info.reasoning_parameter
+                mapped_kwargs = kwargs.copy()
+
+                # Handle reasoning_effort parameter
+                if "reasoning_effort" in kwargs:
+                    # Use passed value, convert if needed
+                    reasoning_value = kwargs["reasoning_effort"]
+                    converted_value = self._convert_reasoning_value(model, reasoning_value)
+                    mapped_kwargs[param_name] = converted_value
+                    # Only pop the original key if we mapped it to a different param name.
+                    if param_name != "reasoning_effort":
+                        mapped_kwargs.pop("reasoning_effort", None)
+                elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+                    # Use registry default when no value passed and capability is supported
+                    mapped_kwargs[param_name] = default_value
+
+                return mapped_kwargs
+
+        # Third try to find by registry key pattern (provider:model format)
+        for key, model_info in _model_registry.REGISTRY.items():
+            if key.endswith(f":{model}") or key == model:
+                param_name, default_value = model_info.reasoning_parameter
+                mapped_kwargs = kwargs.copy()
+
+                # Handle reasoning_effort parameter
+                if "reasoning_effort" in kwargs:
+                    # Use passed value, convert if needed
+                    reasoning_value = kwargs["reasoning_effort"]
+                    converted_value = self._convert_reasoning_value(model, reasoning_value)
+                    mapped_kwargs[param_name] = converted_value
+                    # Only pop the original key if we mapped it to a different param name.
+                    if param_name != "reasoning_effort":
+                        mapped_kwargs.pop("reasoning_effort", None)
+                elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+                    # Use registry default when no value passed and capability is supported
+                    mapped_kwargs[param_name] = default_value
+
+                return mapped_kwargs
+
+        return kwargs
 
     # ---- lazy client getters (singletons inside the singleton) ----
     def _get_openai(self):
@@ -217,12 +384,6 @@ class LLMHandler:
 
         return self._gemini
 
-    def _get_anthropic(self):
-        if self._anthropic is None:
-            import anthropic
-            self._anthropic = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        return self._anthropic
-
     # ---- public API ----
     def create(
         self,
@@ -250,8 +411,6 @@ class LLMHandler:
 
         if provider == "openai":
             return self._openai_call(model=model, input=input, stream=stream, **kwargs)
-        if provider == "anthropic":
-            return self._anthropic_call(model=model, input=input, stream=stream, **kwargs)
         if provider == "gemini":
             return self._gemini_call(model=model, input=input, stream=stream, **kwargs)
 
@@ -293,8 +452,6 @@ class LLMHandler:
 
         if provider == "openai":
             return self._openai_embedding_call(model=model, input=input, **kwargs)
-        if provider == "anthropic":
-            return self._anthropic_embedding_call(model=model, input=input, **kwargs)
         if provider == "gemini":
             return self._gemini_embedding_call(model=model, input=input, **kwargs)
 
@@ -309,12 +466,18 @@ class LLMHandler:
     # ---- provider calls ----
     def _openai_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
         client = self._get_openai()
-        
-        # Filter kwargs based on model capabilities
+        resolved_model = self._resolve_model_name(model)
+        # Filter kwargs by capabilities, then map reasoning parameters with defaults
         filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
-        
+        mapped_kwargs = self._map_reasoning_parameter_with_default(model, filtered_kwargs)
+        # OpenAI Responses API (SDK v2.8.1+): reasoning effort must be nested.
+        # If callers pass `reasoning_effort`, translate to `reasoning={"effort": ...}`.
+        if "reasoning_effort" in mapped_kwargs:
+            reasoning_value = mapped_kwargs.pop("reasoning_effort")
+            # Do not overwrite an explicit reasoning object if already provided.
+            mapped_kwargs.setdefault("reasoning", {"effort": reasoning_value})
         try:
-            return client.responses.create(model=model, input=input, stream=stream, **filtered_kwargs)
+            return client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
         except Exception as e:
             # Preserve existing behavior (exception type) while also exposing
             # a structured LLMError for call sites that wish to distinguish
@@ -329,47 +492,256 @@ class LLMHandler:
         access `.data[0].embedding` and `.usage` if present.
         """
         client = self._get_openai()
-        return client.embeddings.create(model=model, input=input, **kwargs)
+        resolved_model = self._resolve_model_name(model)
+        return client.embeddings.create(model=resolved_model, input=input, **kwargs)
 
-    def _anthropic_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
-        client = self._get_anthropic()
-        messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
+    def _gemini_reasoning_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
+        """Call Gemini using native reasoning API formats."""
+        client = self._get_gemini()
 
-        # Filter kwargs based on model capabilities
-        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
-        
-        # Handle max_output_tokens conversion for Anthropic (always uses max_tokens)
-        max_tokens = filtered_kwargs.pop("max_output_tokens", filtered_kwargs.pop("max_tokens", 1024))
-        max_tokens = int(max_tokens)
+        # Get reasoning parameter from registry
+        reasoning_param = self._get_reasoning_parameter(model)
+        param_name, default_value = reasoning_param or (None, None)
 
-        if not stream:
-            return client.messages.create(model=model, messages=messages, max_tokens=max_tokens, **filtered_kwargs)
+        # Use the central resolver for model name
+        actual_model = self._resolve_model_name(model)
 
-        def gen() -> Iterator[str]:
-            with client.messages.stream(model=model, messages=messages, max_tokens=max_tokens, **filtered_kwargs) as sref:
-                for chunk in sref.text_stream:
-                    yield chunk
+        # Determine which format to use based on parameter type
+        if param_name == "thinking_budget":
+            # Use responses.create with reasoning={"budget": tokens}
+            return self._gemini_budget_reasoning_call(
+                client=client,
+                model=actual_model,
+                input=input,
+                stream=stream,
+                reasoning_budget=kwargs.get(param_name, default_value),
+                **{k: v for k, v in kwargs.items() if k != param_name}
+            )
+        elif param_name == "thinking_level":
+            # Use chat.completions.create with extra_body
+            return self._gemini_level_reasoning_call(
+                client=client,
+                model=actual_model,
+                input=input,
+                stream=stream,
+                thinking_level=kwargs.get(param_name, default_value),
+                **{k: v for k, v in kwargs.items() if k != param_name}
+            )
+        else:
+            # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
+            return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
 
-        return gen()
+    def _gemini_budget_reasoning_call(self, *, client, model: str, input: Any, stream: bool, reasoning_budget: Any, **kwargs: Any):
+        """Gemini reasoning using chat.completions.create with extra_body for thinking_budget."""
+        logger.debug(f"[GEMINI BUDGET] Model: {model}, Budget: {reasoning_budget}, Stream: {stream}")
+        # Check if client has chat completions
+        if hasattr(client, "chat") and hasattr(getattr(client, "chat"), "completions"):
+            create_fn = getattr(getattr(client.chat, "completions"), "create", None)
+            if callable(create_fn):
+                messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
+                # Prepare call kwargs
+                call_kwargs = kwargs.copy()
+                # Convert reasoning_budget to integer if needed
+                if reasoning_budget == -1:
+                    budget = None  # Dynamic thinking
+                else:
+                    budget = int(reasoning_budget) if reasoning_budget else 2000
+                # Add extra_body with thinking_config for budget.
+                # IMPORTANT: OpenAI Python SDK treats `extra_body=...` as a merge-into-root.
+                # For Google's OpenAI-compat endpoint, provider-specific payload must be
+                # nested under a top-level `extra_body` field on the wire.
+                if budget is not None:
+                    existing = call_kwargs.pop("extra_body", {})
+                    inner: Dict[str, Any] = {}
+                    if isinstance(existing, dict):
+                        inner = existing.get("extra_body", existing)
+                    inner.setdefault("google", {})
+                    inner["google"]["thinking_config"] = {"thinking_budget": budget}
+                    # Double-wrap so the SDK merges `{ "extra_body": ... }` into the request body.
+                    call_kwargs["extra_body"] = {"extra_body": inner}
+                    logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, thinking_budget={budget}, stream={stream})")
+                else:
+                    logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, extra_body=None, stream={stream})")
+                # Handle max_output_tokens conversion
+                if "max_output_tokens" in call_kwargs:
+                    max_tokens_param = self._get_max_tokens_parameter(model)
+                    call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
+                if stream:
+                    stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
+                    def _event_gen() -> Iterator[AdapterEvent]:
+                        for chunk in stream_obj:
+                            try:
+                                if not getattr(chunk, "choices", None):
+                                    continue
+                                delta_obj = getattr(chunk.choices[0], "delta", None)
+                                delta_text = getattr(delta_obj, "content", None)
+                                if delta_text:
+                                    yield AdapterEvent("response.output_text.delta", delta=delta_text)
+                            except Exception:
+                                continue
+                        yield AdapterEvent("response.output_text.done")
+                    return _event_gen()
+                try:
+                    resp = create_fn(model=model, messages=messages, stream=False, **call_kwargs)
+                except openai.RateLimitError as e:  # type: ignore[attr-defined]
+                    # Map Gemini adapter rate limits into a structured LLMError
+                    # so callers (e.g., handle_chat) can surface a clear message.
+                    retry_after = None
+                    try:
+                        retry_after = getattr(e, "retry_after", None)
+                        if retry_after is None:
+                            # Try to extract from OpenAI error details
+                            details = getattr(e, "response", {}).get("details", [])
+                            for detail in details:
+                                if hasattr(detail, "retryDelay"):
+                                    retry_after = getattr(detail, "retryDelay", None)
+                                    break
+                    except Exception:
+                        pass
+                    
+                    raise LLMError(
+                        provider="gemini",
+                        model=model,
+                        kind="rate_limit",
+                        code="rate_limit",
+                        message=str(e),
+                        retry_after=retry_after,
+                    ) from e
+                text = ""
+                try:
+                    if resp and getattr(resp, "choices", None):
+                        choice0 = resp.choices[0]
+                        msg = getattr(choice0, "message", None)
+                        text = getattr(msg, "content", "") or ""
+                except Exception:
+                    text = ""
+                usage_dict: Optional[Dict[str, int]] = None
+                usage = getattr(resp, "usage", None)
+                if usage is not None:
+                    try:
+                        if isinstance(usage, dict):
+                            usage_dict = {
+                                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                                "total_tokens": int(usage.get("total_tokens") or 0),
+                            }
+                        else:
+                            usage_dict = {
+                                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+                            }
+                    except Exception:
+                        usage_dict = None
+                wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
+                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped)
+        logger.debug(f"[GEMINI BUDGET] Client missing chat completions, falling back to regular call")
+        # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
+        return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
 
-    def _anthropic_embedding_call(self, *, model: str, input: Any, **kwargs: Any):
-        """Placeholder for Anthropic embeddings.
+    def _gemini_level_reasoning_call(self, *, client, model: str, input: Any, stream: bool, thinking_level: Any, **kwargs: Any):
+        """Gemini reasoning using chat.completions.create with extra_body."""
+        logger.debug(f"[GEMINI LEVEL] Model: {model}, Level: {thinking_level}, Stream: {stream}")
+        # Check if client has chat completions
+        if hasattr(client, "chat") and hasattr(getattr(client, "chat"), "completions"):
+            create_fn = getattr(getattr(client.chat, "completions"), "create", None)
+            if callable(create_fn):
+                messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
+                # Prepare call kwargs
+                call_kwargs = kwargs.copy()
+                # Add extra_body with thinking_config.
+                # IMPORTANT: OpenAI Python SDK treats `extra_body=...` as a merge-into-root.
+                # For Google's OpenAI-compat endpoint, provider-specific payload must be
+                # nested under a top-level `extra_body` field on the wire.
+                existing = call_kwargs.pop("extra_body", {})
+                inner: Dict[str, Any] = {}
+                if isinstance(existing, dict):
+                    inner = existing.get("extra_body", existing)
+                inner.setdefault("google", {})
+                inner["google"]["thinking_config"] = {
+                    "thinking_level": str(thinking_level) if thinking_level else "medium"
+                }
+                # Double-wrap so the SDK merges `{ "extra_body": ... }` into the request body.
+                call_kwargs["extra_body"] = {"extra_body": inner}
+                logger.debug(f"[GEMINI LEVEL] API call: chat.completions.create(model={model}, thinking_level='{thinking_level}', stream={stream})")
+                # Handle max_output_tokens conversion
+                if "max_output_tokens" in call_kwargs:
+                    max_tokens_param = self._get_max_tokens_parameter(model)
+                    call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
+                if stream:
+                    stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
+                    def _event_gen() -> Iterator[AdapterEvent]:
+                        for chunk in stream_obj:
+                            try:
+                                if not getattr(chunk, "choices", None):
+                                    continue
+                                delta_obj = getattr(chunk.choices[0], "delta", None)
+                                delta_text = getattr(delta_obj, "content", None)
+                                if delta_text:
+                                    yield AdapterEvent("response.output_text.delta", delta=delta_text)
+                            except Exception:
+                                continue
+                        yield AdapterEvent("response.output_text.done")
+                    return _event_gen()
+                try:
+                    resp = create_fn(model=model, messages=messages, stream=False, **call_kwargs)
+                except openai.RateLimitError as e:  # type: ignore[attr-defined]
+                    # Map Gemini adapter rate limits into a structured LLMError
+                    # so callers (e.g., handle_chat) can surface a clear message.
+                    retry_after = None
+                    try:
+                        retry_after = getattr(e, "retry_after", None)
+                        if retry_after is None:
+                            # Try to extract from OpenAI error details
+                            details = getattr(e, "response", {}).get("details", [])
+                            for detail in details:
+                                if hasattr(detail, "retryDelay"):
+                                    retry_after = getattr(detail, "retryDelay", None)
+                                    break
+                    except Exception:
+                        pass
+                    
+                    raise LLMError(
+                        provider="gemini",
+                        model=model,
+                        kind="rate_limit",
+                        code="rate_limit",
+                        message=str(e),
+                        retry_after=retry_after,
+                    ) from e
+                text = ""
+                try:
+                    if resp and getattr(resp, "choices", None):
+                        choice0 = resp.choices[0]
+                        msg = getattr(choice0, "message", None)
+                        text = getattr(msg, "content", "") or ""
+                except Exception:
+                    text = ""
+                usage_dict: Optional[Dict[str, int]] = None
+                usage = getattr(resp, "usage", None)
+                if usage is not None:
+                    try:
+                        if isinstance(usage, dict):
+                            usage_dict = {
+                                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                                "total_tokens": int(usage.get("total_tokens") or 0),
+                            }
+                        else:
+                            usage_dict = {
+                                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+                            }
+                    except Exception:
+                        usage_dict = None
+                wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
+                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped)
+        logger.debug(f"[GEMINI LEVEL] Client missing chat completions, falling back to regular call")
+        # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
+        return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
 
-        Implement a concrete mapping when Anthropic exposes or you adopt
-        a specific embedding endpoint.
-        """
-        # Filter kwargs based on model capabilities (for consistency)
-        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
-        
-        raise LLMError(
-            provider="anthropic",
-            model=model,
-            kind="config",
-            code="unsupported_provider_embeddings",
-            message=f"Provider 'anthropic' not supported for embeddings",
-        )
-
-    def _gemini_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
+    def _gemini_call(self, *, model: str, input: Any, stream: bool, skip_reasoning: bool = False, **kwargs: Any):
         """Gemini adapter that returns OpenAI-compatible response objects/events.
 
         Important: when `_get_gemini()` builds an OpenAI client pointed at the Gemini OpenAI adapter
@@ -380,6 +752,12 @@ class LLMHandler:
         `generate_content` / `generateContent`.
         """
         client = self._get_gemini()
+        resolved_model = self._resolve_model_name(model)
+        # Filter kwargs by capabilities, then map reasoning parameters with defaults
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+        mapped_kwargs = self._map_reasoning_parameter_with_default(model, filtered_kwargs)
+        # Work on post-filter/post-map kwargs so sanitizer/mapping affects the wire call.
+        working_kwargs = mapped_kwargs.copy()
 
         # Optional Gemini-specific tools sanitizer: only applied when tools are
         # present in kwargs. This keeps OpenAI behavior unchanged while
@@ -436,9 +814,9 @@ class LLMHandler:
                 )
             return cleaned or tools
 
-        if "tools" in kwargs:
+        if "tools" in working_kwargs:
             try:
-                kwargs["tools"] = _sanitize_for_gemini_tools(kwargs["tools"])
+                working_kwargs["tools"] = _sanitize_for_gemini_tools(working_kwargs["tools"])
             except Exception:
                 # Best-effort only; fall back to original tools on any failure.
                 pass
@@ -446,20 +824,26 @@ class LLMHandler:
         # Keep max_output_tokens consistent - let each provider handle conversion internally
         # OpenAI chat completions will use model registry to determine correct parameter name
 
+        # --- Check if we should use native Gemini reasoning API formats ---
+        reasoning_param = self._get_reasoning_parameter(model)
+        if (not skip_reasoning) and reasoning_param and reasoning_param[0] in ("thinking_budget", "thinking_level"):
+            param_name, default_value = reasoning_param
+            logger.debug(f"[GEMINI REASONING] Using {param_name} format for model {model} (default: {default_value})")
+            return self._gemini_reasoning_call(model=model, input=input, stream=stream, **working_kwargs)
         # --- OpenAI-adapter path (chat.completions) ---
-        if hasattr(client, "chat") and hasattr(getattr(client, "chat"), "completions"):
+        if hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
             create_fn = getattr(getattr(client.chat, "completions"), "create", None)
             if callable(create_fn):
                 messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
 
                 if not stream:
-                    # Apply capability filtering and max_tokens conversion
-                    call_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+                    # Apply capability filtering, parameter mapping, and max_tokens conversion
+                    call_kwargs = working_kwargs.copy()
                     if "max_output_tokens" in call_kwargs:
                         max_tokens_param = self._get_max_tokens_parameter(model)
                         call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
                     try:
-                        resp = create_fn(model=model, messages=messages, **call_kwargs)
+                        resp = create_fn(model=resolved_model, messages=messages, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
                         # Map Gemini adapter rate limits into a structured LLMError
                         # so callers (e.g., handle_chat) can surface a clear message.
@@ -522,16 +906,17 @@ class LLMHandler:
                         except Exception:
                             usage_dict = None
 
-                    return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=resp)
+                    wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
+                    return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped)
 
                 def event_gen() -> Iterator[AdapterEvent]:
-                    # Apply capability filtering and max_tokens conversion
-                    call_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+                    # Apply capability filtering, parameter mapping, and max_tokens conversion
+                    call_kwargs = working_kwargs.copy()
                     if "max_output_tokens" in call_kwargs:
                         max_tokens_param = self._get_max_tokens_parameter(model)
                         call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
                     try:
-                        stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
+                        stream_obj = create_fn(model=resolved_model, messages=messages, stream=True, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
                         raise LLMError(
                             provider="gemini",
@@ -566,15 +951,13 @@ class LLMHandler:
 
         # --- Native Gemini SDK fallback (only if an injected client supports it) ---
         contents = input
-
-        # Apply capability filtering for native Gemini SDK
-        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
-
+        # Apply capability filtering and parameter mapping for native Gemini SDK
+        final_kwargs = working_kwargs.copy()
         if not stream:
             if hasattr(client, "generate_content"):
-                resp = client.generate_content(model=model, contents=contents, **filtered_kwargs)
+                resp = client.generate_content(model=resolved_model, contents=contents, **final_kwargs)
             elif hasattr(client, "generateContent"):
-                resp = client.generateContent(model=model, contents=contents, **filtered_kwargs)
+                resp = client.generateContent(model=resolved_model, contents=contents, **final_kwargs)
             else:
                 raise LLMError(
                     provider="gemini",
@@ -583,7 +966,6 @@ class LLMHandler:
                     code="no_known_method",
                     message="Gemini client does not expose chat.completions or a known native generate method",
                 )
-
             text = ""
             if hasattr(resp, "text") and getattr(resp, "text", None):
                 text = resp.text
@@ -597,28 +979,26 @@ class LLMHandler:
                             text = "".join([getattr(p, "text", "") or "" for p in parts])
                 except Exception:
                     pass
-
-            return AdapterResponse(output_text=text or "", model=model, usage=None, raw=resp)
-
+            # Native SDK responses may not expose ChatCompletion `choices`; still wrap for Responses-like fields.
+            wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text or "", usage=getattr(resp, "usage", None))
+            return AdapterResponse(output_text=text or "", model=model, usage=None, raw=wrapped)
         def native_event_gen() -> Iterator[AdapterEvent]:
             if hasattr(client, "generate_content_stream"):
-                stream_iter = client.generate_content_stream(model=model, contents=contents, **filtered_kwargs)
+                stream_iter = client.generate_content_stream(model=resolved_model, contents=contents, **final_kwargs)
                 for chunk in stream_iter:
                     delta = chunk if isinstance(chunk, str) else getattr(chunk, "text", "") or ""
                     if delta:
                         yield AdapterEvent("response.output_text.delta", delta=delta)
                 yield AdapterEvent("response.output_text.done")
                 return
-
             if hasattr(client, "generate_content"):
-                stream_iter = client.generate_content(model=model, contents=contents, stream=True, **filtered_kwargs)
+                stream_iter = client.generate_content(model=resolved_model, contents=contents, stream=True, **final_kwargs)
                 for chunk in stream_iter:
                     delta = chunk if isinstance(chunk, str) else getattr(chunk, "text", "") or ""
                     if delta:
                         yield AdapterEvent("response.output_text.delta", delta=delta)
                 yield AdapterEvent("response.output_text.done")
                 return
-
             raise LLMError(
                 provider="gemini",
                 model=model,
@@ -626,7 +1006,6 @@ class LLMHandler:
                 code="no_known_streaming_method",
                 message="Gemini client does not expose a known streaming method",
             )
-
         return native_event_gen()
 
     def _gemini_embedding_call(self, *, model: str, input: Any, **kwargs: Any):
@@ -646,9 +1025,107 @@ class LLMHandler:
                 code="missing_dimensions",
                 message="Gemini embeddings require explicit 'dimensions' parameter",
             )
-        
         client = self._get_gemini()
-        return client.embeddings.create(model=model, input=input, **kwargs)
+        resolved_model = self._resolve_model_name(model)
+        return client.embeddings.create(model=resolved_model, input=input, **kwargs)
+
+    def _wrap_gemini_chatcompletion_as_responses(self, *, resp: Any, output_text: str, usage: Any = None) -> Any:
+        """Wrap a Gemini ChatCompletion-style response to look like an OpenAI Responses object.
+
+        === CANONICAL OUTPUTS (must use for all logic) ===
+        - resp.output_text → final user-visible text (PRIMARY for text extraction)
+        - resp.output → tool calls + structured content (PRIMARY for tool extraction)
+        - resp.usage → token usage statistics
+        - resp.raw → provider-native response (debug only)
+
+        === NON-CANONICAL OUTPUTS (compatibility/debug only) ===
+        - resp.choices → legacy ChatCompletions format, DO NOT USE for logic
+        - resp.choices[].message.tool_calls → legacy tool format, IGNORED
+
+        === STRUCTURE CREATED ===
+        output: [
+            {"type": "text", "text": "full response text"},           # Canonical text item
+            {"type": "function_call", "name": "...", "arguments": "...", "call_id": "..."}  # Canonical tool items
+        ]
+
+        === EXTRACTION CONTRACT ===
+        1. All tool calls must be read from resp.output (canonical)
+        2. All text must be read from resp.output_text first, then resp.output
+        3. Never use resp.choices for production logic
+        4. Treat resp.choices as debug/compatibility only
+
+        This wrapper ensures Gemini responses are compatible with OpenAI Responses API extraction functions.
+        """
+        
+        # DEBUG: Check if truncation happens before wrapper
+        logger.debug(f"[GEMINI WRAPPER] Input output_text length: {len(output_text)}")
+        logger.debug(f"[GEMINI WRAPPER] Input output_text preview: '{output_text[:200]}...'")
+        
+        # Also check original response content
+        try:
+            if resp and getattr(resp, "choices", None):
+                choice0 = resp.choices[0]
+                msg = getattr(choice0, "message", None)
+                original_content = getattr(msg, "content", "") or ""
+                logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content length: {len(original_content)}")
+                logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content preview: '{original_content[:200]}...'")
+        except Exception as e:
+            logger.debug(f"[GEMINI WRAPPER] Could not check original content: {e}")
+
+        # Collect tool calls from ChatCompletion message.tool_calls (NON-CANONICAL source)
+        tool_items: list[dict] = []
+        try:
+            choices = getattr(resp, "choices", None)
+            if isinstance(choices, list) and choices:
+                msg = getattr(choices[0], "message", None)
+                tc = getattr(msg, "tool_calls", None)
+                if isinstance(tc, list):
+                    for t in tc:
+                        ttype = getattr(t, "type", None)
+                        if ttype != "function":
+                            continue
+                        func = getattr(t, "function", None)
+                        name = getattr(func, "name", None) if func is not None else None
+                        arguments = getattr(func, "arguments", None) if func is not None else None
+                        call_id = getattr(t, "id", None)
+                        if name:
+                            tool_items.append({
+                                "type": "function_call",
+                                "name": name,
+                                "arguments": arguments,
+                                "call_id": call_id,
+                            })
+        except Exception:
+            tool_items = []
+
+        # Build canonical Responses API output structure (CANONICAL output)
+        output: list[dict] = []
+        
+        # Add text as direct canonical item (not nested in message.content)
+        if isinstance(output_text, str) and output_text:
+            output.append({"type": "text", "text": output_text})
+        
+        # Add tool calls as direct canonical items
+        output.extend(tool_items)
+
+        class _GeminiResponsesWrapper:
+            def __init__(self, *, output_text: str, output: list[dict], usage: Any, choices: Any, raw: Any):
+                # === CANONICAL FIELDS (must use for all logic) ===
+                self.output_text = output_text      # Canonical: final text
+                self.output = output                # Canonical: tools + content
+                self.usage = usage                  # Canonical: tokens
+                
+                # === NON-CANONICAL FIELDS (compatibility/debug only) ===
+                self.choices = choices              # Legacy: DO NOT USE for logic
+                self.raw = raw                      # Provider-native: debug only
+
+        return _GeminiResponsesWrapper(
+            output_text=output_text or "",      # Canonical text field
+            output=output,                      # Canonical structured output
+            usage=usage,                        # Canonical usage field
+            choices=getattr(resp, "choices", None),  # Non-canonical compatibility
+            raw=resp,                           # Non-canonical debug
+        )
 
 
 # Singleton instance (optional)

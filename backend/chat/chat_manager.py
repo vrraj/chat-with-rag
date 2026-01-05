@@ -155,8 +155,8 @@ def resolve_stage_specs(
     inference_model = getattr(settings_obj, "inference_model", "")
     effective_inference_model = (inference_model_override or inference_model)
 
-    # Tools synthesis model defaults to the *effective* inference model unless explicitly set in settings.
-    tools_synth_model = getattr(settings_obj, "inference_tools_synthesis_model", effective_inference_model)
+    # Tools synthesis model uses the same model as inference
+    tools_synth_model = effective_inference_model
 
     # Embedding spec: settings.embedding_model is a provider key (openai/gemini).
     # Resolve it into a provider-specific embedding model name for stage_specs consistency.
@@ -262,6 +262,7 @@ def resolve_stage_specs(
                 "temperature": inference_temp,
                 "top_p": inference_top_p,
                 "max_output_tokens": inference_max_out,
+                "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
                 **tools_kwargs,
             },
         },
@@ -376,30 +377,55 @@ def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
     return {"cleared": bool(existed), "namespace": ns, "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
 # ---- end accumulator ----
 
+
 def _extract_text_from_responses(resp) -> str:
-    """Return response text from Responses API object.
+    """Return response text from a Responses-like object.
 
-    Prefers `resp.output_text`. If absent, concatenates any `.text` parts
-    from `resp.output[...].content[...]` entries. Falls back to empty string.
+    Robust extraction contract (handles adapters/wrappers):
+      1) Consider BOTH `resp` and `resp.raw` (if present) as possible carriers of canonical fields.
+      2) Gather candidate text from:
+          - `.output_text` (if present)
+          - `.output` items of the form {"type":"text","text":...}
+          - `.output[...].content[...].text`
+      3) Return the LONGEST non-empty candidate. This protects against wrappers
+         that accidentally set a truncated `output_text`.
     """
-    #logger.debug(f"Full response object: {resp}")
-    # Prefer direct output_text if available
-    text = getattr(resp, "output_text", None)
-    if isinstance(text, str) and text:
-        return text
+    # Adapter-style unwrap: some facades put provider-native or canonical fields on `.raw`.
+    base = getattr(resp, "raw", None) or resp
 
-    # Try to read from output -> content -> text
-    output = getattr(resp, "output", None)
-    if output is None and isinstance(resp, dict):
-        output = resp.get("output")
+    try:
+        logger.debug(f"[RESP DEBUG] resp_type={type(resp)} base_type={type(base)}")
+    except Exception:
+        pass
 
-    parts: List[str] = []
-    if output and isinstance(output, list):
+    def _get_attr(obj, name: str):
+        try:
+            if isinstance(obj, dict):
+                return obj.get(name)
+            return getattr(obj, name, None)
+        except Exception:
+            return None
+
+    def _extract_from_output(obj) -> str:
+        output = _get_attr(obj, "output")
+        if not isinstance(output, list):
+            return ""
+        parts: List[str] = []
         for item in output:
+            it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
+
+            # (A) Canonical direct text items: {"type": "text", "text": "..."}
+            if it_type == "text":
+                txt = getattr(item, "text", None) if not isinstance(item, dict) else item.get("text")
+                if isinstance(txt, str) and txt:
+                    parts.append(txt)
+                continue
+
+            # (B) Nested content arrays: output[i].content[j].text
             content = getattr(item, "content", None)
             if content is None and isinstance(item, dict):
                 content = item.get("content")
-            if not content or not isinstance(content, list):
+            if not isinstance(content, list):
                 continue
             for c in content:
                 txt = getattr(c, "text", None)
@@ -407,8 +433,74 @@ def _extract_text_from_responses(resp) -> str:
                     txt = c.get("text")
                 if isinstance(txt, str) and txt:
                     parts.append(txt)
+        return "".join(parts).strip() if parts else ""
 
-    return "".join(parts) if parts else ""
+    candidates: List[str] = []
+
+    # Collect output_text candidates from both resp and base
+    for obj in (resp, base):
+        t = _get_attr(obj, "output_text")
+        if isinstance(t, str):
+            t = t.strip()
+            if t:
+                candidates.append(t)
+
+    # Collect output-derived candidates from both resp and base
+    for obj in (resp, base):
+        t = _extract_from_output(obj)
+        if t:
+            candidates.append(t)
+
+    # Choose the longest candidate (best-effort against truncation)
+    best = ""
+    for c in candidates:
+        if isinstance(c, str) and len(c) > len(best):
+            best = c
+
+    # Fallbacks: some providers/wrappers may not populate `output_text`/`output`.
+    # Prefer ChatCompletions-style `choices[0].message.content` if present.
+    if not best:
+        try:
+            for obj in (resp, base):
+                choices = _get_attr(obj, "choices")
+                if isinstance(choices, list) and choices:
+                    c0 = choices[0]
+                    msg = getattr(c0, "message", None) if not isinstance(c0, dict) else c0.get("message")
+                    content = getattr(msg, "content", None) if not isinstance(msg, dict) else (msg or {}).get("content")
+                    if isinstance(content, str) and content.strip():
+                        best = content.strip()
+                        break
+        except Exception:
+            pass
+
+    # Fallbacks for Google/Gemini-style responses: candidates[0].content.parts[].text
+    if not best:
+        try:
+            for obj in (resp, base):
+                cands = _get_attr(obj, "candidates")
+                if isinstance(cands, list) and cands:
+                    cand0 = cands[0]
+                    content = getattr(cand0, "content", None) if not isinstance(cand0, dict) else cand0.get("content")
+                    parts = getattr(content, "parts", None) if not isinstance(content, dict) else (content or {}).get("parts")
+                    if isinstance(parts, list):
+                        parts_txt: List[str] = []
+                        for p in parts:
+                            txt = getattr(p, "text", None) if not isinstance(p, dict) else p.get("text")
+                            if isinstance(txt, str) and txt:
+                                parts_txt.append(txt)
+                        joined = "".join(parts_txt).strip() if parts_txt else ""
+                        if joined:
+                            best = joined
+                            break
+        except Exception:
+            pass
+
+    try:
+        logger.debug(f"[RESP DEBUG] candidates={len(candidates)} best_len={len(best)}")
+    except Exception:
+        pass
+
+    return best
 
 
 
@@ -1553,8 +1645,52 @@ def rewrite_query(
             raw = raw[7:-3].strip()
         elif raw.startswith("```") and raw.endswith("```"):
             raw = raw[3:-3].strip()
-        data = json.loads(raw)
-        # Debug: log the parsed JSON (truncated)
+        
+        # Validate JSON format and retry if invalid
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning(f"{log_prefix} Invalid JSON from LLM: {e}. Response was: '{raw[:200]}...'")
+            logger.warning(f"{log_prefix} This often happens when model ignores JSON schema instruction")
+            logger.warning(f"{log_prefix} Response may be truncated - checking max_output_tokens setting")
+            
+            # Retry with stronger emphasis on JSON format
+            retry_prompt = prompt + "\n\nIMPORTANT: You MUST return ONLY a complete JSON object. No conversational text. Ensure all fields are included."
+            logger.debug(f"{log_prefix} Retrying with stronger JSON instruction")
+            
+            resp_retry = _responses_create(
+                provider=_provider,
+                model=_model,
+                input=retry_prompt,
+                **_kwargs,
+            )
+            raw_retry = _extract_text_from_responses(resp_retry).strip()
+            
+            # Clean retry response
+            if raw_retry.startswith("```json") and raw_retry.endswith("```"):
+                raw_retry = raw_retry[7:-3].strip()
+            elif raw_retry.startswith("```") and raw_retry.endswith("```"):
+                raw_retry = raw_retry[3:-3].strip()
+            
+            try:
+                data = json.loads(raw_retry)
+                logger.info(f"{log_prefix} Retry successful, got valid JSON")
+            except json.JSONDecodeError:
+                logger.error(f"{log_prefix} Retry also failed, using original query")
+                # Fallback to original with changed=False
+                data = {
+                    "rewritten": message,
+                    "changed": False,
+                    "confidence": 0.0,
+                    "ambiguous": True,
+                    "reason": "JSON parsing failed, using original"
+                }
+        
+        # Debug: log parsed JSON (truncated)
+        try:
+            logger.debug(f"{log_prefix} Parsed JSON: {str(data)[:100]}...")
+        except Exception:
+            pass
         try:
             _t = int(getattr(settings, "debug_log_truncate_chars", 4000))
         except Exception:
@@ -1778,17 +1914,71 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_handler)
     # so we always inspect the provider-native object for tool_calls.
     base = getattr(resp, "raw", resp)
+
+    def _dedup(_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Best-effort deduplication across providers/wrappers.
+        Dedup key prefers call id when present, otherwise falls back to (name, args).
+        """
+        out: List[Dict[str, Any]] = []
+        seen: set[tuple] = set()
+        for c in _calls:
+            try:
+                name = (c.get("name") or "").strip()
+                cid = (c.get("id") or "").strip()
+                args = c.get("args")
+                if isinstance(args, str):
+                    akey = args
+                elif isinstance(args, dict):
+                    try:
+                        akey = json.dumps(args, sort_keys=True, ensure_ascii=False)
+                    except Exception:
+                        akey = str(args)
+                else:
+                    akey = str(args)
+                key = (cid,) if cid else (name, akey)
+                if name and key not in seen:
+                    seen.add(key)
+                    out.append({"name": name, "args": args, "id": c.get("id")})
+            except Exception:
+                # If anything goes wrong, keep the call to avoid dropping tool execution.
+                out.append(c)
+        return out
+
     calls: List[Dict[str, Any]] = []
+
+    # === Canonical path: Responses-style `output` ===
+    # If `output` exists and is non-empty, treat it as authoritative and do NOT
+    # also merge in legacy `choices` tool_calls. This avoids double-extraction
+    # for adapters that expose both formats.
     try:
         output = getattr(base, "output", None) if not isinstance(base, dict) else base.get("output")
-        if isinstance(output, list):
-            for item in output:
+        
+        if isinstance(output, list) and output:
+            for i, item in enumerate(output):
                 it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
+                
                 if it_type in ("function_call", "tool_use", "tool_call"):
                     name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
                     args = getattr(item, "arguments", None) if not isinstance(item, dict) else item.get("arguments")
                     cid = getattr(item, "call_id", None) if not isinstance(item, dict) else (item.get("call_id") or item.get("id"))
                     calls.append({"name": name, "args": args, "id": cid})
+                elif it_type == "message":
+                    # OpenAI Responses API: tool calls are in message.content
+                    content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
+                    
+                    if isinstance(content, list):
+                        for c in content:
+                            c_type = getattr(c, "type", None) if not isinstance(c, dict) else c.get("type")
+                            
+                            if c_type == "tool_call":
+                                # OpenAI Responses API tool call format
+                                name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
+                                args = getattr(c, "arguments", None) if not isinstance(c, dict) else c.get("arguments")
+                                cid = getattr(c, "id", None) if not isinstance(c, dict) else c.get("id")
+                                calls.append({"name": name, "args": args, "id": cid})
+                            elif c_type == "output_text":
+                                # Skip text content, only looking for tool calls
+                                continue
                 else:
                     content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
                     if isinstance(content, list):
@@ -1806,8 +1996,15 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
                                 else:
                                     a = getattr(c, "input", None) or getattr(c, "arguments", None)
                                 calls.append({"name": name, "args": a, "id": cid})
+
+            # Canonical output present: return early (no choices fallback).
+            calls = [c for c in calls if c.get("name")]
+            return _dedup(calls)
     except Exception:
+        # Fall through to legacy choices extraction.
         pass
+
+    # === Legacy fallback: ChatCompletions-style `choices[].message.tool_calls` ===
     try:
         choices = getattr(base, "choices", None) if not isinstance(base, dict) else base.get("choices")
         if isinstance(choices, list) and choices:
@@ -1824,7 +2021,9 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
                         calls.append({"name": name, "args": arguments, "id": tc_id})
     except Exception:
         pass
-    return [c for c in calls if c.get("name")]
+
+    calls = [c for c in calls if c.get("name")]
+    return _dedup(calls)
 
 
 def parse_tool_args(raw: Any) -> Dict[str, Any]:
@@ -2862,10 +3061,11 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         "STRICT RULES:\n"
         "1. Base your answer ONLY on information in the Context section (and Web search results if present).\n"
         "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond that context.\n"
-        "3. If the context does not contain enough information to answer the question, reply exactly with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-        "4. If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
-        "5. Do not fabricate sources or facts.\n"
-        "6. If a source URL is available (shown in the final 'Sources' section), you may reference it by its tag like [1]."
+        "3. If the context does not contain enough information to answer the question, USE THE AVAILABLE TOOLS to gather the information you need.\n"
+        "4. Only if tools cannot help and you still cannot answer, then reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+        "5. If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
+        "6. Do not fabricate sources or facts.\n"
+        "7. If a source URL is available (shown in the final 'Sources' section), you may reference it by its tag like [1]."
     )
     system_prompt = strict_rag_prompt
 
@@ -2910,7 +3110,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     temperature = _pick(params, ["temperature", "inference_temperature", "INFERENCE_TEMPERATURE"], getattr(settings_obj, "inference_temperature", 0.7))
     max_out = _pick(params, ["max_output_tokens", "max_inference_output_tokens", "MAX_INFERENCE_OUTPUT_TOKENS"], getattr(settings_obj, "max_inference_output_tokens", 300))
     top_p = _pick(params, ["top_p", "inference_top_p", "INFERENCE_TOP_P"], getattr(settings_obj, "inference_top_p", None))
-
+    
     # Stage: Inference API call
     # --- Inference API call - Orchestrater stage with Tool Calls
     logger.info("[PIPELINE] emit stage: Generating Response")
@@ -2921,6 +3121,16 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     inf_spec = (stage_specs or {}).get("inference") or {}
     _inf_provider = str(inf_spec.get("provider") or "openai")
     _inf_model = str(inf_spec.get("model") or getattr(settings_obj, "inference_model", "gpt-4o"))
+    
+    # Auto-detect provider from model name to prevent mismatch
+    if _inf_provider == "openai" and (_inf_model.startswith("models/gemini") or _inf_model.startswith("gemini")):
+        _inf_provider = "gemini"
+        logger.debug(f"[INFERENCE AUTO-DETECT] Corrected provider to 'gemini' for model '{_inf_model}'")
+    
+    # DEBUG: Check provider/model mismatch
+    logger.debug(f"[INFERENCE DEBUG] provider={_inf_provider} model={_inf_model}")
+    if _inf_model.startswith("models/gemini") and _inf_provider == "openai":
+        logger.warning(f"[INFERENCE MISMATCH] Gemini model '{_inf_model}' with OpenAI provider '{_inf_provider}' - this will fail!")
 
     _kwargs_inf: Dict[str, Any] = dict(inf_spec.get("kwargs") or {})
 
@@ -2930,9 +3140,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     _kwargs_inf["max_output_tokens"] = int(max_out)
     if top_p is not None:
         _kwargs_inf["top_p"] = float(top_p)
-    if getattr(settings_obj, "inference_reasoning_model", False):
-        _kwargs_inf["reasoning"] = {"effort": getattr(settings_obj, "inference_reasoning_effort", "low")}
-
+   
     if enable_tools and isinstance(prompt_input, list):
         try:
             logger.debug("[PIPELINE] Before Tools list function")
@@ -2953,70 +3161,87 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
+    
+    # DEBUG: Add debug before _responses_create call
+    logger.debug(f"[INFERENCE] About to call _responses_create: provider={_inf_provider} model={_inf_model}")
+    logger.debug(f"[INFERENCE] _kwargs_inf keys: {list(_kwargs_inf.keys())}")
+    
     try:
         resp_inf = _responses_create(
             provider=_inf_provider,
             model=_inf_model,
             **_kwargs_inf,
         )
-    except LLMError as e:
-        kind = getattr(e, "kind", "") or ""
-        if kind == "rate_limit":
-            try:
-                _prov = str(getattr(e, "provider", "") or "").strip() or "the inference provider"
-                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
-                quota_msg = (
-                    f"Our inference model (provider={_prov}, model={_model}) "
-                    "is currently over its rate-limit or quota. I couldn't "
-                    "generate a response safely, so this turn has been stopped. "
-                    "Please try again later or contact the administrator to "
-                    "increase the quota."
-                )
-            except Exception:
-                quota_msg = (
-                    "The inference model is currently over its rate limit or quota. "
-                    "Please try again later."
-                )
+        logger.debug(f"[INFERENCE] _responses_create succeeded: type={type(resp_inf)}")
+    except Exception as e:
+        logger.error(f"[INFERENCE] _responses_create failed with {type(e).__name__}: {str(e)[:200]}...")
+        logger.debug(f"[INFERENCE] Exception details: type={type(e)} args={getattr(e, 'args', None)}")
+        
+        # Check if it's an LLMError (especially rate limit) and handle it appropriately
+        if isinstance(e, LLMError):
+            logger.error(f"[INFERENCE] Caught LLMError: kind={getattr(e, 'kind', 'None')} provider={getattr(e, 'provider', 'None')} message={str(e)[:100]}...")
+            kind = getattr(e, "kind", "") or ""
+            if kind == "rate_limit":
+                logger.info(f"[INFERENCE] Processing rate limit error for user")
+                try:
+                    _prov = str(getattr(e, "provider", "") or "").strip() or "the inference provider"
+                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                    quota_msg = (
+                        f"Our inference model (provider={_prov}, model={_model}) "
+                        "is currently over its rate-limit or quota. I couldn't "
+                        "generate a response safely, so this turn has been stopped. "
+                        "Please try again later or contact the administrator to "
+                        "increase the quota."
+                    )
+                except Exception:
+                    quota_msg = (
+                        "The inference model is currently over its rate limit or quota. "
+                        "Please try again later."
+                    )
 
-            try:
-                emit_stage(
-                    req_id,
-                    "Final Answer",
-                    final=True,
-                    finalContent=quota_msg,
-                )
-            except Exception:
-                pass
-            try:
-                close_stream(req_id)
-            except Exception:
-                pass
-            try:
-                m.finalize_turn()
-                turn_metrics, convo_snapshot = m.snapshot()
-            except Exception:
-                turn_metrics = m.turn
-                convo_snapshot = {
-                    "tokens": {
-                        "embedding": 0,
-                        "llm_input": 0,
-                        "llm_output": 0,
-                        "conversation_total": 0,
-                    },
-                    "cost": {"conversation_total": 0.0},
+                logger.info(f"[INFERENCE] Created rate limit message: {quota_msg[:100]}...")
+                try:
+                    emit_stage(
+                        req_id,
+                        "Final Answer",
+                        final=True,
+                        finalContent=quota_msg,
+                    )
+                    logger.info(f"[INFERENCE] Rate limit message emitted successfully")
+                except Exception as emit_err:
+                    logger.error(f"[INFERENCE] Failed to emit rate limit message: {emit_err}")
+                    pass
+                try:
+                    close_stream(req_id)
+                except Exception:
+                    pass
+                try:
+                    m.finalize_turn()
+                    turn_metrics, convo_snapshot = m.snapshot()
+                except Exception:
+                    turn_metrics = m.turn
+                    convo_snapshot = {
+                        "tokens": {
+                            "embedding": 0,
+                            "llm_input": 0,
+                            "llm_output": 0,
+                            "conversation_total": 0,
+                        },
+                        "cost": {"conversation_total": 0.0},
+                    }
+                return {
+                    "answer": quota_msg,
+                    "sources": [],
+                    "turn_metrics": turn_metrics,
+                    "conversation_totals": convo_snapshot,
+                    "metrics": {"vectors_retrieved": 0},
+                    "tools_used": [],
+                    "rewrite_display": rewrite_display,
                 }
-            return {
-                "answer": quota_msg,
-                "sources": [],
-                "turn_metrics": turn_metrics,
-                "conversation_totals": convo_snapshot,
-                "metrics": {"vectors_retrieved": 0},
-                "tools_used": [],
-                "rewrite_display": rewrite_display,
-            }
+        # Non-LLMError exceptions, re-raise to be handled by outer pipeline
+            raise
 
-        # Non-rate-limit LLMErrors fall back to the outer handler.
-        raise
+    # Note: LLMError exceptions are now handled in the first except block above
     try:
         # Log the provider-native response object for debugging tool-calls behavior.
         _raw = getattr(resp_inf, "raw", resp_inf)
@@ -3041,6 +3266,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     answer_override: str | None = None
     tool_answer_text: str = ""
     used_tools: List[str] = []
+    
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # NOTE: Single-pass tool execution.
         # The previous bounded while-loop was ineffective because `resp_inf` is not updated in-loop,
@@ -3051,6 +3277,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
             logger.debug("[TOOLS] Found %d tool calls", len(tool_calls))
+            
             if not tool_calls:
                 raise StopIteration  # handled by outer try/except; leaves answer_override=None
 
@@ -3067,6 +3294,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if _tt and _tools and (_tt not in _tools):
                     return _tt + "\n\n" + "--- External Tool Results ---\n" + _tools
                 return "--- External Tool Results ---\n" + _tools
+
+            # DEBUG: Print extracted tool calls before execution
+            logger.debug(f"[DEBUG] Extracted tool calls ({len(tool_calls)}):")
+            for i, call in enumerate(tool_calls):
+                name = call.get("name", "")
+                call_id = call.get("id", "")
+                args = call.get("args", {})
+                logger.debug(f"[DEBUG]   Tool {i+1}: name='{name}', id='{call_id}', args={args}")
 
             for call in tool_calls:
                 name = call.get("name") or ""
@@ -3140,10 +3375,11 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 "STRICT RULES:\n"
                 "1. Base your answer ONLY on information in the Context section and Tool results.\n"
                 "2. Do NOT use any outside knowledge.\n"
-                "3. If the context does not contain enough information to answer the question, reply exactly with: "
+                "3. If the context does not contain enough information to answer the question, USE THE AVAILABLE TOOLS to gather the information you need.\n"
+                "4. Only if tools cannot help and you still cannot answer, then reply with: "
                 "I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-                "4. Retain any numeric citations like [1], [2] from the Context.\n"
-                "5. Do not fabricate sources or facts.\n\n"
+                "5. Retain any numeric citations like [1], [2] from the Context.\n"
+                "6. Do not fabricate sources or facts.\n\n"
                 f"Question:\n{message}\n\n"
                 + (f"Previous conversation summary:\n{summary_text}\n\n" if summary_text else "")
                 + (f"{recent_block_str}\n" if recent_block_str else "")

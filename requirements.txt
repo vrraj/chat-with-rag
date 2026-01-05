@@ -7,7 +7,7 @@ uvicorn==0.27.0
 #PyMuPDF>=1.26.6
 # Let PyMuPDF float to whatever pymupdf4llm wants
 pymupdf4llm>=0.2.0
-openai>=1.50.0
+openai==2.8.1
 trafilatura==1.12.2
 beautifulsoup4==4.12.2
 httpx==0.26.0
