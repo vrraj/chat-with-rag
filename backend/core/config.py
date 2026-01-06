@@ -235,7 +235,7 @@ class Settings(BaseSettings):
     inference_cost_per_MM_tokens_output: float = 0.60
     inference_cost_per_MM_tokens_cached_input: float = 0.075
 
-    max_inference_output_tokens: int = 300
+    max_inference_output_tokens: int = 500
     # to include reasoning for the inference_model, set the inference_reasoning_effort and inference_reasoning_model
     # inference_reasoning_effort: "low" | "medium" | "high"
     # inference_reasoning_model: True to use reasoning

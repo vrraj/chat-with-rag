@@ -36,6 +36,7 @@ REGISTRY: Dict[str, ModelInfo] = {
         endpoint="embeddings",
         pricing=Pricing(input_per_mm=0.02, output_per_mm=0.0),
         capabilities={"dimensions": 1536},
+        max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
     "openai:fast": ModelInfo(
         key="openai:fast",
@@ -50,6 +51,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": False,
             "top_p": True,
         },
+        max_tokens_parameter="max_tokens",  # OpenAI non-reasoning models use max_tokens
     ),
     "openai:best": ModelInfo(
         key="openai:best",
@@ -64,6 +66,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": False,
             "top_p": True,
         },
+        max_tokens_parameter="max_tokens",  # OpenAI non-reasoning models use max_tokens
     ),
     "openai:reasoning_mini": ModelInfo(
         key="openai:reasoning_mini",
@@ -78,7 +81,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": True,  # OpenAI reasoning models support this
             "top_p": False,
         },
-        max_tokens_parameter="max_completion_tokens",
+        max_tokens_parameter="max_completion_tokens",  # OpenAI reasoning models use max_completion_tokens
         reasoning_parameter=("reasoning_effort", "low"),  # Default to "low"
     ),
     "openai:reasoning_mini_small": ModelInfo(
@@ -94,7 +97,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": True,  # OpenAI reasoning models support this
             "top_p": False,
         },
-        max_tokens_parameter="max_completion_tokens",
+        max_tokens_parameter="max_completion_tokens",  # OpenAI reasoning models use max_completion_tokens
         reasoning_parameter=("reasoning_effort", "low"),  # Default to "low"
     ),
 
@@ -108,6 +111,7 @@ REGISTRY: Dict[str, ModelInfo] = {
         endpoint="embeddings",
         pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),  # use your real rates
         capabilities={"dimensions": 1536},
+        max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
         reasoning_parameter=("thinking_budget", None),  # Embeddings don't use reasoning
     ),
     "gemini:fast": ModelInfo(
@@ -123,14 +127,31 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": True,  # Supports thinking_budget parameter
             "top_p": True,
         },
+        max_tokens_parameter="max_completion_tokens",  # Gemini models use max_tokens
         reasoning_parameter=("thinking_budget", 2000),  # Default to 2000 tokens
+    ),
+    "gemini:fast-3-flash": ModelInfo(
+        key="gemini:fast-3-flash",
+        provider="gemini",
+        model="models/gemini-3-flash-preview",
+        endpoint="chat_completions",
+        pricing=Pricing(input_per_mm=0.50, output_per_mm=3.00),  # use your real rates
+        capabilities={
+            "tools": True, 
+            "stream": True,
+            "temperature": True,
+            "reasoning_effort": True,  # Supports thinking_budget parameter
+            "top_p": True,
+        },
+        max_tokens_parameter="max_completion_tokens",  # Gemini models use max_tokens
+        reasoning_parameter=("thinking_level", "low"),  # Default to "low"
     ),
     "gemini:best": ModelInfo(
         key="gemini:best",
         provider="gemini",
-        model="models/gemini-2.5-pro",
+        model="models/gemini-2.5-flash",
         endpoint="chat_completions",
-        pricing=Pricing(input_per_mm=1.00, output_per_mm=4.00),  # use your real rates
+        pricing=Pricing(input_per_mm=0.30, output_per_mm=2.50),  # use your real rates
         capabilities={
             "tools": True, 
             "stream": True,
@@ -138,7 +159,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": True,  # Supports thinking_level parameter
             "top_p": True,
         },
-        reasoning_parameter=("thinking_level", "low"),  # Default to "low"
+        max_tokens_parameter="max_completion_tokens",  # Gemini models use max_tokens
+        reasoning_parameter=("thinking_budget", 2000),  # Default to 5000 tokens
     ),
 }
 

@@ -562,10 +562,16 @@ class LLMHandler:
                     logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, thinking_budget={budget}, stream={stream})")
                 else:
                     logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, extra_body=None, stream={stream})")
+                logger.debug("[GEMINI BUDGET] pre-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
                 # Handle max_output_tokens conversion
                 if "max_output_tokens" in call_kwargs:
                     max_tokens_param = self._get_max_tokens_parameter(model)
                     call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
+                logger.debug("[GEMINI BUDGET] post-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
+                
+                # DEBUG: Log what we're sending to the API
+                logger.debug(f"[GEMINI API DEBUG] Sending to API: model={model}, call_kwargs={call_kwargs}")
+                
                 if stream:
                     stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
                     def _event_gen() -> Iterator[AdapterEvent]:
@@ -583,6 +589,9 @@ class LLMHandler:
                     return _event_gen()
                 try:
                     resp = create_fn(model=model, messages=messages, stream=False, **call_kwargs)
+                    # DEBUG: Log the raw response from Gemini API
+                    logger.debug(f"[GEMINI API DEBUG] Raw response type: {type(resp)}")
+                    logger.debug(f"[GEMINI API DEBUG] Raw response: {resp}")
                 except openai.RateLimitError as e:  # type: ignore[attr-defined]
                     # Map Gemini adapter rate limits into a structured LLMError
                     # so callers (e.g., handle_chat) can surface a clear message.
@@ -664,10 +673,14 @@ class LLMHandler:
                 # Double-wrap so the SDK merges `{ "extra_body": ... }` into the request body.
                 call_kwargs["extra_body"] = {"extra_body": inner}
                 logger.debug(f"[GEMINI LEVEL] API call: chat.completions.create(model={model}, thinking_level='{thinking_level}', stream={stream})")
+                # DEBUG: log keys containing "max" before conversion
+                logger.debug("[GEMINI LEVEL] pre-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
                 # Handle max_output_tokens conversion
                 if "max_output_tokens" in call_kwargs:
                     max_tokens_param = self._get_max_tokens_parameter(model)
                     call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
+                # DEBUG: log keys containing "max" after conversion
+                logger.debug("[GEMINI LEVEL] post-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
                 if stream:
                     stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
                     def _event_gen() -> Iterator[AdapterEvent]:
