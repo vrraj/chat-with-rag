@@ -196,6 +196,9 @@ def resolve_stage_specs(
     inference_temp = float(getattr(settings_obj, "inference_temperature", 0.2))
     inference_top_p = float(getattr(settings_obj, "inference_top_p", 1.0))
     inference_max_out = int(getattr(settings_obj, "max_inference_output_tokens", 800))
+    # Tools synthesis can optionally use its own output token budget.
+    # Back-compat default: fall back to inference_max_out when no dedicated setting exists.
+    tools_synth_max_out = int(getattr(settings_obj, "tools_synth_max_output_tokens", inference_max_out))
 
     # Tools kwargs are attached at the inference call site today; mirror the current logic here.
     tools_kwargs: Dict[str, Any] = {}
@@ -224,6 +227,17 @@ def resolve_stage_specs(
             tools_kwargs["tools"] = tools
         except Exception:
             tools_kwargs["tools"] = []
+
+    try:
+        logger.debug(
+            "[STAGE SPECS] inference provider=%s model=%s max_out=%d | tools_synth max_out=%d",
+            effective_inference_provider,
+            effective_inference_model,
+            inference_max_out,
+            tools_synth_max_out,
+        )
+    except Exception:
+        pass
 
     return {
         "embedding": {
@@ -274,7 +288,7 @@ def resolve_stage_specs(
             "model": tools_synth_model,
             "kwargs": {
                 "temperature": inference_temp,
-                "max_output_tokens": inference_max_out,
+                "max_output_tokens": tools_synth_max_out,
             },
         },
     }
