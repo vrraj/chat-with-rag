@@ -501,6 +501,11 @@ class LLMHandler:
 
         # Double-wrap so OpenAI Python SDK merges `{ "extra_body": ... }` into request body.
         out["extra_body"] = {"extra_body": inner}
+        
+        # Remove the reasoning parameter from top-level since it's now in extra_body
+        if rp_name in out:
+            out.pop(rp_name)
+        
         return out
 
     def _get_model_capabilities(self, model: str) -> Dict[str, Any]:
@@ -695,7 +700,7 @@ class LLMHandler:
             return value
         
         # Check if reasoning_parameter exists before accessing
-        if hasattr(model_info, 'reasoning_parameter'):
+        if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
             param_name, default_value = model_info.reasoning_parameter
         else:
             # No reasoning_parameter field - no conversion needed
@@ -719,7 +724,7 @@ class LLMHandler:
         if model in _model_registry.REGISTRY:
             model_info = _model_registry.REGISTRY[model]
             # Check if reasoning_parameter exists before accessing
-            if hasattr(model_info, 'reasoning_parameter'):
+            if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
                 param_name, default_value = model_info.reasoning_parameter
                 mapped_kwargs = kwargs.copy()
                 
@@ -745,7 +750,7 @@ class LLMHandler:
         for model_info in _model_registry.REGISTRY.values():
             if model_info.model == model:
                 # Check if reasoning_parameter exists before accessing
-                if hasattr(model_info, 'reasoning_parameter'):
+                if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
                     param_name, default_value = model_info.reasoning_parameter
                     mapped_kwargs = kwargs.copy()
                     
@@ -771,7 +776,7 @@ class LLMHandler:
         for key, model_info in _model_registry.REGISTRY.items():
             if key.endswith(f":{model}") or key == model:
                 # Check if reasoning_parameter exists before accessing
-                if hasattr(model_info, 'reasoning_parameter'):
+                if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
                     param_name, default_value = model_info.reasoning_parameter
                     mapped_kwargs = kwargs.copy()
                     
@@ -991,253 +996,6 @@ class LLMHandler:
         client = self._get_openai()
         resolved_model = self._resolve_model_name(model)
         return client.embeddings.create(model=resolved_model, input=input, **kwargs)
-
-    def _gemini_reasoning_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
-        """Call Gemini using native reasoning API formats."""
-        client = self._get_gemini()
-
-        # Get reasoning parameter from registry
-        reasoning_param = self._get_reasoning_parameter(model)
-        param_name, default_value = reasoning_param or (None, None)
-
-        # Use the central resolver for model name
-        actual_model = self._resolve_model_name(model)
-
-        # Determine which format to use based on parameter type
-        if param_name == "thinking_budget":
-            # Use responses.create with reasoning={"budget": tokens}
-            return self._gemini_budget_reasoning_call(
-                client=client,
-                model=actual_model,
-                input=input,
-                stream=stream,
-                reasoning_budget=kwargs.get(param_name, default_value),
-                **{k: v for k, v in kwargs.items() if k != param_name}
-            )
-        elif param_name == "thinking_level":
-            # Use chat.completions.create with extra_body
-            return self._gemini_level_reasoning_call(
-                client=client,
-                model=actual_model,
-                input=input,
-                stream=stream,
-                thinking_level=kwargs.get(param_name, default_value),
-                **{k: v for k, v in kwargs.items() if k != param_name}
-            )
-        else:
-            # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
-            return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
-
-    def _gemini_budget_reasoning_call(self, *, client, model: str, input: Any, stream: bool, reasoning_budget: Any, **kwargs: Any):
-        """Gemini reasoning using chat.completions.create with extra_body for thinking_budget."""
-        logger.debug(f"[GEMINI BUDGET] Model: {model}, Budget: {reasoning_budget}, Stream: {stream}")
-        # Check if client has chat completions
-        if hasattr(client, "chat") and hasattr(getattr(client, "chat"), "completions"):
-            create_fn = getattr(getattr(client.chat, "completions"), "create", None)
-            if callable(create_fn):
-                messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
-                # Prepare call kwargs
-                call_kwargs = kwargs.copy()
-                # Convert reasoning_budget to integer if needed
-                if reasoning_budget == -1:
-                    budget = None  # Dynamic thinking
-                else:
-                    budget = int(reasoning_budget) if reasoning_budget else 2000
-                # Add extra_body with thinking_config for budget.
-                # IMPORTANT: OpenAI Python SDK treats `extra_body=...` as a merge-into-root.
-                # For Google's OpenAI-compat endpoint, provider-specific payload must be
-                # nested under a top-level `extra_body` field on the wire.
-                if budget is not None:
-                    existing = call_kwargs.pop("extra_body", {})
-                    inner: Dict[str, Any] = {}
-                    if isinstance(existing, dict):
-                        inner = existing.get("extra_body", existing)
-                    inner.setdefault("google", {})
-                    inner["google"]["thinking_config"] = {"thinking_budget": budget}
-                    # Double-wrap so the SDK merges `{ "extra_body": ... }` into the request body.
-                    call_kwargs["extra_body"] = {"extra_body": inner}
-                    logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, thinking_budget={budget}, stream={stream})")
-                else:
-                    logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, extra_body=None, stream={stream})")
-                # (Token parameter mapping now handled centrally in create())
-                
-                # DEBUG: Log what we're sending to the API
-                logger.debug(f"[GEMINI API DEBUG] Sending to API: model={model}, call_kwargs={call_kwargs}")
-                
-                if stream:
-                    stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
-                    def _event_gen() -> Iterator[AdapterEvent]:
-                        for chunk in stream_obj:
-                            try:
-                                if not getattr(chunk, "choices", None):
-                                    continue
-                                delta_obj = getattr(chunk.choices[0], "delta", None)
-                                delta_text = getattr(delta_obj, "content", None)
-                                if delta_text:
-                                    yield AdapterEvent("response.output_text.delta", delta=delta_text)
-                            except Exception:
-                                continue
-                        yield AdapterEvent("response.output_text.done")
-                    return _event_gen()
-                try:
-                    resp = create_fn(model=model, messages=messages, stream=False, **call_kwargs)
-                    # DEBUG: Log the raw response from Gemini API
-                    logger.debug(f"[GEMINI API DEBUG] Raw response type: {type(resp)}")
-                    logger.debug(f"[GEMINI API DEBUG] Raw response: {resp}")
-                except openai.RateLimitError as e:  # type: ignore[attr-defined]
-                    # Map Gemini adapter rate limits into a structured LLMError
-                    # so callers (e.g., handle_chat) can surface a clear message.
-                    retry_after = None
-                    try:
-                        retry_after = getattr(e, "retry_after", None)
-                        if retry_after is None:
-                            # Try to extract from OpenAI error details
-                            details = getattr(e, "response", {}).get("details", [])
-                            for detail in details:
-                                if hasattr(detail, "retryDelay"):
-                                    retry_after = getattr(detail, "retryDelay", None)
-                                    break
-                    except Exception:
-                        pass
-                    
-                    raise LLMError(
-                        provider="gemini",
-                        model=model,
-                        kind="rate_limit",
-                        code="rate_limit",
-                        message=str(e),
-                        retry_after=retry_after,
-                    ) from e
-                text = ""
-                try:
-                    if resp and getattr(resp, "choices", None):
-                        choice0 = resp.choices[0]
-                        msg = getattr(choice0, "message", None)
-                        text = getattr(msg, "content", "") or ""
-                except Exception:
-                    text = ""
-                usage_dict: Optional[Dict[str, int]] = None
-                usage = getattr(resp, "usage", None)
-                if usage is not None:
-                    try:
-                        if isinstance(usage, dict):
-                            usage_dict = {
-                                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                                "completion_tokens": int(usage.get("completion_tokens") or 0),
-                                "total_tokens": int(usage.get("total_tokens") or 0),
-                            }
-                        else:
-                            usage_dict = {
-                                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                            }
-                    except Exception:
-                        usage_dict = None
-                wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped, finish_reason=self._extract_finish_reason(resp))
-        logger.debug(f"[GEMINI BUDGET] Client missing chat completions, falling back to regular call")
-        # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
-        return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
-
-    def _gemini_level_reasoning_call(self, *, client, model: str, input: Any, stream: bool, thinking_level: Any, **kwargs: Any):
-        """Gemini reasoning using chat.completions.create with extra_body."""
-        logger.debug(f"[GEMINI LEVEL] Model: {model}, Level: {thinking_level}, Stream: {stream}")
-        # Check if client has chat completions
-        if hasattr(client, "chat") and hasattr(getattr(client, "chat"), "completions"):
-            create_fn = getattr(getattr(client.chat, "completions"), "create", None)
-            if callable(create_fn):
-                messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
-                # Prepare call kwargs
-                call_kwargs = kwargs.copy()
-                # Add extra_body with thinking_config.
-                # IMPORTANT: OpenAI Python SDK treats `extra_body=...` as a merge-into-root.
-                # For Google's OpenAI-compat endpoint, provider-specific payload must be
-                # nested under a top-level `extra_body` field on the wire.
-                existing = call_kwargs.pop("extra_body", {})
-                inner: Dict[str, Any] = {}
-                if isinstance(existing, dict):
-                    inner = existing.get("extra_body", existing)
-                inner.setdefault("google", {})
-                inner["google"]["thinking_config"] = {
-                    "thinking_level": str(thinking_level) if thinking_level else "medium"
-                }
-                # Double-wrap so the SDK merges `{ "extra_body": ... }` into the request body.
-                call_kwargs["extra_body"] = {"extra_body": inner}
-                logger.debug(f"[GEMINI LEVEL] API call: chat.completions.create(model={model}, thinking_level='{thinking_level}', stream={stream})")
-                # (Token parameter mapping now handled centrally in create())
-                if stream:
-                    stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
-                    def _event_gen() -> Iterator[AdapterEvent]:
-                        for chunk in stream_obj:
-                            try:
-                                if not getattr(chunk, "choices", None):
-                                    continue
-                                delta_obj = getattr(chunk.choices[0], "delta", None)
-                                delta_text = getattr(delta_obj, "content", None)
-                                if delta_text:
-                                    yield AdapterEvent("response.output_text.delta", delta=delta_text)
-                            except Exception:
-                                continue
-                        yield AdapterEvent("response.output_text.done")
-                    return _event_gen()
-                try:
-                    resp = create_fn(model=model, messages=messages, stream=False, **call_kwargs)
-                except openai.RateLimitError as e:  # type: ignore[attr-defined]
-                    # Map Gemini adapter rate limits into a structured LLMError
-                    # so callers (e.g., handle_chat) can surface a clear message.
-                    retry_after = None
-                    try:
-                        retry_after = getattr(e, "retry_after", None)
-                        if retry_after is None:
-                            # Try to extract from OpenAI error details
-                            details = getattr(e, "response", {}).get("details", [])
-                            for detail in details:
-                                if hasattr(detail, "retryDelay"):
-                                    retry_after = getattr(detail, "retryDelay", None)
-                                    break
-                    except Exception:
-                        pass
-                    
-                    raise LLMError(
-                        provider="gemini",
-                        model=model,
-                        kind="rate_limit",
-                        code="rate_limit",
-                        message=str(e),
-                        retry_after=retry_after,
-                    ) from e
-                text = ""
-                try:
-                    if resp and getattr(resp, "choices", None):
-                        choice0 = resp.choices[0]
-                        msg = getattr(choice0, "message", None)
-                        text = getattr(msg, "content", "") or ""
-                except Exception:
-                    text = ""
-                usage_dict: Optional[Dict[str, int]] = None
-                usage = getattr(resp, "usage", None)
-                if usage is not None:
-                    try:
-                        if isinstance(usage, dict):
-                            usage_dict = {
-                                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                                "completion_tokens": int(usage.get("completion_tokens") or 0),
-                                "total_tokens": int(usage.get("total_tokens") or 0),
-                            }
-                        else:
-                            usage_dict = {
-                                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                            }
-                    except Exception:
-                        usage_dict = None
-                wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped, finish_reason=self._extract_finish_reason(resp))
-        logger.debug(f"[GEMINI LEVEL] Client missing chat completions, falling back to regular call")
-        # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
-        return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
 
     def _gemini_call(self, *, model: str, input: Any, stream: bool, skip_reasoning: bool = False, **kwargs: Any):
         """Gemini adapter that returns OpenAI-compatible response objects/events.
