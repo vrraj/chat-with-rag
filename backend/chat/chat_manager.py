@@ -250,7 +250,7 @@ def resolve_stage_specs(
             "model": (rewrite_model_override or rewrite_model),
             "kwargs": {
                 "temperature": rewrite_temp,
-                "max_output_tokens": rewrite_max_out,
+                "max_output_tokens": rewrite_max_out
             },
         },
         "summary": {
@@ -289,6 +289,7 @@ def resolve_stage_specs(
             "kwargs": {
                 "temperature": inference_temp,
                 "max_output_tokens": tools_synth_max_out,
+                "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
             },
         },
     }

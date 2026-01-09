@@ -12,8 +12,12 @@ from backend.llm.ModelSpec import ModelSpec
 # Model registry for parameter mapping
 try:  # pragma: no cover
     from backend.llm import model_registry as _model_registry
-except Exception:  # pragma: no cover
-    _model_registry = None  # type: ignore
+except Exception as e:  # pragma: no cover
+    # CRITICAL: Model registry import failed - this is a system failure
+    import sys
+    print(f"CRITICAL ERROR: Failed to import model_registry: {e}", file=sys.stderr)
+    print("CRITICAL ERROR: LLM Handler cannot function without model registry. Aborting.", file=sys.stderr)
+    sys.exit(1)  # Critical failure - abort execution
 
 class LLMError(Exception):
     """Structured error raised for provider or configuration failures.
@@ -47,6 +51,7 @@ class AdapterResponse:
 
     Your existing tooling can read `output_text` (and optionally `usage`).
     `raw` preserves the provider-native response for debugging.
+    `finish_reason` indicates why the response stopped (e.g., 'stop', 'length', 'content_filter').
     """
 
     def __init__(
@@ -56,11 +61,13 @@ class AdapterResponse:
         model: str,
         usage: Optional[Dict[str, int]] = None,
         raw: Any = None,
+        finish_reason: Optional[str] = None,
     ):
         self.output_text = output_text
         self.model = model
         self.usage = usage
         self.raw = raw
+        self.finish_reason = finish_reason
 
 
 class AdapterEvent:
@@ -141,27 +148,38 @@ class LLMHandler:
         
         # First try to find by registry key (most reliable)
         if model in _model_registry.REGISTRY:
-            return _model_registry.REGISTRY[model].reasoning_parameter
+            model_info = _model_registry.REGISTRY[model]
+            # Check if reasoning_parameter exists before accessing
+            if hasattr(model_info, 'reasoning_parameter'):
+                return model_info.reasoning_parameter
+            else:
+                return None
         
         # Second try to find by exact model name
         for model_info in _model_registry.REGISTRY.values():
             if model_info.model == model:
-                return model_info.reasoning_parameter
+                # Check if reasoning_parameter exists before accessing
+                if hasattr(model_info, 'reasoning_parameter'):
+                    return model_info.reasoning_parameter
+                else:
+                    return None
         
         # Third try to find by registry key pattern (provider:model format)
         for key, model_info in _model_registry.REGISTRY.items():
             if key.endswith(f":{model}") or key == model:
-                return model_info.reasoning_parameter
+                # Check if reasoning_parameter exists before accessing
+                if hasattr(model_info, 'reasoning_parameter'):
+                    return model_info.reasoning_parameter
+                else:
+                    return None
         
         return None
 
     def _get_max_tokens_parameter(self, model: str) -> str:
         """Get the correct max_tokens parameter name for a model from registry."""
         if _model_registry is None:
-            # Fallback: check if it's an o1/o3 model
-            if model and (model.startswith("o1") or model.startswith("o3")):
-                return "max_completion_tokens"
-            return "max_tokens"
+            # If registry is not available, return default
+            return "max_output_tokens"
         
         # First try to find by registry key (most reliable)
         if model in _model_registry.REGISTRY:
@@ -177,10 +195,313 @@ class LLMHandler:
             if key.endswith(f":{model}") or key == model:
                 return model_info.max_tokens_parameter
         
-        # Fallback to model name detection
-        if model and (model.startswith("o1") or model.startswith("o3")):
-            return "max_completion_tokens"
-        return "max_tokens"
+        # If model not found in registry, return default
+        return "max_output_tokens"
+
+    def _apply_max_tokens_parameter(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Map the generic `max_output_tokens` (and legacy `max_tokens`) into the model's
+        registry-defined max-tokens parameter name.
+
+        Contract:
+        - Call sites pass a model-agnostic `max_output_tokens`.
+        - The registry defines the provider/model-specific parameter name via `max_tokens_parameter`.
+        - If the registry parameter is already present, do not override it.
+        - Preserve backward compatibility: if callers used `max_tokens`, map it as well.
+        """
+        if not isinstance(kwargs, dict) or not kwargs:
+            return kwargs
+
+        param = self._get_max_tokens_parameter(model)
+        out = kwargs.copy()
+
+        # If caller already supplied the registry-specific parameter, honor it.
+        if param in out and out.get(param) is not None:
+            out.pop("max_output_tokens", None)
+            out.pop("max_tokens", None)
+            return out
+
+        # Prefer the model-agnostic field.
+        if "max_output_tokens" in out and out.get("max_output_tokens") is not None:
+            out[param] = out.pop("max_output_tokens")
+            out.pop("max_tokens", None)
+            return out
+
+        # Fall back to legacy `max_tokens` if provided.
+        if "max_tokens" in out and out.get("max_tokens") is not None:
+            out[param] = out.pop("max_tokens")
+            return out
+
+        return out
+
+    def _lookup_model_info_from_registry(self, model: str) -> Any | None:
+        """Resolve registry ModelInfo for a model identifier.
+
+        Accepts either a registry key (preferred) or a provider-native model name.
+        Returns None if the registry is unavailable or no entry matches.
+        """
+        if not model or _model_registry is None:
+            return None
+        try:
+            # 1) Direct registry key match
+            info = _model_registry.REGISTRY.get(model)
+            if info is not None:
+                return info
+            # 2) Provider-native model name match
+            for candidate in _model_registry.REGISTRY.values():
+                if getattr(candidate, "model", None) == model:
+                    return candidate
+        except Exception:
+            return None
+        return None
+
+    def _extract_effort_map(self, model_info: Any, spec: Any | None) -> Dict[str, float] | None:
+        """Get effort->ratio map.
+
+        Priority:
+          1) model_info.thinking_tax.ratios / effort_ratios
+          2) ModelSpec-provided map (effort_map / thinking_tax / extras/extra)
+
+        Returns a dict like {"none": 0.0, "minimal": 0.0, "low": 0.25, "medium": 0.50, "high": 0.80}
+        or None if no usable map is found.
+        """
+        # 1) Registry map (preferred)
+        thinking_tax = getattr(model_info, "thinking_tax", None)
+        if isinstance(thinking_tax, dict) and thinking_tax:
+            effort_map = thinking_tax.get("effort_map")
+            if isinstance(effort_map, dict) and effort_map:
+                out: Dict[str, float] = {}
+                for k, v in effort_map.items():
+                    key = str(k).strip().lower()
+                    if isinstance(v, dict):
+                        rr = v.get("reserve_ratio")
+                    else:
+                        rr = v
+                    try:
+                        out[key] = float(rr)
+                    except Exception:
+                        continue
+                if out:
+                    return out
+
+        # 2) Spec fallback (best-effort)
+        if spec is None:
+            return None
+
+        def _get_from_mapping(obj: Any) -> Any:
+            if not isinstance(obj, dict):
+                return None
+            return obj.get("ratios") or obj.get("effort_ratios") or obj
+
+        # Direct attributes
+        spec_map = getattr(spec, "effort_map", None) or getattr(spec, "thinking_tax", None)
+        candidate = _get_from_mapping(spec_map)
+        if isinstance(candidate, dict) and candidate:
+            try:
+                return {str(k).strip().lower(): float(v) for k, v in candidate.items()}
+            except Exception:
+                pass
+
+        # spec.extra / spec.extras
+        for attr_name in ("extra", "extras"):
+            maybe = getattr(spec, attr_name, None)
+            if isinstance(maybe, dict) and maybe:
+                candidate = _get_from_mapping(maybe.get("effort_map") or maybe.get("thinking_tax"))
+                if isinstance(candidate, dict) and candidate:
+                    try:
+                        return {str(k).strip().lower(): float(v) for k, v in candidate.items()}
+                    except Exception:
+                        pass
+
+        # spec.to_kwargs()
+        if hasattr(spec, "to_kwargs"):
+            try:
+                d = spec.to_kwargs() or {}
+                if isinstance(d, dict) and d:
+                    candidate = _get_from_mapping(d.get("effort_map") or d.get("thinking_tax"))
+                    if isinstance(candidate, dict) and candidate:
+                        return {str(k).strip().lower(): float(v) for k, v in candidate.items()}
+            except Exception:
+                pass
+
+        return None
+
+    def _normalize_effort_name(self, effort: Any) -> str:
+        """Normalize reasoning effort labels to registry keys."""
+        if effort is None:
+            return "medium"
+        eff = str(effort).strip().lower()
+        if eff in ("min", "minimal"):
+            return "minimal"
+        if eff in ("none", "off", "0"):
+            return "none"
+        return eff or "medium"
+
+    def _get_requested_effort_from_kwargs(self, model_info: Any, kwargs: Dict[str, Any]) -> Any:
+        """Find the requested effort value from generic or model-specific fields."""
+        if kwargs.get("reasoning_effort") is not None:
+            return kwargs.get("reasoning_effort")
+
+        # If reasoning was mapped to a provider-specific parameter, read it.
+        try:
+            rp = getattr(model_info, "reasoning_parameter", None)
+            if isinstance(rp, tuple) and len(rp) >= 1:
+                rp_name = rp[0]
+                if rp_name and kwargs.get(rp_name) is not None:
+                    return kwargs.get(rp_name)
+        except Exception:
+            pass
+
+        return None
+
+    def _apply_gemini_thinking_tax(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Inflate Gemini max token limit to account for hidden thinking tokens.
+
+        Contract:
+        - Call sites stay model-agnostic and pass a token limit.
+        - The registry defines how Gemini models should inflate that limit (effort_map/ratios).
+        - If no map is found, no changes are made.
+        """
+        if not isinstance(kwargs, dict) or not kwargs:
+            return kwargs
+
+        # Keep the spec for effort_map fallback, but never forward it.
+        spec = kwargs.get("__model_spec")
+        clean_kwargs = kwargs.copy()
+        clean_kwargs.pop("__model_spec", None)
+
+        model_info = self._lookup_model_info_from_registry(model)
+        if model_info is None:
+            return clean_kwargs
+        if getattr(model_info, "provider", None) != "gemini":
+            return clean_kwargs
+
+        effort_map = self._extract_effort_map(model_info, spec)
+        if not isinstance(effort_map, dict) or not effort_map:
+            return clean_kwargs
+
+        # Determine which max-tokens parameter we should be inflating for this model.
+        max_param_name = getattr(model_info, "max_tokens_parameter", None) or self._get_max_tokens_parameter(model)
+        base_max = clean_kwargs.get(max_param_name)
+        if base_max is None:
+            return clean_kwargs
+        try:
+            base_max_i = int(base_max)
+        except Exception:
+            return clean_kwargs
+        if base_max_i <= 0:
+            return clean_kwargs
+
+        requested_effort = self._get_requested_effort_from_kwargs(model_info, clean_kwargs)
+        effort_name = self._normalize_effort_name(requested_effort)
+
+        ratio = effort_map.get(effort_name)
+        if ratio is None:
+            ratio = effort_map.get("medium", 0.0)
+        try:
+            ratio_f = float(ratio)
+        except Exception:
+            ratio_f = 0.0
+
+        # Ratio is an *additional* fraction of the visible max.
+        # Example: base=300, ratio=0.5 => send 450.
+        if ratio_f <= 0.0:
+            return clean_kwargs
+
+        inflated_max = int(round(base_max_i * (1.0 + ratio_f)))
+        if inflated_max <= base_max_i:
+            return clean_kwargs
+
+        clean_kwargs[max_param_name] = inflated_max
+        return clean_kwargs
+
+    def _inject_gemini_thinking_config(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Inject Gemini thinking configuration into `extra_body` based on the model registry.
+
+        This keeps provider-specific payload shaping in one place, driven by registry config.
+
+        Rules:
+        - Only applies to registry models where provider == "gemini".
+        - Uses `model_info.thinking_tax.kind` to decide whether to send:
+            - thinking_budget ("budget" kind)
+            - thinking_level ("level" kind)
+        - For "budget": if budget is None, do nothing; if budget == -1 treat as dynamic (omit).
+        - For "level": if a param_map exists, map generic effort labels (none/low/medium/high) to the
+          provider knob values; otherwise use the provided value as-is.
+        - Preserves any existing `extra_body` content by merging.
+        """
+        if not isinstance(kwargs, dict) or not kwargs:
+            return kwargs
+
+        model_info = self._lookup_model_info_from_registry(model)
+        if model_info is None or getattr(model_info, "provider", None) != "gemini":
+            return kwargs
+
+        thinking_tax = getattr(model_info, "thinking_tax", None)
+        if not isinstance(thinking_tax, dict) or not thinking_tax:
+            return kwargs
+
+        kind = thinking_tax.get("kind")
+        if kind not in ("budget", "level"):
+            return kwargs
+
+        # Determine the model-specific reasoning knob name (e.g., thinking_budget / thinking_level)
+        rp = getattr(model_info, "reasoning_parameter", None)
+        rp_name = None
+        rp_default = None
+        if isinstance(rp, tuple) and len(rp) >= 1:
+            rp_name = rp[0]
+            rp_default = rp[1] if len(rp) > 1 else None
+        elif hasattr(model_info, 'reasoning_parameter'):
+            # Model has reasoning_parameter field, use it
+            rp_name = rp[0]
+            rp_default = rp[1] if len(rp) > 1 else None
+        else:
+            # No reasoning_parameter field - no reasoning support
+            return kwargs
+
+        if not rp_name:
+            return kwargs
+
+        # Pull the requested knob value (already mapped by _map_reasoning_parameter_with_default)
+        requested_value = kwargs.get(rp_name)
+        if requested_value is None:
+            requested_value = rp_default
+
+        # Nothing to inject if we still don't have a value
+        if requested_value is None:
+            return kwargs
+
+        # Build/merge extra_body payload
+        out = dict(kwargs)
+        existing = out.pop("extra_body", {})
+        inner: Dict[str, Any] = {}
+        if isinstance(existing, dict):
+            inner = existing.get("extra_body", existing)
+
+        inner.setdefault("google", {})
+
+        if kind == "budget":
+            # -1 means "dynamic" thinking (omit the knob so provider decides)
+            try:
+                budget = int(requested_value)
+            except Exception:
+                budget = None
+            if budget is None or budget == -1:
+                return out  # nothing injected
+            inner["google"]["thinking_config"] = {"thinking_budget": budget}
+
+        elif kind == "level":
+            level = requested_value
+            # Optionally map generic effort labels to provider-specific knob values
+            param_map = thinking_tax.get("param_map")
+            if isinstance(param_map, dict):
+                key = str(level).strip().lower()
+                level = param_map.get(key, level)
+            inner["google"]["thinking_config"] = {"thinking_level": str(level)}
+
+        # Double-wrap so OpenAI Python SDK merges `{ "extra_body": ... }` into request body.
+        out["extra_body"] = {"extra_body": inner}
+        return out
 
     def _get_model_capabilities(self, model: str) -> Dict[str, Any]:
         """Get model capabilities from registry."""
@@ -205,7 +526,7 @@ class LLMHandler:
         # If model not found in registry, return empty capabilities (no filtering)
         return {}
 
-    def _resolve_model_name(self, model: str) -> str:
+    def _resolve_model_name(self, model_identifier: str) -> str:
         """Resolve a model identifier to the provider-native model name.
 
         Accepts either:
@@ -214,36 +535,152 @@ class LLMHandler:
 
         If the registry is unavailable or the identifier is not found, returns `model` unchanged.
         """
-        if not model:
-            return model
-        if _model_registry is None:
-            return model
+        if not model_identifier:    # If no model identifier is provided, return it unchanged.
+            return model_identifier
+        if _model_registry is None:  # If the model registry is not available, return the model identifier unchanged.
+            return model_identifier
         try:
-            if model in _model_registry.REGISTRY:
-                return _model_registry.REGISTRY[model].model
+            if model_identifier in _model_registry.REGISTRY:
+                return _model_registry.REGISTRY[model_identifier].model
         except Exception:
-            return model
-        return model
+            return model_identifier
+        return model_identifier
 
     def _filter_kwargs_by_capabilities(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Filter kwargs based on model capabilities from registry."""
+        """Filter kwargs based on model capabilities from registry.
+
+        Back-compat rule:
+        - Always allow token limit parameters.
+        - If the registry doesn't know a param, pass it through (assume supported).
+        - Only drop a param if the registry explicitly marks it unsupported.
+
+        This avoids accidentally stripping core params like temperature/top_p when
+        capabilities is sparse.
+        """
         capabilities = self._get_model_capabilities(model)
-        filtered_kwargs = {}
-        
-        # Special case: always allow token limit parameters (fundamental to all models)
+        if not isinstance(kwargs, dict) or not kwargs:
+            return kwargs
+
+        # Always allow token limit parameters (fundamental to all models)
         token_params = {"max_output_tokens", "max_tokens", "max_completion_tokens"}
-        
+
+        filtered: Dict[str, Any] = {}
         for param, value in kwargs.items():
-            if param in token_params or capabilities.get(param, False):
-                filtered_kwargs[param] = value
-        
-        return filtered_kwargs
+            if param in token_params:
+                filtered[param] = value
+                continue
+
+            # If registry explicitly declares a param as supported/unsupported, honor it.
+            if param in capabilities:
+                if bool(capabilities.get(param)):
+                    filtered[param] = value
+                continue
+
+            # Unknown param: keep it for backward compatibility.
+            filtered[param] = value
+
+        return filtered
+
+    def _sanitize_tools_for_gemini_adapter(self, tools: Any) -> Any:
+        """Return a Gemini-friendly tools list.
+
+        - Accepts either flattened or nested OpenAI-style tool specs.
+        - Ensures the outgoing format is nested {"type":"function","function":{...}}.
+        - Recursively strips JSON schema keys that commonly trigger 400s in
+          Gemini adapters (e.g., "default", "additionalProperties").
+        """
+        if not isinstance(tools, list):
+            return tools
+
+        def _clean_schema(obj: Any) -> Any:
+            if not isinstance(obj, dict):
+                return obj
+            forbidden = {"default", "additionalProperties", "$schema", "title"}
+            out: Dict[str, Any] = {}
+            for k, v in obj.items():
+                if k in forbidden:
+                    continue
+                out[k] = _clean_schema(v)
+            return out
+
+        cleaned: list[Any] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+
+            func = tool.get("function")
+            if not isinstance(func, dict):
+                # Flattened form: treat the dict itself as the function spec.
+                func = tool
+
+            name = func.get("name")
+            if not name:
+                # Skip tools without a usable name; better to ignore than fail hard.
+                continue
+
+            params = func.get("parameters") or {"type": "object", "properties": {}}
+            params = _clean_schema(params)
+
+            cleaned.append(
+                {
+                    "type": tool.get("type", "function"),
+                    "function": {
+                        "name": name,
+                        "description": func.get("description", ""),
+                        "parameters": params,
+                    },
+                }
+            )
+
+        return cleaned or tools
+
+    def _prepare_gemini_adapter_kwargs(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare kwargs for the Gemini OpenAI-compatible adapter.
+
+        This keeps Gemini-specific normalization in one place.
+        Order:
+          1) capability filtering
+          2) reasoning parameter mapping/defaults
+          3) thinking-tax token-cap inflation (if configured in registry/spec)
+          4) tools schema sanitization (only if tools provided)
+        """
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+        mapped_kwargs = self._map_reasoning_parameter_with_default(model, filtered_kwargs)
+
+        prepared_kwargs: Dict[str, Any] = dict(mapped_kwargs)
+
+        try:
+            prepared_kwargs = self._apply_gemini_thinking_tax(model, prepared_kwargs)
+        except Exception:
+            pass
+
+        try:
+            prepared_kwargs = self._inject_gemini_thinking_config(model, prepared_kwargs)
+        except Exception:
+            pass
+
+        if "tools" in prepared_kwargs:
+            try:
+                prepared_kwargs["tools"] = self._sanitize_tools_for_gemini_adapter(prepared_kwargs["tools"])
+            except Exception:
+                pass
+
+        return prepared_kwargs
+
+    def _extract_finish_reason(self, resp: Any) -> Optional[str]:
+        try:
+            choices = getattr(resp, "choices", None)
+            if isinstance(choices, list) and choices:
+                return getattr(choices[0], "finish_reason", None)
+        except Exception:
+            pass
+        return None
 
     def _convert_reasoning_value(self, model: str, value: Any) -> Any:
         """Convert reasoning_effort value to model-specific format."""
         if _model_registry is None:
             return value
-
+        
         # Resolve model_info either by registry key or by provider-native model name.
         model_info = None
         if model in _model_registry.REGISTRY:
@@ -253,18 +690,23 @@ class LLMHandler:
                 if info.model == model:
                     model_info = info
                     break
-
+        
         if model_info is None:
             return value
-
-        param_name, default_value = model_info.reasoning_parameter
-
+        
+        # Check if reasoning_parameter exists before accessing
+        if hasattr(model_info, 'reasoning_parameter'):
+            param_name, default_value = model_info.reasoning_parameter
+        else:
+            # No reasoning_parameter field - no conversion needed
+            return value
+        
         # Convert based on default value type
         if isinstance(default_value, (int, float)):
             # Convert string to number for token-based models
             mapping = {"low": 1000, "medium": 2000, "high": 5000}
             return mapping.get(str(value).lower(), default_value)
-
+        
         # Keep as string for models that expect string
         return str(value).lower()
 
@@ -276,65 +718,80 @@ class LLMHandler:
         # First try to find by registry key (most reliable)
         if model in _model_registry.REGISTRY:
             model_info = _model_registry.REGISTRY[model]
-            param_name, default_value = model_info.reasoning_parameter
-            mapped_kwargs = kwargs.copy()
-
-            # Handle reasoning_effort parameter
-            if "reasoning_effort" in kwargs:
-                # Use passed value, convert if needed
-                reasoning_value = kwargs["reasoning_effort"]
-                converted_value = self._convert_reasoning_value(model, reasoning_value)
-                mapped_kwargs[param_name] = converted_value
-                # Only pop the original key if we mapped it to a different param name.
-                if param_name != "reasoning_effort":
-                    mapped_kwargs.pop("reasoning_effort", None)
-            elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
-                # Use registry default when no value passed and capability is supported
-                mapped_kwargs[param_name] = default_value
-
-            return mapped_kwargs
+            # Check if reasoning_parameter exists before accessing
+            if hasattr(model_info, 'reasoning_parameter'):
+                param_name, default_value = model_info.reasoning_parameter
+                mapped_kwargs = kwargs.copy()
+                
+                # Handle reasoning_effort parameter
+                if "reasoning_effort" in kwargs:
+                    # Use passed value, convert if needed
+                    reasoning_value = kwargs["reasoning_effort"]
+                    converted_value = self._convert_reasoning_value(model, reasoning_value)
+                    mapped_kwargs[param_name] = converted_value
+                    # Only pop the original key if we mapped it to a different param name.
+                    if param_name != "reasoning_effort":
+                        mapped_kwargs.pop("reasoning_effort", None)
+                elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+                    # Use registry default when no value passed and capability is supported
+                    mapped_kwargs[param_name] = default_value
+                
+                return mapped_kwargs
+            else:
+                # No reasoning_parameter field - return kwargs unchanged
+                return kwargs
 
         # Second try to find by exact model name
         for model_info in _model_registry.REGISTRY.values():
             if model_info.model == model:
-                param_name, default_value = model_info.reasoning_parameter
-                mapped_kwargs = kwargs.copy()
-
-                # Handle reasoning_effort parameter
-                if "reasoning_effort" in kwargs:
-                    # Use passed value, convert if needed
-                    reasoning_value = kwargs["reasoning_effort"]
-                    converted_value = self._convert_reasoning_value(model, reasoning_value)
-                    mapped_kwargs[param_name] = converted_value
-                    # Only pop the original key if we mapped it to a different param name.
-                    if param_name != "reasoning_effort":
-                        mapped_kwargs.pop("reasoning_effort", None)
-                elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
-                    # Use registry default when no value passed and capability is supported
-                    mapped_kwargs[param_name] = default_value
-
-                return mapped_kwargs
+                # Check if reasoning_parameter exists before accessing
+                if hasattr(model_info, 'reasoning_parameter'):
+                    param_name, default_value = model_info.reasoning_parameter
+                    mapped_kwargs = kwargs.copy()
+                    
+                    # Handle reasoning_effort parameter
+                    if "reasoning_effort" in kwargs:
+                        # Use passed value, convert if needed
+                        reasoning_value = kwargs["reasoning_effort"]
+                        converted_value = self._convert_reasoning_value(model, reasoning_value)
+                        mapped_kwargs[param_name] = converted_value
+                        # Only pop the original key if we mapped it to a different param name.
+                        if param_name != "reasoning_effort":
+                            mapped_kwargs.pop("reasoning_effort", None)
+                    elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+                        # Use registry default when no value passed and capability is supported
+                        mapped_kwargs[param_name] = default_value
+                    
+                    return mapped_kwargs
+                else:
+                    # No reasoning_parameter field - return kwargs unchanged
+                    return kwargs
 
         # Third try to find by registry key pattern (provider:model format)
         for key, model_info in _model_registry.REGISTRY.items():
             if key.endswith(f":{model}") or key == model:
-                param_name, default_value = model_info.reasoning_parameter
-                mapped_kwargs = kwargs.copy()
-
-                # Handle reasoning_effort parameter
-                if "reasoning_effort" in kwargs:
-                    # Use passed value, convert if needed
-                    reasoning_value = kwargs["reasoning_effort"]
-                    converted_value = self._convert_reasoning_value(model, reasoning_value)
-                    mapped_kwargs[param_name] = converted_value
-                    # Only pop the original key if we mapped it to a different param name.
-                    if param_name != "reasoning_effort":
-                        mapped_kwargs.pop("reasoning_effort", None)
-                elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
-                    # Use registry default when no value passed and capability is supported
-                    mapped_kwargs[param_name] = default_value
-
-                return mapped_kwargs
+                # Check if reasoning_parameter exists before accessing
+                if hasattr(model_info, 'reasoning_parameter'):
+                    param_name, default_value = model_info.reasoning_parameter
+                    mapped_kwargs = kwargs.copy()
+                    
+                    # Handle reasoning_effort parameter
+                    if "reasoning_effort" in kwargs:
+                        # Use passed value, convert if needed
+                        reasoning_value = kwargs["reasoning_effort"]
+                        converted_value = self._convert_reasoning_value(model, reasoning_value)
+                        mapped_kwargs[param_name] = converted_value
+                        # Only pop the original key if we mapped it to a different param name.
+                        if param_name != "reasoning_effort":
+                            mapped_kwargs.pop("reasoning_effort", None)
+                    elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+                        # Use registry default when no value passed and capability is supported
+                        mapped_kwargs[param_name] = default_value
+                    
+                    return mapped_kwargs
+                else:
+                    # No reasoning_parameter field - return kwargs unchanged
+                    return kwargs
 
         return kwargs
 
@@ -402,6 +859,7 @@ class LLMHandler:
             merged.update(spec.to_kwargs())
             merged.update({k: v for k, v in kwargs.items() if v is not None})
             kwargs = merged
+            kwargs["__model_spec"] = spec
         else:
             provider = (provider or "").strip().lower()
             if not provider:
@@ -409,9 +867,16 @@ class LLMHandler:
             if not model:
                 raise ValueError("model is required when spec is not provided")
 
+        # Centralize model-agnostic token limit mapping here so provider-specific
+        # call paths don’t need to repeat it.
+        kwargs = self._apply_max_tokens_parameter(model, kwargs)
+
         if provider == "openai":
+            kwargs.pop("__model_spec", None)
             return self._openai_call(model=model, input=input, stream=stream, **kwargs)
         if provider == "gemini":
+            #kwargs.pop("__model_spec", None) 
+            # Keep __model_spec for Gemini so adapter-prep can use it as a fallback.
             return self._gemini_call(model=model, input=input, stream=stream, **kwargs)
 
         raise LLMError(
@@ -476,8 +941,40 @@ class LLMHandler:
             reasoning_value = mapped_kwargs.pop("reasoning_effort")
             # Do not overwrite an explicit reasoning object if already provided.
             mapped_kwargs.setdefault("reasoning", {"effort": reasoning_value})
+
+        # DEBUG: Log final kwargs after token conversion
+
+        # DEBUG: Print input request details for OpenAI Responses API
+        logger.debug(f"\n🔍 [OPENAI DEBUG] Input Request:")
+        logger.debug(f"  📋 Model: {resolved_model}")
+        logger.debug(f"  📋 Input: {input}")
+        logger.debug(f"  🔢 max_completion_tokens: {mapped_kwargs.get('max_completion_tokens', 'NOT_SET')}")
+        logger.debug(f"  🔢 max_tokens: {mapped_kwargs.get('max_tokens', 'NOT_SET')}")
+        logger.debug(f"  🧠 reasoning: {mapped_kwargs.get('reasoning', 'NOT_SET')}")
+        logger.debug(f"  📋 Full kwargs: {mapped_kwargs}")
+
+        # DEBUG: Print input request details for OpenAI Responses API
+        logger.debug(f"\n🔍 [OPENAI DEBUG] Input Request:")
+        logger.debug(f"  📋 Model: {resolved_model}")
+        logger.debug(f"  📋 Input: {input}")
+        logger.debug(f"  🔢 max_completion_tokens: {mapped_kwargs.get('max_completion_tokens', 'NOT_SET')}")
+        logger.debug(f"  🔢 max_tokens: {mapped_kwargs.get('max_tokens', 'NOT_SET')}")
+        logger.debug(f"  🧠 reasoning: {mapped_kwargs.get('reasoning', 'NOT_SET')}")
+        logger.debug(f"  📋 Full kwargs: {mapped_kwargs}")
+        logger.debug(f"  📋 Final kwargs after token conversion: {mapped_kwargs}")
+
         try:
-            return client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
+            raw_response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
+
+            # DEBUG: Print raw response details
+            logger.debug(f"\n📄 [OPENAI DEBUG] Raw Response:")
+            logger.debug(f"  📋 Response type: {type(raw_response)}")
+            logger.debug(f"  📋 Response dict: {raw_response.__dict__ if hasattr(raw_response, '__dict__') else 'NO_DICT_ATTR'}")
+            logger.debug(f"  📋 Output text: {getattr(raw_response, 'output_text', 'NO_OUTPUT_TEXT_ATTR')}")
+            logger.debug(f"  🔢 Usage: {getattr(raw_response, 'usage', 'NO_USAGE_ATTR')}")
+            logger.debug(f"  🏁 Finish reason: {getattr(raw_response, 'finish_reason', 'NO_FINISH_REASON_ATTR')}")
+
+            return raw_response
         except Exception as e:
             # Preserve existing behavior (exception type) while also exposing
             # a structured LLMError for call sites that wish to distinguish
@@ -562,12 +1059,7 @@ class LLMHandler:
                     logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, thinking_budget={budget}, stream={stream})")
                 else:
                     logger.debug(f"[GEMINI BUDGET] API call: chat.completions.create(model={model}, extra_body=None, stream={stream})")
-                logger.debug("[GEMINI BUDGET] pre-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
-                # Handle max_output_tokens conversion
-                if "max_output_tokens" in call_kwargs:
-                    max_tokens_param = self._get_max_tokens_parameter(model)
-                    call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
-                logger.debug("[GEMINI BUDGET] post-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
+                # (Token parameter mapping now handled centrally in create())
                 
                 # DEBUG: Log what we're sending to the API
                 logger.debug(f"[GEMINI API DEBUG] Sending to API: model={model}, call_kwargs={call_kwargs}")
@@ -643,7 +1135,7 @@ class LLMHandler:
                     except Exception:
                         usage_dict = None
                 wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped)
+                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped, finish_reason=self._extract_finish_reason(resp))
         logger.debug(f"[GEMINI BUDGET] Client missing chat completions, falling back to regular call")
         # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
         return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
@@ -673,14 +1165,7 @@ class LLMHandler:
                 # Double-wrap so the SDK merges `{ "extra_body": ... }` into the request body.
                 call_kwargs["extra_body"] = {"extra_body": inner}
                 logger.debug(f"[GEMINI LEVEL] API call: chat.completions.create(model={model}, thinking_level='{thinking_level}', stream={stream})")
-                # DEBUG: log keys containing "max" before conversion
-                logger.debug("[GEMINI LEVEL] pre-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
-                # Handle max_output_tokens conversion
-                if "max_output_tokens" in call_kwargs:
-                    max_tokens_param = self._get_max_tokens_parameter(model)
-                    call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
-                # DEBUG: log keys containing "max" after conversion
-                logger.debug("[GEMINI LEVEL] post-convert token keys: %s", [k for k in call_kwargs.keys() if "max" in k])
+                # (Token parameter mapping now handled centrally in create())
                 if stream:
                     stream_obj = create_fn(model=model, messages=messages, stream=True, **call_kwargs)
                     def _event_gen() -> Iterator[AdapterEvent]:
@@ -749,7 +1234,7 @@ class LLMHandler:
                     except Exception:
                         usage_dict = None
                 wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped)
+                return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped, finish_reason=self._extract_finish_reason(resp))
         logger.debug(f"[GEMINI LEVEL] Client missing chat completions, falling back to regular call")
         # Fallback to regular Gemini call. Skip reasoning routing to avoid recursion.
         return self._gemini_call(model=model, input=input, stream=stream, skip_reasoning=True, **kwargs)
@@ -766,83 +1251,12 @@ class LLMHandler:
         """
         client = self._get_gemini()
         resolved_model = self._resolve_model_name(model)
-        # Filter kwargs by capabilities, then map reasoning parameters with defaults
-        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
-        mapped_kwargs = self._map_reasoning_parameter_with_default(model, filtered_kwargs)
-        # Work on post-filter/post-map kwargs so sanitizer/mapping affects the wire call.
-        working_kwargs = mapped_kwargs.copy()
-
-        # Optional Gemini-specific tools sanitizer: only applied when tools are
-        # present in kwargs. This keeps OpenAI behavior unchanged while
-        # normalizing tools for the Gemini OpenAI adapter, which can be more
-        # strict about JSON schema fields.
-        def _sanitize_for_gemini_tools(tools: Any) -> Any:
-            """Return a Gemini-friendly tools list.
-
-            - Accepts either flattened or nested OpenAI-style tool specs.
-            - Ensures the outgoing format is nested {"type":"function","function":{...}}.
-            - Recursively strips JSON schema keys that commonly trigger 400s in
-              Gemini adapters (e.g., "default", "additionalProperties").
-            """
-            if not isinstance(tools, list):
-                return tools
-
-            def _clean_schema(obj: Any) -> Any:
-                if not isinstance(obj, dict):
-                    return obj
-                forbidden = {"default", "additionalProperties", "$schema", "title"}
-                out: Dict[str, Any] = {}
-                for k, v in obj.items():
-                    if k in forbidden:
-                        continue
-                    out[k] = _clean_schema(v)
-                return out
-
-            cleaned: list[Any] = []
-            for tool in tools:
-                if not isinstance(tool, dict):
-                    continue
-                func = tool.get("function")
-                if not isinstance(func, dict):
-                    # Flattened form: treat the dict itself as the function spec.
-                    func = tool
-
-                name = func.get("name")
-                if not name:
-                    # Skip tools without a usable name; better to ignore than fail hard.
-                    continue
-
-                params = func.get("parameters") or {"type": "object", "properties": {}}
-                params = _clean_schema(params)
-
-                cleaned.append(
-                    {
-                        "type": tool.get("type", "function"),
-                        "function": {
-                            "name": name,
-                            "description": func.get("description", ""),
-                            "parameters": params,
-                        },
-                    }
-                )
-            return cleaned or tools
-
-        if "tools" in working_kwargs:
-            try:
-                working_kwargs["tools"] = _sanitize_for_gemini_tools(working_kwargs["tools"])
-            except Exception:
-                # Best-effort only; fall back to original tools on any failure.
-                pass
+        # Prepare kwargs for the Gemini OpenAI-compatible adapter in one place.
+        working_kwargs = self._prepare_gemini_adapter_kwargs(model, kwargs)
 
         # Keep max_output_tokens consistent - let each provider handle conversion internally
         # OpenAI chat completions will use model registry to determine correct parameter name
 
-        # --- Check if we should use native Gemini reasoning API formats ---
-        reasoning_param = self._get_reasoning_parameter(model)
-        if (not skip_reasoning) and reasoning_param and reasoning_param[0] in ("thinking_budget", "thinking_level"):
-            param_name, default_value = reasoning_param
-            logger.debug(f"[GEMINI REASONING] Using {param_name} format for model {model} (default: {default_value})")
-            return self._gemini_reasoning_call(model=model, input=input, stream=stream, **working_kwargs)
         # --- OpenAI-adapter path (chat.completions) ---
         if hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
             create_fn = getattr(getattr(client.chat, "completions"), "create", None)
@@ -850,11 +1264,29 @@ class LLMHandler:
                 messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
 
                 if not stream:
-                    # Apply capability filtering, parameter mapping, and max_tokens conversion
+                    # Apply capability filtering, parameter mapping, and token limit conversion
                     call_kwargs = working_kwargs.copy()
-                    if "max_output_tokens" in call_kwargs:
-                        max_tokens_param = self._get_max_tokens_parameter(model)
-                        call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
+                    # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint.
+                    try:
+                        token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
+                        # Include both generic and Gemini-specific reasoning knobs so we can confirm mapping.
+                        reasoning_keys = ("reasoning_effort", "thinking_budget", "thinking_level")
+                        debug_keys = token_keys + reasoning_keys
+                        debug_part = {k: call_kwargs.get(k) for k in debug_keys if k in call_kwargs}
+                        extra_body = call_kwargs.get("extra_body")
+                        has_tools = bool(call_kwargs.get("tools"))
+                        logger.debug(
+                            "[GEMINI DEBUG] chat.completions.create model=%s stream=%s kwargs_subset=%s has_tools=%s has_extra_body=%s extra_body=%s",
+                            resolved_model,
+                            False,
+                            debug_part,
+                            has_tools,
+                            bool(extra_body),
+                            extra_body,
+                        )
+                    except Exception:
+                        pass
+                    # (Token parameter mapping now handled centrally in create())
                     try:
                         resp = create_fn(model=resolved_model, messages=messages, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
@@ -920,14 +1352,32 @@ class LLMHandler:
                             usage_dict = None
 
                     wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                    return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped)
+                    return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped, finish_reason=self._extract_finish_reason(resp))
 
                 def event_gen() -> Iterator[AdapterEvent]:
-                    # Apply capability filtering, parameter mapping, and max_tokens conversion
+                    # Apply capability filtering, parameter mapping, and token limit conversion
                     call_kwargs = working_kwargs.copy()
-                    if "max_output_tokens" in call_kwargs:
-                        max_tokens_param = self._get_max_tokens_parameter(model)
-                        call_kwargs[max_tokens_param] = call_kwargs.pop("max_output_tokens")
+                    # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint (streaming).
+                    try:
+                        token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
+                        # Include both generic and Gemini-specific reasoning knobs so we can confirm mapping.
+                        reasoning_keys = ("reasoning_effort", "thinking_budget", "thinking_level")
+                        debug_keys = token_keys + reasoning_keys
+                        debug_part = {k: call_kwargs.get(k) for k in debug_keys if k in call_kwargs}
+                        extra_body = call_kwargs.get("extra_body")
+                        has_tools = bool(call_kwargs.get("tools"))
+                        logger.debug(
+                            "[GEMINI DEBUG] chat.completions.create model=%s stream=%s kwargs_subset=%s has_tools=%s has_extra_body=%s extra_body=%s",
+                            resolved_model,
+                            True,
+                            debug_part,
+                            has_tools,
+                            bool(extra_body),
+                            extra_body,
+                        )
+                    except Exception:
+                        pass
+                    # (Token parameter mapping now handled centrally in create())
                     try:
                         stream_obj = create_fn(model=resolved_model, messages=messages, stream=True, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
@@ -994,7 +1444,7 @@ class LLMHandler:
                     pass
             # Native SDK responses may not expose ChatCompletion `choices`; still wrap for Responses-like fields.
             wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text or "", usage=getattr(resp, "usage", None))
-            return AdapterResponse(output_text=text or "", model=model, usage=None, raw=wrapped)
+            return AdapterResponse(output_text=text or "", model=model, usage=None, raw=wrapped, finish_reason=None)
         def native_event_gen() -> Iterator[AdapterEvent]:
             if hasattr(client, "generate_content_stream"):
                 stream_iter = client.generate_content_stream(model=resolved_model, contents=contents, **final_kwargs)
@@ -1075,9 +1525,11 @@ class LLMHandler:
         logger.debug(f"[GEMINI WRAPPER] Input output_text preview: '{output_text[:200]}...'")
         
         # Also check original response content
+        finish_reason = None
         try:
             if resp and getattr(resp, "choices", None):
                 choice0 = resp.choices[0]
+                finish_reason = getattr(choice0, "finish_reason", None)
                 msg = getattr(choice0, "message", None)
                 original_content = getattr(msg, "content", "") or ""
                 logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content length: {len(original_content)}")
@@ -1131,6 +1583,10 @@ class LLMHandler:
                 # === NON-CANONICAL FIELDS (compatibility/debug only) ===
                 self.choices = choices              # Legacy: DO NOT USE for logic
                 self.raw = raw                      # Provider-native: debug only
+
+            # Minimal dict-like compatibility for existing debug/test code.
+            def get(self, name: str, default: Any = None) -> Any:
+                return getattr(self, name, default)
 
         return _GeminiResponsesWrapper(
             output_text=output_text or "",      # Canonical text field

@@ -35,6 +35,65 @@ class ModelInfo:
     capabilities: Dict[str, Any]   # Feature support flags
     max_tokens_parameter: str        # Parameter name for token limits
     reasoning_parameter: Tuple[str, Any]  # (param_name, default_value)
+    thinking_tax: Dict[str, Any]      # Gemini thinking token inflation rules
+```
+
+### Gemini Thinking Tax Configuration
+
+Gemini models may consume extra hidden tokens for thinking/reasoning. The `thinking_tax` field defines how to inflate the visible token limit to account for this:
+
+```python
+# Example: Gemini Flash model with budget-based thinking
+"gemini:fast": ModelInfo(
+    thinking_tax={
+        "effort_map": {
+            "none": {"reserve_ratio": 0.0},     # No extra tokens
+            "low": {"reserve_ratio": 0.25},     # 25% extra tokens
+            "medium": {"reserve_ratio": 0.50},   # 50% extra tokens
+            "high": {"reserve_ratio": 0.80},     # 80% extra tokens
+        },
+        "kind": "budget",  # Uses thinking_budget parameter
+    },
+),
+
+# Example: Gemini model with level-based thinking
+"gemini:fast-3-flash": ModelInfo(
+    thinking_tax={
+        "effort_map": {
+            "none": {"reserve_ratio": 0.0},
+            "low": {"reserve_ratio": 0.25},
+            "medium": {"reserve_ratio": 0.50},
+            "high": {"reserve_ratio": 0.80},
+        },
+        "param_map": {  # Maps effort levels to model-specific values
+            "none": "minimal",
+            "low": "low", 
+            "medium": "medium",
+            "high": "high",
+        },
+        "kind": "level",   # Uses thinking_level parameter
+    },
+),
+```
+
+#### Thinking Tax Behavior
+
+- **Purpose**: Automatically inflates `max_output_tokens` to account for hidden thinking tokens
+- **Only applies**: To Gemini models with `thinking_tax` configuration
+- **Calculation**: `inflated_tokens = visible_tokens × (1.0 + reserve_ratio)`
+- **Example**: `max_output_tokens=1000` with `"high"` effort → `1800` tokens sent to API
+
+#### Effort Level Normalization
+
+The system normalizes common effort level synonyms:
+
+```python
+# Input variations that map to the same effort
+"min", "minimal" → "minimal"
+"none", "off", "0" → "none"
+"low" → "low"
+"medium" → "medium" 
+"high" → "high"
 ```
 
 ### Endpoint Types and Usage
@@ -253,6 +312,307 @@ def _gemini_embedding_call(self, *, model: str, input: Any, **kwargs: Any):
 ),
 ```
 
+#### Reasoning Parameter Default Logic
+
+The LLM Handler automatically applies registry defaults when no reasoning parameter is provided:
+
+```python
+def _map_reasoning_parameter_with_default(model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    model_info = _model_registry.REGISTRY[model]
+    param_name, default_value = model_info.reasoning_parameter
+    
+    if "reasoning_effort" in kwargs:
+        # 1. Use explicitly passed value from caller
+        reasoning_value = kwargs["reasoning_effort"]
+        converted_value = self._convert_reasoning_value(model, reasoning_value)
+        mapped_kwargs[param_name] = converted_value
+    elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
+        # 2. Apply registry default when no value provided
+        mapped_kwargs[param_name] = default_value
+    
+    return mapped_kwargs
+```
+
+#### Default Behavior Examples
+
+**Scenario 1: Explicit reasoning_effort Provided**
+```python
+# Caller provides reasoning_effort
+handler.create(
+    model="openai:reasoning_mini",
+    reasoning_effort="high",  # ← Explicit value
+    max_output_tokens=1000
+)
+# Result: reasoning_effort="high" (overrides registry default)
+```
+
+**Scenario 2: No reasoning_effort Provided**
+```python
+# Caller omits reasoning_effort
+handler.create(
+    model="openai:reasoning_mini",
+    max_output_tokens=1000
+    # No reasoning_effort parameter
+)
+# Result: reasoning_effort="medium" (registry default applied)
+```
+
+**Scenario 3: Registry Default is None**
+```python
+# Gemini with None default
+handler.create(
+    model="gemini:fast",
+    max_output_tokens=1000
+    # No reasoning_effort parameter
+)
+# Result: No reasoning parameter added (default is None)
+```
+
+#### Registry Default Values by Model
+
+| Model | Registry Default | Applied When |
+|-------|----------------|-------------|
+| `openai:reasoning_mini` | `"low"` | No `reasoning_effort` provided |
+| `openai:reasoning_mini_small` | `"low"` | No `reasoning_effort` provided |
+| `gemini:fast` | `None` | No reasoning parameter added |
+| `gemini:fast-3-flash` | `"minimal"` | No `reasoning_effort` provided |
+| `gemini:best` | `0` | No `reasoning_effort` provided |
+
+#### Integration with Chat Manager
+
+The chat manager can optionally override registry defaults:
+
+```python
+# chat_manager.py stage specifications
+"inference": {
+    "kwargs": {
+        "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
+        # When present: Overrides registry default
+        # When absent: Registry default applied automatically
+    },
+}
+```
+
+**Key Benefits:**
+- **Automatic Defaults**: No need to specify reasoning parameters for standard use
+- **Override Capability**: Can override defaults when needed
+- **Model-Specific**: Each model gets appropriate default behavior
+- **Graceful Fallback**: Works even when registry is unavailable
+
+## Gemini Thinking Tax Implementation
+
+### Architecture Overview
+
+The Gemini thinking tax system has been refactored into a modular, maintainable architecture with clear separation of concerns:
+
+```python
+# Main processing pipeline for Gemini calls
+def _prepare_gemini_adapter_kwargs(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Centralized Gemini preprocessing pipeline:
+    1) capability filtering
+    2) reasoning parameter mapping/defaults  
+    3) thinking-tax token-cap inflation
+    4) tools schema sanitization
+    """
+```
+
+### Refactored Helper Functions
+
+#### 1. `_lookup_model_info_from_registry()`
+```python
+def _lookup_model_info_from_registry(self, model: str) -> Any | None:
+    """Resolve registry ModelInfo for a model identifier.
+    
+    Accepts either a registry key (preferred) or a provider-native model name.
+    Returns None if the registry is unavailable or no entry matches.
+    """
+```
+
+**Benefits:**
+- Centralized model lookup logic
+- Consistent fallback behavior
+- Reusable across multiple functions
+
+#### 2. `_extract_effort_map()`
+```python
+def _extract_effort_map(self, model_info: Any, spec: Any | None) -> Dict[str, float] | None:
+    """Get effort->ratio map with fallback priority:
+    
+    Priority:
+      1) model_info.thinking_tax.ratios / effort_ratios
+      2) ModelSpec-provided map (effort_map / thinking_tax / extras/extra)
+      
+    Returns: {"none": 0.0, "low": 0.25, "medium": 0.50, "high": 0.80} or None
+    """
+```
+
+**Benefits:**
+- Handles both registry and ModelSpec sources
+- Robust type conversion and error handling
+- Supports multiple effort map formats
+
+#### 3. `_normalize_effort_name()`
+```python
+def _normalize_effort_name(self, effort: Any) -> str:
+    """Normalize reasoning effort labels to registry keys.
+    
+    Handles synonyms: "min"→"minimal", "none"/"off"/"0"→"none", etc.
+    """
+```
+
+**Benefits:**
+- Consistent effort level handling
+- User-friendly input variations
+- Centralized normalization logic
+
+#### 4. `_get_requested_effort_from_kwargs()`
+```python
+def _get_requested_effort_from_kwargs(self, model_info: Any, kwargs: Dict[str, Any]) -> Any:
+    """Find the requested effort value from generic or model-specific fields.
+    
+    Checks:
+    1) Generic "reasoning_effort" parameter
+    2) Model-specific reasoning parameter from registry
+    """
+```
+
+**Benefits:**
+- Supports both generic and model-specific parameters
+- Automatic parameter mapping
+- Consistent effort detection logic
+
+#### 5. `_apply_gemini_thinking_tax()` (Refactored)
+```python
+def _apply_gemini_thinking_tax(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Inflate Gemini max token limit to account for hidden thinking tokens.
+    
+    Contract:
+    - Call sites stay model-agnostic and pass a token limit.
+    - The registry defines how Gemini models should inflate that limit.
+    - If no map is found, no changes are made.
+    """
+```
+
+**Refactoring Benefits:**
+- Cleaner, more readable workflow
+- Better error handling and logging
+- Easier to test and maintain
+- Consistent variable naming
+
+### Gemini Reasoning Call Architecture
+
+#### Separate Functions for Different Reasoning Types
+
+The system maintains separate functions for different Gemini reasoning parameter formats:
+
+##### `_gemini_budget_reasoning_call()`
+```python
+# For models using thinking_budget (numeric token count)
+"gemini:fast": ModelInfo(
+    reasoning_parameter=("thinking_budget", None),  # Default to 2000 tokens
+)
+
+# API call structure:
+extra_body = {
+    "google": {
+        "thinking_config": {
+            "thinking_budget": 2000  # Integer token count
+        }
+    }
+}
+```
+
+##### `_gemini_level_reasoning_call()`
+```python
+# For models using thinking_level (string levels)
+"gemini:fast-3-flash": ModelInfo(
+    reasoning_parameter=("thinking_level", "minimal"),  # Default to "minimal"
+)
+
+# API call structure:
+extra_body = {
+    "google": {
+        "thinking_config": {
+            "thinking_level": "medium"  # String level
+        }
+    }
+}
+```
+
+#### Routing Logic
+```python
+def _gemini_reasoning_call(self, model: str, **kwargs):
+    reasoning_param = self._get_reasoning_parameter(model)
+    param_name, default_value = reasoning_param
+    
+    if param_name == "thinking_budget":
+        return self._gemini_budget_reasoning_call(...)
+    elif param_name == "thinking_level":
+        return self._gemini_level_reasoning_call(...)
+    else:
+        return self._gemini_call(skip_reasoning=True, **kwargs)
+```
+
+### Tool Schema Sanitization
+
+#### `_sanitize_tools_for_gemini_adapter()`
+```python
+def _sanitize_tools_for_gemini_adapter(self, tools: Any) -> Any:
+    """Return a Gemini-friendly tools list.
+    
+    - Accepts either flattened or nested OpenAI-style tool specs.
+    - Ensures nested {"type":"function","function":{...}} format.
+    - Strips JSON schema keys that trigger 400s in Gemini adapters.
+    """
+```
+
+**Problem Solved:**
+- Gemini adapters are stricter about JSON schema fields
+- Removes problematic keys: `"default"`, `"additionalProperties"`, `"$schema"`, `"title"`
+- Handles both flattened and nested tool specifications
+- Graceful fallback to original tools if sanitization fails
+
+### Processing Pipeline Summary
+
+```python
+# Complete Gemini preprocessing flow
+kwargs_from_chat_manager = {
+    "temperature": 0.3,
+    "max_output_tokens": 800,
+    "reasoning_effort": "high",
+    "tools": [...],
+}
+
+↓ _prepare_gemini_adapter_kwargs()
+1. Filter by capabilities → removes unsupported params
+2. Map reasoning parameters → reasoning_effort → thinking_budget/thinking_level  
+3. Apply thinking tax → max_output_tokens: 800 → 1440 (80% inflation)
+4. Sanitize tools → clean JSON schema for Gemini compatibility
+
+↓ _gemini_call()
+5. Route to reasoning call if needed → _gemini_budget_reasoning_call()
+6. Make API call with properly formatted parameters
+```
+
+### Benefits of Refactored Architecture
+
+#### Code Quality
+- **DRY Principle**: Eliminated duplicate thinking_tax application
+- **Single Responsibility**: Each function has a clear, focused purpose
+- **Testability**: Each helper can be unit tested independently
+- **Maintainability**: Changes only need to be made in one place
+
+#### Reliability
+- **Better Error Handling**: Granular try/catch blocks with graceful fallbacks
+- **Type Safety**: Improved type conversion and validation
+- **Consistency**: Centralized logic ensures consistent behavior
+
+#### Extensibility
+- **Modular Design**: Easy to add new reasoning parameter types
+- **Reusable Components**: Helper functions can be used by other providers
+- **Clear Interfaces**: Well-defined function contracts
+
 ## LLM Handler Design
 
 ### 4-Tier Model Lookup Strategy
@@ -287,23 +647,221 @@ kwargs_from_chat_manager = {
     "temperature": 0.3,
     "max_output_tokens": 800,
     "reasoning_effort": "high",
+    "tools": [...],
 }
 
-↓ 1. Capability Filtering
+↓ 1. Provider-Specific Preparation
+if provider == "gemini":
+    prepared_kwargs = _prepare_gemini_adapter_kwargs(model, kwargs)
+else:
+    prepared_kwargs = _filter_kwargs_by_capabilities(model, kwargs)
+
+↓ 2. Capability Filtering (for non-Gemini) / Included in step 1 (for Gemini)
 filtered_kwargs = _filter_kwargs_by_capabilities(model, kwargs)
 # Removes unsupported params (e.g., temperature for o1 models)
 
-↓ 2. Parameter Mapping  
+↓ 3. Parameter Mapping  
 mapped_kwargs = _map_reasoning_parameter_with_default(model, filtered_kwargs)
 # Converts: reasoning_effort → thinking_budget/thinking_level/reasoning_effort
 
-↓ 3. Token Parameter Conversion
+↓ 4. Gemini-Specific Processing (if applicable)
+if provider == "gemini":
+    # Applied in _prepare_gemini_adapter_kwargs():
+    - thinking_tax token inflation
+    - tools schema sanitization
+    - reasoning parameter routing
+
+↓ 5. Token Parameter Conversion
 if "max_output_tokens" in mapped_kwargs:
     param_name = _get_max_tokens_parameter(model)  # Gets "max_tokens" or "max_completion_tokens"
     final_kwargs[param_name] = mapped_kwargs.pop("max_output_tokens")
 
-↓ 4. Provider Call
+↓ 6. Provider Call
 provider.create(model=model, **final_kwargs)  # Model-agnostic call
+```
+
+### Gemini-Specific Processing Pipeline
+
+```python
+# Detailed Gemini preprocessing flow
+kwargs_from_chat_manager = {
+    "temperature": 0.3,
+    "max_output_tokens": 800,
+    "reasoning_effort": "high", 
+    "tools": [...],
+}
+
+↓ _prepare_gemini_adapter_kwargs()
+1. **Capability Filtering**
+   - Removes unsupported parameters based on model capabilities
+   
+2. **Reasoning Parameter Mapping**
+   - Maps reasoning_effort → thinking_budget or thinking_level
+   - Applies registry defaults if no value provided
+   
+3. **Thinking Tax Application** 
+   - Extracts effort_map from registry or ModelSpec
+   - Normalizes effort name ("high" → "high")
+   - Inflates tokens: 800 × (1.0 + 0.80) = 1440
+   
+4. **Tool Schema Sanitization**
+   - Converts to nested {"type":"function","function":{...}} format
+   - Removes problematic JSON schema keys
+   - Graceful fallback on errors
+
+↓ _gemini_call()
+5. **Reasoning Routing**
+   - Detects thinking_budget vs thinking_level
+   - Routes to appropriate reasoning function
+   
+6. **API Call Formation**
+   - Formats extra_body with thinking_config
+   - Makes OpenAI-compatible call to Gemini adapter
+```
+
+## LLM Handler API
+
+### `create()` Method
+
+The primary entry point for LLM inference with flexible model specification and automatic parameter handling.
+
+#### Function Signature
+
+```python
+def create(
+    self,
+    *,
+    input: Any,                              # Required: The prompt/input for the LLM
+    provider: Optional[str] = None,           # Optional: LLM provider (openai, gemini)
+    model: Optional[str] = None,               # Optional: Model identifier or registry key
+    spec: Optional[ModelSpec] = None,           # Optional: Structured model specification
+    stream: bool = False,                       # Optional: Enable streaming response
+    **kwargs: Any,                              # Optional: Additional parameters (temperature, tokens, etc.)
+):
+```
+
+#### Model Specification Options
+
+The `create()` method supports **three ways** to specify models:
+
+##### 1. Registry Keys (Recommended)
+```python
+response = handler.create(
+    provider="gemini",
+    model="gemini:fast",        # Registry key format: provider:variant
+    input="Hello world"
+)
+```
+
+**Benefits:**
+- User-friendly shorthand names
+- Automatic parameter mapping and defaults
+- Built-in capability filtering
+
+##### 2. Provider-Native Model Names
+```python
+response = handler.create(
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",  # Direct model name
+    input="Hello world"
+)
+```
+
+**Benefits:**
+- Direct control over exact model version
+- Backward compatibility with existing code
+- Works even if registry is unavailable
+
+##### 3. ModelSpec Objects
+```python
+from backend.llm.ModelSpec import ModelSpec
+
+spec = ModelSpec(
+    provider="gemini",
+    model="gemini:fast",
+    temperature=0.7,
+    max_output_tokens=1000
+)
+
+response = handler.create(
+    spec=spec,                    # ModelSpec contains all parameters
+    input="Hello world"
+)
+```
+
+**Benefits:**
+- Structured, type-safe model specification
+- Pre-configured parameter sets
+- Easy reuse across multiple calls
+
+#### Parameter Processing Pipeline
+
+```python
+# Input parameters flow through this pipeline:
+kwargs_from_user = {
+    "temperature": 0.3,
+    "max_output_tokens": 800,
+    "reasoning_effort": "high",
+    "tools": [...]
+}
+
+↓ 1. ModelSpec Processing (if provided)
+if spec is not None:
+    # Merge spec.to_kwargs() with user kwargs
+    # spec parameters take precedence over defaults
+
+↓ 2. Provider Default Assignment
+if provider is None:
+    provider = "openai"  # Default provider
+
+↓ 3. Model Validation
+if model is None and spec is None:
+    raise ValueError("model is required when spec is not provided")
+
+↓ 4. Token Parameter Mapping
+kwargs = self._apply_max_tokens_parameter(model, kwargs)
+# Converts: max_output_tokens → model-specific parameter name
+
+↓ 5. Provider-Specific Processing
+if provider == "openai":
+    # OpenAI-specific parameter mapping and API call
+elif provider == "gemini":
+    # Gemini preprocessing (capabilities, reasoning, thinking tax, tools)
+```
+
+#### Model Resolution Flow
+
+```python
+# Model identifier resolution happens automatically:
+model_input = "gemini:fast"
+
+↓ _resolve_model_name()
+if "gemini:fast" in _model_registry.REGISTRY:
+    return "models/gemini-2.5-flash-lite"  # Provider-native name
+else:
+    return "gemini:fast"  # Pass through unchanged
+
+↓ API Call
+client.chat.completions.create(
+    model="models/gemini-2.5-flash-lite",  # Resolved name
+    ...
+)
+```
+
+#### Error Handling
+
+The `create()` method raises structured `LLMError` exceptions for common failure modes:
+
+```python
+try:
+    response = handler.create(...)
+except LLMError as e:
+    print(f"Provider: {e.provider}")
+    print(f"Model: {e.model}")  
+    print(f"Error Type: {e.kind}")      # rate_limit, config, model_not_found
+    print(f"Error Code: {e.code}")
+    print(f"Message: {e.message}")
+    print(f"Retry After: {e.retry_after}")
 ```
 
 ## Usage Examples
@@ -325,7 +883,7 @@ response = handler.create(
 )
 ```
 
-### Advanced Usage with Reasoning
+### Advanced Usage with Reasoning and Thinking Tax
 
 ```python
 # Works across all models automatically
@@ -335,8 +893,75 @@ response = handler.create(
     input="Explain quantum computing",
     reasoning_effort="high",  # Automatically converted to thinking_budget=10000
     temperature=0.2,
+    max_output_tokens=1000   # Will be inflated to 1800 for high effort
+)
+
+# Result: API call with thinking_budget=10000, max_output_tokens=1800
+# The thinking tax ensures enough tokens for both visible response and hidden thinking
+```
+
+### Gemini Thinking Tax Examples
+
+#### Budget-Based Thinking (Flash Models)
+```python
+# Input: User wants high reasoning effort
+response = handler.create(
+    provider="gemini",
+    model="gemini:fast",  # models/gemini-2.5-flash-lite
+    input="Complex problem solving",
+    reasoning_effort="high",
     max_output_tokens=1000
 )
+
+# Processing:
+# 1. reasoning_effort="high" → thinking_budget=8000 (from registry mapping)
+# 2. max_output_tokens=1000 → 1800 (80% thinking tax inflation)
+# 3. API call: {"thinking_budget": 8000, "max_output_tokens": 1800, ...}
+```
+
+#### Level-Based Thinking (Newer Models)
+```python
+# Input: User wants medium reasoning effort
+response = handler.create(
+    provider="gemini", 
+    model="gemini:fast-3-flash",  # models/gemini-3-flash-preview
+    input="Analyze this data",
+    reasoning_effort="medium",
+    max_output_tokens=500
+)
+
+# Processing:
+# 1. reasoning_effort="medium" → thinking_level="medium"
+# 2. max_output_tokens=500 → 750 (50% thinking tax inflation)
+# 3. API call: {"thinking_level": "medium", "max_output_tokens": 750, ...}
+```
+
+#### Tool Usage with Thinking Tax
+```python
+# Input: Function calling with reasoning
+response = handler.create(
+    provider="gemini",
+    model="gemini:fast",
+    input="Search web and summarize results",
+    reasoning_effort="low",
+    max_output_tokens=800,
+    tools=[{
+        "name": "web_search",
+        "description": "Search the web",
+        "parameters": {
+            "type": "object", 
+            "properties": {
+                "query": {"type": "string", "description": "Search query"}
+            }
+        }
+    }]
+)
+
+# Processing:
+# 1. Tools sanitized for Gemini compatibility
+# 2. reasoning_effort="low" → thinking_budget=2000
+# 3. max_output_tokens=800 → 1000 (25% thinking tax inflation)
+# 4. API call includes both thinking_budget and sanitized tools
 ```
 
 ## Field Name Changes by Model
@@ -350,11 +975,28 @@ response = handler.create(
 
 ### Reasoning Parameters
 
-| Model | Input Parameter | Output Parameter | Value Type | Example |
-|--------|----------------|------------------|-------------|---------|
-| OpenAI o3-mini | `reasoning_effort` | `reasoning_effort` | string: "low" |
-| Gemini Flash | `reasoning_effort` | `thinking_budget` | number: 5000 |
-| Gemini Pro | `reasoning_effort` | `thinking_level` | string: "medium" |
+| Model | Input Parameter | Output Parameter | Value Type | Thinking Tax | Example |
+|--------|----------------|------------------|-------------|--------------|---------|
+| OpenAI o3-mini | `reasoning_effort` | `reasoning_effort` | string: "low" | N/A | `"low"` |
+| Gemini Flash | `reasoning_effort` | `thinking_budget` | number: tokens | ✅ Yes | `8000` |
+| Gemini Pro | `reasoning_effort` | `thinking_level` | string: level | ✅ Yes | `"medium"` |
+| Gemini 3-Flash | `reasoning_effort` | `thinking_level` | string: level | ✅ Yes | `"high"` |
+
+### Thinking Tax Inflation Examples
+
+| Model | Input Tokens | Reasoning Effort | Reserve Ratio | Output Tokens | Inflation |
+|-------|--------------|------------------|---------------|---------------|-----------|
+| Gemini Flash | 1000 | "none" | 0.0 | 1000 | 0% |
+| Gemini Flash | 1000 | "low" | 0.25 | 1250 | 25% |
+| Gemini Flash | 1000 | "medium" | 0.50 | 1500 | 50% |
+| Gemini Flash | 1000 | "high" | 0.80 | 1800 | 80% |
+
+### Tool Schema Processing
+
+| Provider | Input Format | Output Format | Schema Changes |
+|----------|--------------|---------------|----------------|
+| OpenAI | Any valid format | Same format | None |
+| Gemini | Flattened or nested | Nested `{"type":"function","function":{...}}` | Removes: `"default"`, `"additionalProperties"`, `"$schema"`, `"title"` |
 
 ### Capability Filtering
 

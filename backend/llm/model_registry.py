@@ -21,8 +21,17 @@ class ModelInfo:
     endpoint: Endpoint          # which API shape your handler will use
     pricing: Optional[Pricing]  # None if you don't want to cost this model
     capabilities: Dict[str, Any] = field(default_factory=dict)
-    max_tokens_parameter: str = "max_tokens"  # Parameter name for token limits: "max_tokens" or "max_completion_tokens"
-    reasoning_parameter: Tuple[str, Any] = ("reasoning_effort", None)  # (parameter_name, default_value)
+    max_tokens_parameter: str = "max_output_tokens"  # Parameter name for token limits: "max_tokens" or "max_completion_tokens"
+    # Optional “thinking tax” / reserve rules: used to derive a larger provider token cap
+    # from a desired visible max_output_tokens, based on UI-provided effort levels.
+    # Shape suggestion:
+    # {
+    #   "effort_map": {"none": {"reserve_ratio": 0.0}, "low": {"reserve_ratio": 0.25}, ...},
+    #   "param_map": {"none": <value>, "low": <value>, ...}  # for thinking_level-style knobs
+    # }
+    thinking_tax: Dict[str, Any] = field(default_factory=dict)
+    # Optional reasoning parameter mapping: (parameter_name, default_value)
+    reasoning_parameter: Optional[Tuple[str, Any]] = None
 
 # ---- Registry ----
 REGISTRY: Dict[str, ModelInfo] = {
@@ -36,7 +45,7 @@ REGISTRY: Dict[str, ModelInfo] = {
         endpoint="embeddings",
         pricing=Pricing(input_per_mm=0.02, output_per_mm=0.0),
         capabilities={"dimensions": 1536},
-        max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
+        max_tokens_parameter="max_output_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
     "openai:fast": ModelInfo(
         key="openai:fast",
@@ -51,7 +60,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": False,
             "top_p": True,
         },
-        max_tokens_parameter="max_tokens",  # OpenAI non-reasoning models use max_tokens
+        max_tokens_parameter="max_output_tokens",  # OpenAI non-reasoning models use max_tokens
     ),
     "openai:best": ModelInfo(
         key="openai:best",
@@ -66,7 +75,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": False,
             "top_p": True,
         },
-        max_tokens_parameter="max_tokens",  # OpenAI non-reasoning models use max_tokens
+        max_tokens_parameter="max_completion_tokens", 
     ),
     "openai:reasoning_mini": ModelInfo(
         key="openai:reasoning_mini",
@@ -78,11 +87,11 @@ REGISTRY: Dict[str, ModelInfo] = {
             "tools": True, 
             "stream": False,
             "temperature": False,  # o1/o3 models don't support temperature
-            "reasoning_effort": True,  # OpenAI reasoning models support this
+            "reasoning_effort": True,  
             "top_p": False,
         },
-        max_tokens_parameter="max_completion_tokens",  # OpenAI reasoning models use max_completion_tokens
-        reasoning_parameter=("reasoning_effort", "low"),  # Default to "low"
+        max_tokens_parameter="max_output_tokens",  
+        reasoning_parameter=("reasoning_effort", "low"),  
     ),
     "openai:reasoning_mini_small": ModelInfo(
         key="openai:reasoning_mini_small",
@@ -93,12 +102,12 @@ REGISTRY: Dict[str, ModelInfo] = {
         capabilities={
             "tools": True, 
             "stream": False,
-            "temperature": False,  # o1/o3 models don't support temperature
-            "reasoning_effort": True,  # OpenAI reasoning models support this
+            "temperature": False,  # gpt-5-mini doesn't support temperature
+            "reasoning_effort": True,  
             "top_p": False,
         },
-        max_tokens_parameter="max_completion_tokens",  # OpenAI reasoning models use max_completion_tokens
-        reasoning_parameter=("reasoning_effort", "low"),  # Default to "low"
+        max_tokens_parameter="max_output_tokens",  
+        reasoning_parameter=("reasoning_effort", "minimal"),  
     ),
 
     # -----------------------
@@ -111,8 +120,7 @@ REGISTRY: Dict[str, ModelInfo] = {
         endpoint="embeddings",
         pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),  # use your real rates
         capabilities={"dimensions": 1536},
-        max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
-        reasoning_parameter=("thinking_budget", None),  # Embeddings don't use reasoning
+        max_tokens_parameter="max_output_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
     "gemini:fast": ModelInfo(
         key="gemini:fast",
@@ -124,11 +132,19 @@ REGISTRY: Dict[str, ModelInfo] = {
             "tools": True, 
             "stream": True,
             "temperature": True,
-            "reasoning_effort": True,  # Supports thinking_budget parameter
+            "reasoning_effort": False,  
             "top_p": True,
         },
-        max_tokens_parameter="max_completion_tokens",  # Gemini models use max_tokens
-        reasoning_parameter=("thinking_budget", 2000),  # Default to 2000 tokens
+        max_tokens_parameter="max_output_tokens", # Can also be max_completion_tokens or max_tokens 
+        thinking_tax={
+            "effort_map": {
+                "none": {"reserve_ratio": 0.0},
+                "low": {"reserve_ratio": 0.25},
+                "medium": {"reserve_ratio": 0.50},
+                "high": {"reserve_ratio": 0.80},
+            },
+            "kind": "budget",
+        },
     ),
     "gemini:fast-3-flash": ModelInfo(
         key="gemini:fast-3-flash",
@@ -140,11 +156,26 @@ REGISTRY: Dict[str, ModelInfo] = {
             "tools": True, 
             "stream": True,
             "temperature": True,
-            "reasoning_effort": True,  # Supports thinking_budget parameter
+            "reasoning_effort": True,  
             "top_p": True,
         },
-        max_tokens_parameter="max_completion_tokens",  # Gemini models use max_tokens
-        reasoning_parameter=("thinking_level", "low"),  # Default to "low"
+        max_tokens_parameter="max_completion_tokens",  # Can also be max_output_tokens or max_tokens 
+        reasoning_parameter=("thinking_level", "minimal"),  
+        thinking_tax={
+            "effort_map": {
+                "none": {"reserve_ratio": 0.0},
+                "low": {"reserve_ratio": 0.25},
+                "medium": {"reserve_ratio": 0.50},
+                "high": {"reserve_ratio": 0.80},
+            },
+            "param_map": {
+                "none": "minimal",
+                "low": "low",
+                "medium": "medium",
+                "high": "high",
+            },
+            "kind": "level",
+        },
     ),
     "gemini:best": ModelInfo(
         key="gemini:best",
@@ -156,11 +187,20 @@ REGISTRY: Dict[str, ModelInfo] = {
             "tools": True, 
             "stream": True,
             "temperature": True,
-            "reasoning_effort": True,  # Supports thinking_level parameter
+            "reasoning_effort": True,  
             "top_p": True,
         },
-        max_tokens_parameter="max_completion_tokens",  # Gemini models use max_tokens
-        reasoning_parameter=("thinking_budget", 2000),  # Default to 5000 tokens
+        max_tokens_parameter="max_completion_tokens",  
+        reasoning_parameter=("thinking_budget", 1000),  
+        thinking_tax={
+            "effort_map": {
+                "none": {"reserve_ratio": 0.0},
+                "low": {"reserve_ratio": 0.25},
+                "medium": {"reserve_ratio": 0.50},
+                "high": {"reserve_ratio": 0.80},
+            },
+            "kind": "budget",
+        },
     ),
 }
 

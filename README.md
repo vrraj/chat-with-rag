@@ -624,6 +624,85 @@ This system supports both traditional LLMs and advanced reasoning models, with d
 - **Non-Reasoning**: Input + Output tokens
 - **Reasoning**: Input + Output + **Reasoning tokens** (additional cost for thinking process)
 
+---
+
+## 📊 Metrics and Costs
+
+### Token Accounting
+
+The system tracks and costs tokens based on provider/model reporting. Current token accounting includes:
+
+#### **Tracked Token Types**
+- **Prompt Tokens** (Input): Tokens sent to the model (user message + context)
+- **Cached Tokens**: Cached prompt tokens (lower cost)
+- **Completion Tokens** (Output): Tokens in the model's response to the user
+
+#### **Reasoning Tokens Handling**
+- **Provider Reporting**: Most providers (OpenAI, Gemini) include reasoning/internal thinking tokens as part of the completion tokens count
+- **Costing**: Reasoning tokens are billed at the same rate as regular completion tokens
+- **No Separate Tracking**: Currently, reasoning tokens are not tracked separately from completion tokens in the metrics
+
+### Token Limit Configuration
+
+#### **max_completion_tokens Considerations**
+When setting `max_completion_tokens`, consider the following for reasoning models:
+
+- **Gemini Models**: `thinking_level` affects internal reasoning token allocation
+  - `thinking_level="minimal"`: More tokens available for actual response
+  - `thinking_level="low"`: Moderate reasoning, balanced response length
+  - `thinking_level="medium"`: More reasoning, shorter responses
+  - **Recommendation**: Increase `max_completion_tokens` for higher `thinking_level` values
+
+- **OpenAI Reasoning Models**: `reasoning_effort` affects internal token usage
+  - `reasoning_effort="low"`: Minimal reasoning, maximum response tokens
+  - `reasoning_effort="medium"`: Balanced reasoning and response
+  - `reasoning_effort="high"`: Maximum reasoning, shorter responses
+  - **Recommendation**: Adjust `max_completion_tokens` based on desired reasoning vs response balance
+
+#### **Configuration Examples**
+```python
+# Gemini with minimal thinking (max response tokens)
+max_completion_tokens = 800
+thinking_level = "minimal"
+
+# Gemini with medium thinking (balance reasoning and response)
+max_completion_tokens = 1200
+thinking_level = "medium"
+
+# OpenAI with high reasoning effort
+max_completion_tokens = 1000
+reasoning_effort = "high"
+```
+
+### Cost Calculation
+
+Costs are calculated per-stage using the following formula:
+```
+Total Cost = (Prompt Tokens × Input Rate) + 
+             (Completion Tokens × Output Rate) + 
+             (Cached Tokens × Cached Rate)
+```
+
+#### **Rate Sources**
+- **Model Registry** (`backend/llm/model_registry.py`): Provider-specific pricing per model
+- **Fallback Rates**: Default rates when model-specific pricing unavailable
+- **Currency**: All costs calculated in USD
+
+#### **Stage-Based Costing**
+Costs are tracked separately for each pipeline stage:
+- **Embedding**: Vector generation costs
+- **Rewrite**: Query rewrite processing
+- **Inference**: Primary response generation
+- **Tools Synthesis**: Tool call planning and execution
+
+### Monitoring
+
+The system provides real-time token usage and cost tracking through:
+- **Per-Turn Metrics**: Token counts and costs for each chat turn
+- **Conversation Totals**: Cumulative usage across entire conversation
+- **Stage Breakdown**: Detailed breakdown by pipeline stage
+- **Cost Attribution**: Clear cost attribution per model and provider
+
 ### Configuration
 
 #### **Model Selection**
