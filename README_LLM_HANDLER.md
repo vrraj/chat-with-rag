@@ -42,22 +42,25 @@ class ModelInfo:
 
 Gemini models may consume extra hidden tokens for thinking/reasoning. The `thinking_tax` field defines how to inflate the visible token limit to account for this:
 
-```python
-# Example: Gemini Flash model with budget-based thinking
-"gemini:fast": ModelInfo(
-    thinking_tax={
-        "effort_map": {
-            "none": {"reserve_ratio": 0.0},     # No extra tokens
-            "low": {"reserve_ratio": 0.25},     # 25% extra tokens
-            "medium": {"reserve_ratio": 0.50},   # 50% extra tokens
-            "high": {"reserve_ratio": 0.80},     # 80% extra tokens
-        },
-        "kind": "budget",  # Uses thinking_budget parameter
-    },
-),
+#### Complete Model Registry Structure
 
-# Example: Gemini model with level-based thinking
-"gemini:fast-3-flash": ModelInfo(
+```python
+# Gemini Flash Model (Budget-Based) - WITH thinking tax
+"gemini:fast": ModelInfo(
+    key="gemini:fast",
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",
+    endpoint="chat_completions",
+    pricing=Pricing(input_per_mm=0.20, output_per_mm=0.80),
+    capabilities={
+        "tools": True, 
+        "stream": True,
+        "temperature": True,
+        "reasoning_effort": False,  # ← IMPORTANT: No reasoning support
+        "top_p": True,
+    },
+    max_tokens_parameter="max_completion_tokens",
+    reasoning_parameter=None,  # ← No reasoning parameter defined
     thinking_tax={
         "effort_map": {
             "none": {"reserve_ratio": 0.0},
@@ -65,15 +68,304 @@ Gemini models may consume extra hidden tokens for thinking/reasoning. The `think
             "medium": {"reserve_ratio": 0.50},
             "high": {"reserve_ratio": 0.80},
         },
+        "kind": "budget",
+    },
+),
+
+# Gemini 3-Flash Model (Level-Based) - WITH thinking tax
+"gemini:fast-3-flash": ModelInfo(
+    key="gemini:fast-3-flash",
+    provider="gemini",
+    model="models/gemini-3-flash-preview",
+    endpoint="chat_completions",
+    pricing=Pricing(input_per_mm=0.50, output_per_mm=3.00),
+    capabilities={
+        "tools": True, 
+        "stream": True,
+        "temperature": True,
+        "reasoning_effort": True,   # ← IMPORTANT: Has reasoning support
+        "top_p": True,
+    },
+    max_tokens_parameter="max_completion_tokens",
+    reasoning_parameter=("thinking_level", "low"),  # ← Uses string levels
+    thinking_tax={
+        "effort_map": {
+            "none": {"reserve_ratio": 0.0},
+            "minimal": {"reserve_ratio": 0.25},
+            "low": {"reserve_ratio": 0.30},
+            "medium": {"reserve_ratio": 0.50},
+            "high": {"reserve_ratio": 0.80},
+        },
         "param_map": {  # Maps effort levels to model-specific values
             "none": "minimal",
-            "low": "low", 
+            "minimal": "minimal",
+            "low": "low",
             "medium": "medium",
             "high": "high",
         },
         "kind": "level",   # Uses thinking_level parameter
     },
 ),
+
+# OpenAI Reasoning Model - WITH reasoning support
+"openai:reasoning_mini": ModelInfo(
+    key="openai:reasoning_mini",
+    provider="openai",
+    model="o1-mini",
+    endpoint="responses",
+    pricing=Pricing(input_per_mm=0.15, output_per_mm=0.60),
+    capabilities={
+        "tools": True,
+        "stream": True,
+        "temperature": False,  # ← IMPORTANT: No temperature control
+        "reasoning_effort": True,   # ← IMPORTANT: Has reasoning support
+        "top_p": True,
+    },
+    max_tokens_parameter="max_completion_tokens",  # ← Special parameter for reasoning models
+    reasoning_parameter=("reasoning_effort", "low"),  # ← Uses OpenAI's native parameter
+    # No thinking_tax needed - OpenAI handles this internally
+),
+```
+
+#### Key Configuration Fields Explained
+
+| Field | Type | Purpose | Gemini Example | OpenAI Example |
+|--------|------|----------|---------------|----------------|
+| `capabilities.reasoning_effort` | bool | Enables reasoning parameter processing | `True`/`False` | `True` |
+| `reasoning_parameter` | Tuple[str, Any] | Maps reasoning_effort → model-specific param | `("thinking_level", "low")` | `("reasoning_effort", "low")` |
+| `thinking_tax` | Dict[str, Any] | Defines token inflation rules | See below | `None` (handled internally) |
+| `max_tokens_parameter` | str | API parameter name for token limits | `"max_completion_tokens"` | `"max_completion_tokens"` |
+
+#### Thinking Tax Configuration Breakdown
+
+##### Budget-Based (Gemini Flash Models)
+```python
+thinking_tax={
+    "effort_map": {
+        "none": {"reserve_ratio": 0.0},     # No inflation
+        "low": {"reserve_ratio": 0.25},     # 25% extra tokens
+        "medium": {"reserve_ratio": 0.50},   # 50% extra tokens
+        "high": {"reserve_ratio": 0.80},     # 80% extra tokens
+    },
+    "kind": "budget",  # Uses thinking_budget (numeric token count)
+}
+```
+
+##### Level-Based (Gemini 3-Flash Models)
+```python
+thinking_tax={
+    "effort_map": {
+        "none": {"reserve_ratio": 0.0},
+        "minimal": {"reserve_ratio": 0.25},
+        "low": {"reserve_ratio": 0.30},
+        "medium": {"reserve_ratio": 0.50},
+        "high": {"reserve_ratio": 0.80},
+    },
+    "param_map": {  # Maps user input to model-specific values
+        "none": "minimal",
+        "minimal": "minimal",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+    },
+    "kind": "level",  # Uses thinking_level (string level)
+}
+```
+
+#### Purpose of param_map
+
+The `param_map` is **essential** for level-based thinking systems because it solves the critical problem of translating user-friendly reasoning effort inputs into API-compatible values.
+
+##### Problem Statement
+- **User Input**: Users naturally type `reasoning_effort="none"`, `"low"`, `"medium"`, `"high"`
+- **API Requirement**: Gemini's `thinking_level` parameter only accepts specific string values
+- **Gap**: Without mapping, users would need to know exact API values
+
+##### Solution: param_map Functionality
+```python
+# User input: reasoning_effort="none"
+# ↓ _map_reasoning_parameter_with_default()
+param_name, default_value = model_info.reasoning_parameter  # ("thinking_level", "low")
+# ↓ _convert_reasoning_value()
+converted_value = param_map.get("none", "none")  # ← Maps "none" → "minimal"
+# ↓ _inject_gemini_thinking_config()
+final_config = {"thinking_level": "minimal"}  # ← API-compatible value
+```
+
+#### param_map Mapping Examples
+
+| User Input | param_map Entry | Final API Value | Purpose |
+|-------------|----------------|----------------|---------|
+| `"none"` | `"none": "minimal"` | Maps common "no reasoning" term to Gemini's "minimal" level |
+| `"min"` | `"min": "minimal"` | Handles abbreviated "minimal" input |
+| `"minimal"` | `"minimal": "minimal"` | Identity mapping - passes through unchanged |
+| `"low"` | `"low": "low"` | Identity mapping for standard levels |
+| `"medium"` | `"medium": "medium"` | Identity mapping for standard levels |
+| `"high"` | `"high": "high"` | Identity mapping for standard levels |
+
+#### Code Implementation
+
+The param_map is used in two key places:
+
+##### 1. Parameter Mapping (_convert_reasoning_value)
+```python
+def _convert_reasoning_value(self, model: str, value: Any) -> Any:
+    # Get param_map from model registry
+    param_map = thinking_tax.get("param_map")
+    
+    # Map user input to model-specific value
+    if isinstance(param_map, dict):
+        key = str(value).strip().lower()
+        return param_map.get(key, value)  # ← Uses param_map for translation
+```
+
+##### 2. Config Injection (_inject_gemini_thinking_config)
+```python
+def _inject_gemini_thinking_config(self, model: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    # Extract param_map for level-based thinking
+    param_map = thinking_tax.get("param_map")
+    
+    if isinstance(param_map, dict):
+        key = str(level).strip().lower()
+        level = param_map.get(key, level)  # ← Final mapping before API call
+```
+
+#### Benefits of param_map
+
+1. **User Experience**: 
+   - Intuitive input (`reasoning_effort="low"`)
+   - Automatic translation to correct API values
+
+2. **API Compatibility**:
+   - Prevents invalid `thinking_level` values
+   - Ensures only supported values are sent
+
+3. **Model Flexibility**:
+   - Different Gemini models can require different value sets
+   - `param_map` provides model-specific customization
+
+4. **Error Prevention**:
+   - Avoids API rejections for invalid thinking levels
+   - Graceful fallback to original value if mapping fails
+
+#### Real-World Example
+
+```python
+# Without param_map - User would need to know Gemini's exact values
+handler.create(
+    provider="gemini",
+    model="gemini:fast-3-flash", 
+    reasoning_effort="minimal",  # ← User must know this maps to "minimal"
+    max_output_tokens=200
+)
+# API receives: thinking_level="minimal" ✅
+
+# With param_map - System handles translation automatically
+handler.create(
+    provider="gemini",
+    model="gemini:fast-3-flash",
+    reasoning_effort="none",  # ← User-friendly term
+    max_output_tokens=200
+)
+# API receives: thinking_level="minimal" ✅ (automatically mapped)
+```
+
+#### Testing Budget-Based Thinking
+
+To test the budget-based thinking function, you need a model with `"kind": "budget"` in its `thinking_tax` configuration:
+
+##### Test Model Setup
+```python
+# Add to your model registry
+"gemini:fast-test": ModelInfo(
+    key="gemini:fast-test",
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",  # Same base model
+    reasoning_parameter=("thinking_budget", 2000),  # ← Uses numeric thinking_budget
+    thinking_tax={
+        "effort_map": {
+            "none": {"reserve_ratio": 0.0},
+            "low": {"reserve_ratio": 0.25},     # 25% inflation
+            "medium": {"reserve_ratio": 0.50},   # 50% inflation
+            "high": {"reserve_ratio": 0.80},     # 80% inflation
+        },
+        "kind": "budget",  # ← Uses thinking_budget (numeric)
+    },
+)
+```
+
+##### Test Call
+```python
+# Test budget-based thinking
+result = handler.create(
+    provider="gemini",
+    model="gemini:fast-test",  # Use the test model
+    input="Complex problem requiring deep reasoning",
+    max_output_tokens=1000,
+    reasoning_effort="high",  # Should trigger 80% inflation
+)
+
+# Expected behavior:
+# 1. reasoning_effort="high" → thinking_budget=8000
+# 2. max_output_tokens=1000 → 1800 (80% inflation)  
+# 3. API call: {"thinking_budget": 8000, "max_completion_tokens": 1800}
+```
+
+##### Expected Debug Output
+```python
+# Debug logs you should see:
+[GEMINI THINKING TAX] model=gemini:fast-test base_max=1000 effort=high ratio=0.8 inflated_max=1800
+[GEMINI THINKING CONFIG] model=gemini:fast-test kind=budget rp_name=thinking_budget requested=high final_config={'google': {'thinking_config': {'thinking_budget': 8000}}}
+[GEMINI DEBUG] chat.completions.create model=gemini:fast-test stream=False kwargs_subset={'max_completion_tokens': 1800} has_extra_body=True extra_body={'extra_body': {'google': {'thinking_config': {'thinking_budget': 8000}}}}
+```
+
+##### Key Differences from Level-Based
+
+| Aspect | Budget-Based (`kind="budget"`) | Level-Based (`kind="level"`) |
+|--------|------------------------------|--------------------------------|
+| Parameter | `thinking_budget` (number) | `thinking_level` (string) |
+| API Structure | `{"thinking_config": {"thinking_budget": 8000}}` | `{"thinking_config": {"thinking_level": "medium"}}` |
+| Input Range | Token counts (1000-8000) | String levels ("minimal"-"high") |
+| User Experience | Technical (requires token knowledge) | Intuitive (effort levels) |
+| param_map Needed | No | Yes (for user-friendly mapping) |
+
+| Model Type | reasoning_effort Capability | thinking_tax Present | Handler Behavior |
+|-------------|---------------------------|------------------|----------------|
+| Gemini Flash (no reasoning) | `False` | Any/None | No thinking tax, no extra_body |
+| Gemini Flash (with reasoning) | `True` | Required | Token inflation + thinking_config |
+| Gemini 3-Flash | `True` | Required | Token inflation + thinking_config |
+| OpenAI Reasoning | `True` | Not used | Direct parameter mapping only |
+
+#### Impact on Call Processing
+
+##### Models WITHOUT Reasoning Support
+```python
+# Example: gemini-2.5-flash-lite
+"gemini:fast": ModelInfo(
+    capabilities={"reasoning_effort": False},  # ← Disables reasoning processing
+    reasoning_parameter=None,  # ← No reasoning parameter
+)
+
+# Handler behavior:
+# 1. _apply_gemini_thinking_tax() → Returns unchanged kwargs
+# 2. _inject_gemini_thinking_config() → Returns unchanged kwargs  
+# 3. Final API call → Standard parameters only
+```
+
+##### Models WITH Reasoning Support
+```python
+# Example: gemini-3-flash-preview
+"gemini:fast-3-flash": ModelInfo(
+    capabilities={"reasoning_effort": True},  # ← Enables reasoning processing
+    reasoning_parameter=("thinking_level", "low"),  # ← Defines mapping
+    thinking_tax={...},  # ← Defines inflation rules
+)
+
+# Handler behavior:
+# 1. reasoning_effort="medium" → thinking_level="medium" (via param_map)
+# 2. max_output_tokens=200 → 250 (50% inflation)
+# 3. extra_body={"thinking_config": {"thinking_level": "medium"}}
+# 4. Final API call includes both inflated tokens and thinking config
 ```
 
 #### Thinking Tax Behavior
@@ -963,6 +1255,116 @@ response = handler.create(
 # 3. max_output_tokens=800 → 1000 (25% thinking tax inflation)
 # 4. API call includes both thinking_budget and sanitized tools
 ```
+
+## Call Signature Documentation
+
+### Complete Call Signature with Thinking Tax
+
+#### Function Signature
+```python
+def create(
+    self,
+    *,
+    input: Any,                              # Required: The prompt/input for LLM
+    provider: Optional[str] = None,           # Optional: LLM provider (openai, gemini)
+    model: Optional[str] = None,               # Optional: Model identifier or registry key
+    stream: bool = False,                       # Optional: Enable streaming response
+    **kwargs: Any,                              # Optional: Additional parameters (temperature, tokens, etc.)
+):
+```
+
+#### Thinking Tax Parameters
+
+| Parameter | Type | Required | Description | Example |
+|-----------|------|----------|-------------|---------|
+| `reasoning_effort` | str | No | Reasoning intensity level | `"low"`, `"medium"`, `"high"` |
+| `max_output_tokens` | int | No | Visible token limit for response | `200`, `1000` |
+
+#### Supported Reasoning Effort Levels
+
+| Level | Description | Typical Use Case |
+|--------|-------------|------------------|
+| `"none"` | No reasoning/thinking | Simple responses, fastest |
+| `"minimal"` | Light reasoning | Quick analysis, minimal overhead |
+| `"low"` | Basic reasoning | Standard tasks, balanced speed |
+| `"medium"` | Moderate reasoning | Complex analysis, good balance |
+| `"high"` | Deep reasoning | Complex problems, highest quality |
+
+#### Call Examples by Model Type
+
+##### Gemini Flash Models (Budget-Based)
+```python
+# models/gemini-2.5-flash-lite - No thinking tax
+response = handler.create(
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",
+    input="Write a short poem",
+    max_output_tokens=100,  # Sent as-is, no inflation
+    reasoning_effort="low"   # Ignored (no reasoning_parameter in registry)
+)
+
+# Result: max_output_tokens=100, no extra_body
+```
+
+##### Gemini 3-Flash Models (Level-Based)
+```python
+# models/gemini-3-flash-preview - With thinking tax
+response = handler.create(
+    provider="gemini",
+    model="models/gemini-3-flash-preview",
+    input="Solve this complex problem",
+    max_output_tokens=200,   # Will be inflated
+    reasoning_effort="minimal"  # 25% inflation
+)
+
+# Debug Output:
+# [GEMINI THINKING TAX] model=models/gemini-3-flash-preview base_max=200 effort=minimal ratio=0.25 inflated_max=250
+# [GEMINI THINKING CONFIG] model=models/gemini-3-flash-preview kind=level rp_name=thinking_level requested=minimal final_config={'google': {'thinking_config': {'thinking_level': 'minimal'}}}
+# [GEMINI DEBUG] chat.completions.create model=models/gemini-3-flash-preview stream=False kwargs_subset={'max_completion_tokens': 250} has_tools=False has_extra_body=True extra_body={'extra_body': {'google': {'thinking_config': {'thinking_level': 'minimal'}}}
+
+# Result: max_completion_tokens=250, thinking_level="minimal" in extra_body
+```
+
+#### Token Inflation Examples
+
+| Model | Input Tokens | Reasoning Effort | Reserve Ratio | Output Tokens | Inflation |
+|--------|--------------|------------------|---------------|---------------|-----------|
+| Gemini Flash | 1000 | "none" | 0.0 | 1000 | 0% |
+| Gemini Flash | 1000 | "minimal" | 0.25 | 1250 | 25% |
+| Gemini Flash | 1000 | "low" | 0.30 | 1300 | 30% |
+| Gemini Flash | 1000 | "medium" | 0.50 | 1500 | 50% |
+| Gemini Flash | 1000 | "high" | 0.80 | 1800 | 80% |
+| Gemini 3-Flash | 1000 | "minimal" | 0.25 | 1250 | 25% |
+| Gemini 3-Flash | 1000 | "low" | 0.30 | 1300 | 30% |
+| Gemini 3-Flash | 1000 | "medium" | 0.50 | 1500 | 50% |
+| Gemini 3-Flash | 1000 | "high" | 0.80 | 1800 | 80% |
+
+#### Debug Logging for Thinking Tax
+
+Enable debug logging to see thinking tax calculation:
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Debug output shows:
+# [GEMINI THINKING TAX] model=models/gemini-3-flash-preview base_max=200 effort=medium ratio=0.5 inflated_max=300
+# [GEMINI THINKING CONFIG] model=models/gemini-3-flash-preview kind=level rp_name=thinking_level requested=medium final_config={'google': {'thinking_config': {'thinking_level': 'medium'}}}
+# [GEMINI DEBUG] chat.completions.create model=models/gemini-3-flash-preview stream=False kwargs_subset={'max_completion_tokens': 300} has_tools=False has_extra_body=True extra_body={'extra_body': {'google': {'thinking_config': {'thinking_level': 'medium'}}}
+```
+
+#### Testing Call Signatures
+
+Use the test script to verify thinking tax behavior:
+
+```bash
+python scripts/test_gemini_tokens.py
+```
+
+Expected debug output:
+- **No thinking tax**: `kwargs_subset={'max_completion_tokens': 200}` (gemini-2.5-flash-lite)
+- **With thinking tax**: `kwargs_subset={'max_completion_tokens': 250}` (gemini-3-flash-preview with minimal effort)
+- **Extra body**: `has_extra_body=True` with proper `thinking_config` structure
 
 ## Field Name Changes by Model
 

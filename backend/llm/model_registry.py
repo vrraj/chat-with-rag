@@ -120,7 +120,7 @@ REGISTRY: Dict[str, ModelInfo] = {
         endpoint="embeddings",
         pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),  # use your real rates
         capabilities={"dimensions": 1536},
-        max_tokens_parameter="max_output_tokens",  # Embeddings don't use max_tokens but set for consistency
+        max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
     "gemini:fast": ModelInfo(
         key="gemini:fast",
@@ -132,10 +132,10 @@ REGISTRY: Dict[str, ModelInfo] = {
             "tools": True, 
             "stream": True,
             "temperature": True,
-            "reasoning_effort": False,  
+            "reasoning_effort": False,
             "top_p": True,
         },
-        max_tokens_parameter="max_output_tokens", # Can also be max_completion_tokens or max_tokens 
+        max_tokens_parameter="max_completion_tokens", # Can also be max_completion_tokens or max_tokens 
         thinking_tax={
             "effort_map": {
                 "none": {"reserve_ratio": 0.0},
@@ -144,6 +144,32 @@ REGISTRY: Dict[str, ModelInfo] = {
                 "high": {"reserve_ratio": 0.80},
             },
             "kind": "budget",
+        },
+    ),
+    # TEST MODEL: Budget-based thinking with reasoning support
+    "gemini:fast-test": ModelInfo(
+        key="gemini:fast-test",
+        provider="gemini",
+        model="models/gemini-2.5-flash-lite",  # Same model but WITH reasoning support
+        endpoint="chat_completions",
+        pricing=Pricing(input_per_mm=0.20, output_per_mm=0.80),
+        capabilities={
+            "tools": True, 
+            "stream": True,
+            "temperature": True,
+            "reasoning_effort": True,  # ← IMPORTANT: Enable reasoning
+            "top_p": True,
+        },
+        max_tokens_parameter="max_completion_tokens",
+        reasoning_parameter=("thinking_budget", 2000),  # ← Uses numeric thinking_budget
+        thinking_tax={
+            "effort_map": {
+                "none": {"reserve_ratio": 0.0},
+                "low": {"reserve_ratio": 0.25},
+                "medium": {"reserve_ratio": 0.50},
+                "high": {"reserve_ratio": 0.80},
+            },
+            "kind": "budget",  # ← Uses thinking_budget parameter
         },
     ),
     "gemini:fast-3-flash": ModelInfo(
@@ -160,16 +186,18 @@ REGISTRY: Dict[str, ModelInfo] = {
             "top_p": True,
         },
         max_tokens_parameter="max_completion_tokens",  # Can also be max_output_tokens or max_tokens 
-        reasoning_parameter=("thinking_level", "minimal"),  
+        reasoning_parameter=("thinking_level", "low"),  
         thinking_tax={
             "effort_map": {
                 "none": {"reserve_ratio": 0.0},
-                "low": {"reserve_ratio": 0.25},
+                "minimal": {"reserve_ratio": 0.25},
+                "low": {"reserve_ratio": 0.30},
                 "medium": {"reserve_ratio": 0.50},
                 "high": {"reserve_ratio": 0.80},
             },
             "param_map": {
                 "none": "minimal",
+                "minimal": "minimal",
                 "low": "low",
                 "medium": "medium",
                 "high": "high",

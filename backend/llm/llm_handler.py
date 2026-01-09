@@ -215,13 +215,19 @@ class LLMHandler:
         out = kwargs.copy()
 
         # If caller already supplied the registry-specific parameter, honor it.
+        # IMPORTANT: If the registry-specific parameter IS `max_output_tokens`, do not pop it.
         if param in out and out.get(param) is not None:
-            out.pop("max_output_tokens", None)
+            if param != "max_output_tokens":
+                out.pop("max_output_tokens", None)
             out.pop("max_tokens", None)
             return out
 
         # Prefer the model-agnostic field.
         if "max_output_tokens" in out and out.get("max_output_tokens") is not None:
+            if param == "max_output_tokens":
+                # Already using the correct parameter name; keep the value in place.
+                out.pop("max_tokens", None)
+                return out
             out[param] = out.pop("max_output_tokens")
             out.pop("max_tokens", None)
             return out
@@ -375,6 +381,21 @@ class LLMHandler:
         if getattr(model_info, "provider", None) != "gemini":
             return clean_kwargs
 
+        # If the registry says this model does NOT support reasoning effort, do not apply
+        # any thinking-tax inflation (even if a thinking_tax map exists).
+        try:
+            caps = getattr(model_info, "capabilities", {}) or {}
+            if not bool(caps.get("reasoning_effort", False)):
+                return clean_kwargs
+        except Exception:
+            return clean_kwargs
+        # Only apply thinking-tax inflation when the registry explicitly marks the model
+        # as supporting reasoning/thinking. This prevents accidental inflation for models
+        # that accept token limits but do not expose thinking knobs.
+        caps = getattr(model_info, "capabilities", None) or {}
+        if not bool(caps.get("reasoning_effort", False)):
+            return clean_kwargs
+
         effort_map = self._extract_effort_map(model_info, spec)
         if not isinstance(effort_map, dict) or not effort_map:
             return clean_kwargs
@@ -406,11 +427,14 @@ class LLMHandler:
         # Example: base=300, ratio=0.5 => send 450.
         if ratio_f <= 0.0:
             return clean_kwargs
-
+        
         inflated_max = int(round(base_max_i * (1.0 + ratio_f)))
         if inflated_max <= base_max_i:
             return clean_kwargs
-
+        
+        # DEBUG: Show thinking tax calculation
+        logger.debug(f"[GEMINI THINKING TAX] model={model} base_max={base_max_i} effort={effort_name} ratio={ratio_f} inflated_max={inflated_max}")
+        
         clean_kwargs[max_param_name] = inflated_max
         return clean_kwargs
 
@@ -434,6 +458,19 @@ class LLMHandler:
 
         model_info = self._lookup_model_info_from_registry(model)
         if model_info is None or getattr(model_info, "provider", None) != "gemini":
+            return kwargs
+
+        # If the registry says this model does NOT support reasoning effort, do not inject
+        # any Gemini thinking configuration (even if thinking_tax is present).
+        try:
+            caps = getattr(model_info, "capabilities", {}) or {}
+            if not bool(caps.get("reasoning_effort", False)):
+                return kwargs
+        except Exception:
+            return kwargs
+        # Only inject Gemini thinking_config when the registry says this model supports reasoning.
+        caps = getattr(model_info, "capabilities", None) or {}
+        if not bool(caps.get("reasoning_effort", False)):
             return kwargs
 
         thinking_tax = getattr(model_info, "thinking_tax", None)
@@ -501,6 +538,9 @@ class LLMHandler:
 
         # Double-wrap so OpenAI Python SDK merges `{ "extra_body": ... }` into request body.
         out["extra_body"] = {"extra_body": inner}
+        
+        # DEBUG: Show thinking config injection
+        logger.debug(f"[GEMINI THINKING CONFIG] model={model} kind={kind} rp_name={rp_name} requested={requested_value} final_config={inner}")
         
         # Remove the reasoning parameter from top-level since it's now in extra_body
         if rp_name in out:
@@ -737,6 +777,9 @@ class LLMHandler:
                     # Only pop the original key if we mapped it to a different param name.
                     if param_name != "reasoning_effort":
                         mapped_kwargs.pop("reasoning_effort", None)
+                    
+                    # DEBUG: Show reasoning parameter mapping
+                    logger.debug(f"[GEMINI REASONING MAP] model={model} param_name={param_name} reasoning_value={reasoning_value} converted_value={converted_value}")
                 elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
                     # Use registry default when no value passed and capability is supported
                     mapped_kwargs[param_name] = default_value
