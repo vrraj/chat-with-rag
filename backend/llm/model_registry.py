@@ -75,7 +75,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "reasoning_effort": False,
             "top_p": True,
         },
-        max_tokens_parameter="max_completion_tokens", 
+        max_tokens_parameter="max_output_tokens", 
     ),
     "openai:reasoning_mini": ModelInfo(
         key="openai:reasoning_mini",

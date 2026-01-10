@@ -278,7 +278,8 @@ def resolve_stage_specs(
                 "temperature": inference_temp,
                 "top_p": inference_top_p,
                 "max_output_tokens": inference_max_out,
-                "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
+                "reasoning_effort": getattr(settings, "inference_reasoning_effort1", "low"),
+                "debug_thoughts": getattr(settings, "debug_thoughts", False),
                 **tools_kwargs,
             },
         },
@@ -290,6 +291,7 @@ def resolve_stage_specs(
                 "temperature": inference_temp,
                 "max_output_tokens": tools_synth_max_out,
                 "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
+                "debug_thoughts": getattr(settings, "debug_thoughts", False),
             },
         },
     }
@@ -3727,7 +3729,9 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         emit_stage(req_id, "Final Answer", final=True, finalContent=out.get("answer", ""))
         # Send an explicit close message
         emit_stage(req_id, "Done", final=True)
-        return {
+
+        # Base response: preserve existing shape/keys for compatibility.
+        resp: Dict[str, Any] = {
             "answer": out.get("answer", ""),
             "response": out.get("answer", ""),  # legacy compatibility for frontend expecting 'response'
             "metrics": out.get("metrics", {"vectors_retrieved": 0}),
@@ -3736,6 +3740,16 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
             "tools_used": out.get("tools_used", []),
             "rewrite_display": out.get("rewrite_display", {}),
         }
+
+        # Non-breaking: only surface reasoning when present and non-empty.
+        try:
+            reasoning = out.get("reasoning") if isinstance(out, dict) else None
+        except Exception:
+            reasoning = None
+        if reasoning:
+            resp["reasoning"] = reasoning
+
+        return resp
     except LLMError as e:
         # Fatal provider/config/LLM failure (e.g., missing API key, unsupported provider).
         # Surface a clear, structured error back to the caller while preserving

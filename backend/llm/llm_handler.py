@@ -664,6 +664,18 @@ class LLMHandler:
         if not isinstance(kwargs, dict) or not kwargs:
             return kwargs
 
+        # Adapter-only kwarg: `debug_thoughts` is a Gemini-only control flag.
+        # Never forward it to non-Gemini providers (e.g., OpenAI Responses API).
+        try:
+            model_info = self._lookup_model_info_from_registry(model)
+            if model_info is not None and getattr(model_info, "provider", None) != "gemini":
+                if "debug_thoughts" in kwargs:
+                    kwargs = dict(kwargs)
+                    kwargs.pop("debug_thoughts", None)
+        except Exception:
+            # Best-effort only; never break filtering.
+            pass
+
         # Always allow token limit parameters (fundamental to all models)
         token_params = {"max_output_tokens", "max_tokens", "max_completion_tokens"}
 
@@ -939,6 +951,25 @@ class LLMHandler:
             if isinstance(c, str) and len(c) > len(best_text):
                 best_text = c
 
+        # ---- Optional Gemini debug thoughts split (<thought>...</thought>) ----
+        reasoning_text = None
+        try:
+            if provider == "gemini" and isinstance(best_text, str):
+                start_tag = "<thought>"
+                end_tag = "</thought>"
+                start = best_text.find(start_tag)
+                end = best_text.find(end_tag)
+                if start != -1 and end != -1 and end > start:
+                    inner = best_text[start + len(start_tag) : end]
+                    after = best_text[end + len(end_tag) :].strip()
+                    if inner and isinstance(inner, str):
+                        reasoning_text = inner.strip()
+                    if after:
+                        best_text = after
+        except Exception:
+            # Best-effort only; if anything goes wrong, fall back to original best_text.
+            pass
+
         # ---- Tool-call extraction (Responses-focused subset of extract_tool_calls) ----
         tool_calls: list[LLMToolCall] = []
         try:
@@ -978,8 +1009,8 @@ class LLMHandler:
             "id": rid,
             "created_at": created_at,
             "text": best_text or "",
-            # OpenAI Responses reasoning text is not currently surfaced here; left as None.
-            "reasoning": None,
+            # For Gemini debug_thoughts, this may contain the <thought>...</thought> block; otherwise None.
+            "reasoning": reasoning_text,
             "role": "assistant",
             "status": status,
             "finish_reason": finish_reason,

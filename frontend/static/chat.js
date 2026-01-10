@@ -953,7 +953,33 @@
       if (toolsLineRe.test(displayText)) {
         displayText = displayText.replace(toolsLineRe, '');
       }
+
+      // Clear bubble and render main answer text
       bubble.textContent = displayText;
+
+      // Optional: collapsible reasoning panel when backend provides it.
+      if (data && data.reasoning) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'reasoning-toggle';
+        toggle.textContent = 'Show reasoning ▾';
+
+        const panel = document.createElement('div');
+        panel.className = 'reasoning-panel';
+        panel.textContent = data.reasoning;
+        panel.style.display = 'none';
+
+        toggle.addEventListener('click', () => {
+          const isHidden = panel.style.display === 'none';
+          panel.style.display = isHidden ? 'block' : 'none';
+          toggle.textContent = isHidden ? 'Hide reasoning ▴' : 'Show reasoning ▾';
+        });
+
+        bubble.appendChild(document.createElement('br'));
+        bubble.appendChild(toggle);
+        bubble.appendChild(panel);
+      }
+
       // Render tools-used dim line, if provided
       if (data && Array.isArray(data.tools_used) && data.tools_used.length > 0) {
         const toolsDiv = document.createElement('div');

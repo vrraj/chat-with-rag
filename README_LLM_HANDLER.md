@@ -20,6 +20,125 @@ The LLM Handler system provides a unified interface for multiple LLM providers (
    - Capability-based parameter filtering
    - 4-tier model lookup strategy
 
+## LLMResult Shape and Usage
+
+### LLMResult Structure
+
+`backend/llm/llm_handler.py` defines a canonical, provider-agnostic result type used internally:
+
+```python
+class LLMToolCall(TypedDict, total=False):
+    name: str
+    args: Any
+    id: Optional[str]
+
+
+class LLMUsage(TypedDict, total=False):
+    prompt_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    total_tokens: Optional[int]
+    cached_tokens: Optional[int]
+    reasoning_tokens: Optional[int]
+
+
+class LLMResult(TypedDict):
+    provider: str                 # e.g. "openai" or "gemini"
+    model: str                    # provider-native model name or registry key
+    id: Optional[str]             # underlying response id if exposed
+    created_at: Optional[Any]     # timestamp/datetime where available
+    text: str                     # primary assistant message text (user-facing)
+    reasoning: Optional[str]      # optional reasoning trace, when available
+    role: str                     # always "assistant" for normal completions
+    status: Optional[str]         # e.g. "completed", provider-specific status
+    finish_reason: Optional[str]  # e.g. "stop", "length", provider-specific
+    usage: LLMUsage               # normalized token accounting
+    tool_calls: list[LLMToolCall] # extracted tool / function calls
+    raw: Any                      # underlying provider/SDK response object
+```
+
+### Gemini Debug Thoughts Semantics
+
+For Gemini models that emit explicit reasoning traces (e.g. when `debug_thoughts=True`), the provider often returns a single text field that includes both a `<thought>...</thought>` block and the final user-facing answer. The handler normalizes this into the `LLMResult` fields as follows:
+
+- The **raw** adapter/Responses object is preserved in `LLMResult["raw"]`.
+- The combined text (including `<thought>...</thought>`) is parsed once in
+  `_build_llm_result_from_openai(...)`:
+
+  - If the best candidate text contains `<thought>...</thought>`, the
+    handler splits it into:
+
+    - `LLMResult["reasoning"]` = the inner contents of the
+      `<thought>...</thought>` block (trimmed).
+    - `LLMResult["text"]`      = everything **after** the closing
+      `</thought>` tag (trimmed), i.e. the user-facing answer.
+
+  - For non-Gemini providers, or when no `<thought>` tags are present,
+    `LLMResult["reasoning"]` remains `None` and `LLMResult["text"]`
+    is the best-effort extracted answer text.
+
+This design lets callers:
+
+- Show only `LLMResult["text"]` to end users.
+- Optionally surface `LLMResult["reasoning"]` behind a debug toggle or
+  collapsible UI section.
+- Still introspect the raw provider response through `LLMResult["raw"]`
+  when needed for debugging.
+
+### How to Obtain an LLMResult
+
+Today, most call sites use `LLMHandler` via its OpenAI-compatible facades
+(`responses.create`, etc.) and work directly with provider/SDK response
+objects. The `LLMResult` helper is intentionally additive and can be
+introduced gradually without breaking existing code.
+
+#### Helper: `_build_llm_result_from_openai`
+
+`LLMHandler` exposes an internal helper that converts a non-streaming
+Responses-style object into an `LLMResult`:
+
+```python
+handler: LLMHandler = llm_handler  # singleton instance
+
+raw = handler._openai_call(  # or _gemini_call via adapter
+    model="openai:best",
+    input="Hello",
+    stream=False,
+    temperature=0.2,
+)
+
+result: LLMResult = handler._build_llm_result_from_openai(raw, provider="openai")
+print(result["text"])       # normalized assistant output
+print(result["reasoning"])  # optional reasoning trace (e.g., Gemini debug thoughts)
+print(result["usage"])      # token accounting across providers
+```
+
+Notes:
+
+- `provider` is a simple string hint (e.g. `"openai"`, `"gemini"`) used
+  for provider-specific post-processing such as Gemini `<thought>` splitting.
+- The helper assumes **non-streaming** responses (i.e. `stream=False`).
+- The shape of `raw` is whatever the underlying SDK returns; the handler
+  only reads common fields (model, id, usage, output/output_text, etc.).
+
+#### Using LLMResult at System Boundaries
+
+The recommended pattern is to keep internal pipelines operating on
+Responses-like objects (for maximum compatibility) and normalize into
+`LLMResult` only at clear boundaries, for example:
+
+- API responses (e.g. the `/chat` endpoint) that need a stable, provider-
+  agnostic response shape.
+- Logging/metrics layers that want consistent token and reasoning fields
+  across providers.
+- UI layers that want:
+  - `text` for main assistant content
+  - `reasoning` for optional, debuggable explanation traces
+  - `usage`/`tool_calls` for per-turn metrics or tool UIs.
+
+This approach keeps the existing call surface compatible with plain
+OpenAI Responses while providing a normalized view for higher-level
+orchestration and UI.
+
 ## Model Registry Design
 
 ### ModelInfo Structure

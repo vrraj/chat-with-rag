@@ -245,6 +245,8 @@ class Settings(BaseSettings):
     inference_reasoning_effort: str = "low"
     inference_reasoning_model: bool = False
 
+    debug_thoughts: bool = True # Gemini specific flag to display reasoning - the llm_handler will ignore this for other models
+
     enable_tools: bool = True  # Enable agent-style tool calls (UI can override per-turn)
     max_tool_passes: int = 2  # Maximum number of tool loops to be called from LLM generated output for a single turn. This it to prevent runaway tool calls
 

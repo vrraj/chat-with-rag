@@ -373,6 +373,30 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
   background: var(--panel);
 }
 
+/* Assistant reasoning toggle/panel */
+.msg.assistant .reasoning-toggle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.msg.assistant .reasoning-toggle:hover {
+  text-decoration: underline;
+}
+
+.msg.assistant .reasoning-panel {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 .msg { display: flex; gap: 8px; margin: 8px 0; max-width: 75%; }
 .msg.user { margin-left: auto; justify-content: flex-end; }
 .msg.assistant { margin-right: auto; }
