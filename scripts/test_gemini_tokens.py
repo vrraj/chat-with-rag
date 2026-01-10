@@ -29,8 +29,8 @@ def test_gemini_token_parameters():
     # Test models
     models_to_test = [
         "models/gemini-2.5-flash-lite",
-        "models/gemini-3-flash-preview",
-        "gemini:fast-test",  # NEW: Test budget-based thinking with reasoning support
+        "models/gemini-3-flash-preview"
+        #"gemini:fast-test",  # NEW: Test budget-based thinking with reasoning support
     ]
     
     for model in models_to_test:
@@ -44,11 +44,12 @@ def test_gemini_token_parameters():
                 model=model,
                 input="write me a funny 3 line joke with a punchline. Return exactly 3 lines. Each line must be at least 12 words. No bullets. The joke should be really finny and be related to mountains and hikimg but should only include mountan ranges in the apls and italy and andes. do not mention anything about people and cultures that might cause issues with diversity. joke should nbe a wionter time jokw and not a summer time joke . use words that are eacy to understand and not too complicated . no po in the  answer and please make a joke that should really tickle the funny bone in every individual across all continents in the works",
                 max_output_tokens=300,  # Test with max_output_tokens
-                reasoning_effort="minimal",
+                reasoning_effort="medium",
+                debug_thoughts=True,
                 stream=False,
                 top_p=1
             )
-            print("  ✅ max_output_tokens: SUCCESS")
+            print("  ✅ max_output_tokens: SUCCESS model name  %s ", model)
             print(f"  📝 Response: {result.output_text}")
             print(f"  📏 Response length: {len(result.output_text)} chars")
             print(f"  🔢 Token usage: {result.usage}")
@@ -60,28 +61,28 @@ def test_gemini_token_parameters():
             print(f"  ❌ max_output_tokens: ERROR - {e}")
 
         # Test with max_output_tokens parameter- short prompt
-        try:
-            print("  🔹 Testing with max_output_tokens and a short prompt...")
-            result = handler.create(
-                provider="gemini",
-                model=model,
-                input="write me a funny 3 line joke with a punchline.", 
-                max_output_tokens=300,  # Test with max_output_tokens
-                reasoning_effort="minimal",
-                stream=False,
-                top_p=1
-            )
-            print("  ✅ max_output_tokens: SUCCESS")
-            print(f"  📝 Response: {result.output_text}")
-            print(f"  📏 Response length: {len(result.output_text)} chars")
-            print(f"  🔢 Token usage: {result.usage}")
-            usage = result.usage or {}
-            print(f"  📊 Completion tokens: {usage.get('completion_tokens') if isinstance(usage, dict) else getattr(usage, 'completion_tokens', None)}")
-            print(f"  🏁 Finish reason: {getattr(result, 'finish_reason', 'N/A')}")
-            print(f"  📄 Raw response: {result.__dict__}")
-        except Exception as e:
-            print(f"  ❌ max_output_tokens: ERROR - {e}")
-        
+        #try:
+        #    print("  🔹 Testing with max_output_tokens and a short prompt...")
+        #    result = handler.create(
+        #        provider="gemini",
+        #        model=model,
+        #        input="write me a funny 3 line joke with a punchline.", 
+        #        max_output_tokens=300,  # Test with max_output_tokens
+        #        reasoning_effort="minimal",
+        #        stream=False,
+        #        top_p=1
+        #    )
+        #    print("  ✅ max_output_tokens: SUCCESS")
+        #    print(f"  📝 Response: {result.output_text}")
+        #    print(f"  📏 Response length: {len(result.output_text)} chars")
+        #    print(f"  🔢 Token usage: {result.usage}")
+        #    usage = result.usage or {}
+        #    print(f"  📊 Completion tokens: {usage.get('completion_tokens') if isinstance(usage, dict) else getattr(usage, 'completion_tokens', None)}")
+        #    print(f"  🏁 Finish reason: {getattr(result, 'finish_reason', 'N/A')}")
+        #    print(f"  📄 Raw response: {result.__dict__}")
+        #except Exception as e:
+        #    print(f"  ❌ max_output_tokens: ERROR - {e}")
+       # 
         # Test budget-based thinking (NEW)
         if model == "gemini:fast-test":
             try:

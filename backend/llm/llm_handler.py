@@ -2,7 +2,7 @@ from openai import OpenAI
 import openai
 import os
 import logging
-from typing import Any, Dict, Optional, Iterator
+from typing import Any, Dict, Optional, Iterator, List, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,64 @@ class LLMError(Exception):
         self.code = code
         self.retry_after = retry_after
         super().__init__(message or kind)
+
+
+class LLMUsage(TypedDict, total=False):
+    """Normalized token usage for LLM calls.
+
+    Fields are optional to accommodate providers that omit specific counters.
+    """
+
+    prompt_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    total_tokens: Optional[int]
+    cached_tokens: Optional[int]
+    reasoning_tokens: Optional[int]
+
+
+class LLMToolCall(TypedDict, total=False):
+    """Normalized tool/function call descriptor.
+
+    Mirrors the shape produced by `extract_tool_calls` in chat_manager.
+    """
+
+    name: str
+    args: Any
+    id: Optional[str]
+
+
+class LLMResult(TypedDict, total=False):
+    """Model-agnostic, normalized result for non-streaming LLM calls.
+
+    This wraps a provider-native response (in `raw`) while exposing
+    convenient, stable fields for callers. Streaming calls remain
+    event-based and are summarized into this shape only after completion
+    (when needed).
+    """
+
+    # Identity / metadata
+    provider: str
+    model: str
+    id: Optional[str]
+    created_at: Optional[float]
+
+    # Content & reasoning
+    text: str
+    reasoning: Optional[str]
+    role: str
+
+    # Status / finish
+    status: str
+    finish_reason: Optional[str]
+
+    # Token usage
+    usage: LLMUsage
+
+    # Normalized tool calls
+    tool_calls: List[LLMToolCall]
+
+    # Provider-native raw response object/dict
+    raw: Any
 
 
 # --- OpenAI-compatible response/event shims for non-OpenAI providers ---
@@ -689,7 +747,11 @@ class LLMHandler:
           3) thinking-tax token-cap inflation (if configured in registry/spec)
           4) tools schema sanitization (only if tools provided)
         """
-        filtered_kwargs = self._filter_kwargs_by_capabilities(model, kwargs)
+        # Adapter-only flag: never forward to provider.
+        raw_kwargs: Dict[str, Any] = dict(kwargs or {})
+        debug_thoughts = bool(raw_kwargs.pop("debug_thoughts", False))
+
+        filtered_kwargs = self._filter_kwargs_by_capabilities(model, raw_kwargs)
         mapped_kwargs = self._map_reasoning_parameter_with_default(model, filtered_kwargs)
 
         prepared_kwargs: Dict[str, Any] = dict(mapped_kwargs)
@@ -703,6 +765,29 @@ class LLMHandler:
             prepared_kwargs = self._inject_gemini_thinking_config(model, prepared_kwargs)
         except Exception:
             pass
+
+        # If requested, include Gemini thoughts ONLY when the registry says this model supports reasoning.
+        if debug_thoughts:
+            try:
+                model_info = self._lookup_model_info_from_registry(model)
+                if model_info is not None and getattr(model_info, "provider", None) == "gemini":
+                    caps = getattr(model_info, "capabilities", {}) or {}
+                    if bool(caps.get("reasoning_effort", False)):
+                        # Merge into existing extra_body payload, preserving existing thinking_config keys.
+                        existing = prepared_kwargs.get("extra_body")
+                        inner: Dict[str, Any] = {}
+                        if isinstance(existing, dict):
+                            inner = existing.get("extra_body", existing)
+                        inner.setdefault("google", {})
+                        tc = inner["google"].get("thinking_config")
+                        if not isinstance(tc, dict):
+                            tc = {}
+                        tc["include_thoughts"] = True
+                        inner["google"]["thinking_config"] = tc
+                        prepared_kwargs["extra_body"] = {"extra_body": inner}
+            except Exception:
+                # Best-effort only; never break the call.
+                pass
 
         if "tools" in prepared_kwargs:
             try:
@@ -721,11 +806,195 @@ class LLMHandler:
             pass
         return None
 
+    def _build_llm_result_from_openai(self, resp: Any, *, provider: str = "openai") -> LLMResult:
+        """Build an LLMResult from a non-streaming OpenAI Responses API response.
+
+        This helper is internal for now and does not change existing call sites.
+        It assumes `resp` is a completed Responses-style object (not a stream).
+        """
+
+        # ---- Identity / metadata ----
+        try:
+            model = getattr(resp, "model", None) or ""
+        except Exception:
+            model = ""
+
+        try:
+            rid = getattr(resp, "id", None)
+        except Exception:
+            rid = None
+
+        try:
+            created_at = getattr(resp, "created_at", None)
+        except Exception:
+            created_at = None
+
+        try:
+            status = getattr(resp, "status", None) or "completed"
+        except Exception:
+            status = "completed"
+
+        # Prefer existing helper when it yields a value; fall back to incomplete_details.reason.
+        finish_reason: Optional[str] = self._extract_finish_reason(resp)
+        if finish_reason is None:
+            try:
+                incomplete = getattr(resp, "incomplete_details", None)
+                if incomplete is not None:
+                    finish_reason = getattr(incomplete, "reason", None)
+            except Exception:
+                finish_reason = None
+
+        # ---- Usage mapping ----
+        usage_block = getattr(resp, "usage", None)
+        usage: LLMUsage = {}
+        if usage_block is not None:
+            try:
+                prompt_tokens = getattr(usage_block, "prompt_tokens", None)
+                if prompt_tokens is None:
+                    prompt_tokens = getattr(usage_block, "input_tokens", None)
+
+                completion_tokens = getattr(usage_block, "completion_tokens", None)
+                if completion_tokens is None:
+                    completion_tokens = getattr(usage_block, "output_tokens", None)
+
+                total_tokens = getattr(usage_block, "total_tokens", None)
+
+                # cached_tokens via *_tokens_details.cached_tokens
+                details_in = getattr(usage_block, "prompt_tokens_details", None)
+                if details_in is None:
+                    details_in = getattr(usage_block, "input_tokens_details", None)
+                cached_tokens = getattr(details_in, "cached_tokens", None) if details_in is not None else None
+
+                # reasoning_tokens via output_tokens_details.reasoning_tokens when present
+                details_out = getattr(usage_block, "output_tokens_details", None)
+                reasoning_tokens = getattr(details_out, "reasoning_tokens", None) if details_out is not None else None
+
+                usage["prompt_tokens"] = prompt_tokens
+                usage["completion_tokens"] = completion_tokens
+                usage["total_tokens"] = total_tokens
+                usage["cached_tokens"] = cached_tokens
+                usage["reasoning_tokens"] = reasoning_tokens
+            except Exception:
+                # Best-effort only; leave usage partially filled on error.
+                pass
+
+        # ---- Text extraction ----
+        # We do not import chat_manager helpers here; instead we apply a
+        # minimal Responses-aware extraction similar to _extract_text_from_responses.
+        def _safe_get(obj: Any, name: str) -> Any:
+            try:
+                if isinstance(obj, dict):
+                    return obj.get(name)
+                return getattr(obj, name, None)
+            except Exception:
+                return None
+
+        text_candidates: list[str] = []
+
+        # 1) Direct output_text field, if present
+        try:
+            ot = _safe_get(resp, "output_text")
+            if isinstance(ot, str) and ot.strip():
+                text_candidates.append(ot.strip())
+        except Exception:
+            pass
+
+        # 2) Responses-style `output` list
+        try:
+            output = _safe_get(resp, "output")
+            if isinstance(output, list):
+                for item in output:
+                    it_type = _safe_get(item, "type")
+                    if it_type == "text":
+                        txt = _safe_get(item, "text")
+                        if isinstance(txt, str) and txt.strip():
+                            text_candidates.append(txt.strip())
+                            continue
+
+                    # message-style: item.type == "message" with content list
+                    content = _safe_get(item, "content")
+                    if isinstance(content, list):
+                        for c in content:
+                            txt = _safe_get(c, "text")
+                            if isinstance(txt, str) and txt.strip():
+                                text_candidates.append(txt.strip())
+        except Exception:
+            pass
+
+        # 3) Fallback: ChatCompletions-style choices[0].message.content
+        if not text_candidates:
+            try:
+                choices = _safe_get(resp, "choices")
+                if isinstance(choices, list) and choices:
+                    c0 = choices[0]
+                    msg = _safe_get(c0, "message")
+                    content = _safe_get(msg, "content")
+                    if isinstance(content, str) and content.strip():
+                        text_candidates.append(content.strip())
+            except Exception:
+                pass
+
+        best_text = ""
+        for c in text_candidates:
+            if isinstance(c, str) and len(c) > len(best_text):
+                best_text = c
+
+        # ---- Tool-call extraction (Responses-focused subset of extract_tool_calls) ----
+        tool_calls: list[LLMToolCall] = []
+        try:
+            output = _safe_get(resp, "output")
+            if isinstance(output, list):
+                for item in output:
+                    it_type = _safe_get(item, "type")
+
+                    # Direct tool_* items
+                    if it_type in ("function_call", "tool_use", "tool_call"):
+                        name = _safe_get(item, "name")
+                        args = _safe_get(item, "arguments")
+                        cid = _safe_get(item, "call_id") or _safe_get(item, "id")
+                        if isinstance(name, str) and name:
+                            tool_calls.append({"name": name, "args": args, "id": cid})
+                        continue
+
+                    # message wrapper: tool calls in content
+                    content = _safe_get(item, "content")
+                    if isinstance(content, list):
+                        for c in content:
+                            c_type = _safe_get(c, "type")
+                            if c_type == "tool_call":
+                                name = _safe_get(c, "name")
+                                args = _safe_get(c, "arguments")
+                                cid = _safe_get(c, "id")
+                                if isinstance(name, str) and name:
+                                    tool_calls.append({"name": name, "args": args, "id": cid})
+        except Exception:
+            # Best-effort only; if anything goes wrong, leave tool_calls empty.
+            pass
+
+        # ---- Assemble LLMResult ----
+        result: LLMResult = {
+            "provider": provider,
+            "model": model,
+            "id": rid,
+            "created_at": created_at,
+            "text": best_text or "",
+            # OpenAI Responses reasoning text is not currently surfaced here; left as None.
+            "reasoning": None,
+            "role": "assistant",
+            "status": status,
+            "finish_reason": finish_reason,
+            "usage": usage,
+            "tool_calls": tool_calls,
+            "raw": resp,
+        }
+
+        return result
+
     def _convert_reasoning_value(self, model: str, value: Any) -> Any:
         """Convert reasoning_effort value to model-specific format."""
         if _model_registry is None:
             return value
-        
+
         # Resolve model_info either by registry key or by provider-native model name.
         model_info = None
         if model in _model_registry.REGISTRY:
@@ -735,23 +1004,23 @@ class LLMHandler:
                 if info.model == model:
                     model_info = info
                     break
-        
+
         if model_info is None:
             return value
-        
+
         # Check if reasoning_parameter exists before accessing
-        if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
+        if hasattr(model_info, "reasoning_parameter") and model_info.reasoning_parameter is not None:
             param_name, default_value = model_info.reasoning_parameter
         else:
             # No reasoning_parameter field - no conversion needed
             return value
-        
+
         # Convert based on default value type
         if isinstance(default_value, (int, float)):
             # Convert string to number for token-based models
             mapping = {"low": 1000, "medium": 2000, "high": 5000}
             return mapping.get(str(value).lower(), default_value)
-        
+
         # Keep as string for models that expect string
         return str(value).lower()
 
