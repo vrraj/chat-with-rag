@@ -34,11 +34,12 @@ class LLMToolCall(TypedDict, total=False):
 
 
 class LLMUsage(TypedDict, total=False):
-    prompt_tokens: Optional[int]
-    completion_tokens: Optional[int]
-    total_tokens: Optional[int]
-    cached_tokens: Optional[int]
-    reasoning_tokens: Optional[int]
+    input_tokens: int        # visible input tokens (includes cached)
+    cached_tokens: int       # subset of input_tokens served from cache (display-only)
+    output_tokens: int       # visible output tokens (includes reasoning)
+    reasoning_tokens: int    # subset of output_tokens used for reasoning (display-only)
+    completion_tokens: int   # output_tokens - reasoning_tokens (display-only)
+    total_tokens: int        # input_tokens + output_tokens
 
 
 class LLMResult(TypedDict):
@@ -139,6 +140,95 @@ This approach keeps the existing call surface compatible with plain
 OpenAI Responses while providing a normalized view for higher-level
 orchestration and UI.
 
+### Token Usage Metrics
+
+`LLMResult.usage` provides a **canonical, provider-agnostic** view of token consumption. The normalization is **provider-specific** to ensure correctness.
+
+#### Canonical Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `input_tokens` | int | Visible input tokens (includes cached tokens) |
+| `cached_tokens` | int | Subset of `input_tokens` served from cache (display-only) |
+| `output_tokens` | int | Visible output tokens (includes reasoning tokens) |
+| `reasoning_tokens` | int | Subset of `output_tokens` used for reasoning (display-only) |
+| `completion_tokens` | int | `output_tokens - reasoning_tokens` (display-only) |
+| `total_tokens` | int | `input_tokens + output_tokens` |
+
+All fields default to `0` if missing from the provider response.
+
+#### OpenAI Normalization
+
+For `provider == "openai"` (Responses API):
+
+| Raw Field | Canonical Field |
+|-----------|-----------------|
+| `usage.input_tokens` (or `prompt_tokens`) | `input_tokens` |
+| `usage.output_tokens` (or `completion_tokens`) | `output_tokens` |
+| `usage.total_tokens` | `total_tokens` |
+| `usage.prompt_tokens_details.cached_tokens` | `cached_tokens` |
+| `usage.output_tokens_details.reasoning_tokens` | `reasoning_tokens` |
+| Derived: `output_tokens - reasoning_tokens` | `completion_tokens` |
+
+**Key semantics:**
+- `input_tokens` already includes `cached_tokens` (do not add them).
+- `output_tokens` already includes `reasoning_tokens` (do not add them).
+- `completion_tokens` is the non-reasoning portion of output.
+
+#### Gemini Normalization
+
+For `provider == "gemini"` (OpenAI-compatible adapter):
+
+| Raw Field | Canonical Field |
+|-----------|-----------------|
+| `usage.prompt_tokens` | `input_tokens` |
+| `usage.total_tokens` | `total_tokens` |
+| Derived: `total_tokens - input_tokens` | `output_tokens` |
+| `usage.completion_tokens` | `completion_tokens` |
+| Derived: `output_tokens - completion_tokens` | `reasoning_tokens` |
+| Not provided | `cached_tokens` (defaults to 0) |
+
+**Key semantics:**
+- The adapter returns `prompt_tokens`, `completion_tokens`, and `total_tokens`.
+- `output_tokens` is derived as `total_tokens - prompt_tokens`.
+- `reasoning_tokens` is derived as `output_tokens - completion_tokens`.
+
+#### Unknown Providers
+
+For any other provider, all usage fields default to `0` and a debug log is emitted. This ensures the system never produces misleading metrics for unsupported providers.
+
+#### Example Output
+
+**OpenAI (o3-mini with reasoning):**
+```json
+"usage": {
+  "input_tokens": 14,
+  "cached_tokens": 0,
+  "output_tokens": 128,
+  "reasoning_tokens": 64,
+  "completion_tokens": 64,
+  "total_tokens": 142
+}
+```
+
+**Gemini (gemini-3-flash with debug_thoughts):**
+```json
+"usage": {
+  "input_tokens": 8,
+  "cached_tokens": 0,
+  "output_tokens": 457,
+  "reasoning_tokens": 438,
+  "completion_tokens": 19,
+  "total_tokens": 465
+}
+```
+
+#### Usage in Metrics and UI
+
+- **Metrics calculation:** Use `input_tokens` and `output_tokens` for cost/billing. Do not double-count `cached_tokens` or `reasoning_tokens`.
+- **Frontend display:** Show `input_tokens`, `output_tokens`, and optionally `reasoning_tokens` (if > 0) for transparency.
+- **Reasoning models:** `reasoning_tokens` indicates how much of the output was internal reasoning vs user-facing completion.
+
 ## Model Registry Design
 
 ### ModelInfo Structure
@@ -156,6 +246,37 @@ class ModelInfo:
     reasoning_parameter: Tuple[str, Any]  # (param_name, default_value)
     thinking_tax: Dict[str, Any]      # Gemini thinking token inflation rules
 ```
+
+### Model Resolution Helper: `resolve_model`
+
+`backend/llm/model_registry.py` provides a lightweight helper to resolve a
+`ModelInfo` from the registry without hardcoding lookup heuristics across the
+codebase:
+
+```python
+def resolve_model(
+    provider: str | None,
+    model: str | None,
+    model_key: str | None = None,
+) -> Optional[ModelInfo]:
+    """Best-effort registry lookup for a model.
+
+    Resolution order:
+
+      1. If `model_key` is provided and exists in REGISTRY, return that entry.
+      2. If the provider-native `model` string itself is a REGISTRY key, return it.
+      3. Otherwise, scan REGISTRY for an entry whose `model` field matches the
+         provider-native `model` string, optionally filtered by `provider`.
+
+    Returns `None` if no match can be found or if REGISTRY is empty.
+    """
+```
+
+This helper is used by the metrics layer (e.g. `_compute_stage_cost` in
+`chat_manager.py`) to resolve pricing information in a single, centralized
+place. `model_registry` remains provider/model–centric; it does not know about
+pipeline stages, and callers are responsible for passing the appropriate
+`provider`, `model`, and optional `model_key`.
 
 ### Gemini Thinking Tax Configuration
 

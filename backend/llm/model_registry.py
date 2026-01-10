@@ -186,7 +186,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "top_p": True,
         },
         max_tokens_parameter="max_completion_tokens",  # Can also be max_output_tokens or max_tokens 
-        reasoning_parameter=("thinking_level", "low"),  
+        reasoning_parameter=("thinking_level", "minimal"),  
         thinking_tax={
             "effort_map": {
                 "none": {"reserve_ratio": 0.0},
@@ -236,3 +236,54 @@ def get_model_info(key: str) -> ModelInfo:
     if key not in REGISTRY:
         raise KeyError(f"Unknown model key: {key}")
     return REGISTRY[key]
+
+
+def resolve_model(
+    provider: str | None,
+    model: str | None,
+    model_key: str | None = None,
+) -> Optional[ModelInfo]:
+    """Best-effort registry lookup for a model.
+
+    Resolution order (mirrors existing heuristics in chat_manager):
+
+      1. If ``model_key`` is provided and exists in REGISTRY, return that entry.
+      2. If the provider-native ``model`` string itself is a REGISTRY key, return it.
+      3. Otherwise, scan REGISTRY for an entry whose ``model`` field matches the
+         provider-native ``model`` string, optionally filtered by ``provider``.
+
+    Returns ``None`` if no match can be found or if REGISTRY is empty.
+    """
+    try:
+        reg = REGISTRY or {}
+        if not reg:
+            return None
+
+        # 1) Explicit registry key when provided.
+        mk = str(model_key).strip() if model_key else ""
+        if mk and mk in reg:
+            return reg.get(mk)
+
+        # 2) Direct key hit by provider-native model string.
+        m = str(model or "").strip()
+        if not m:
+            return None
+        if m in reg:
+            return reg.get(m)
+
+        # 3) Match by provider+model name.
+        p = str(provider or "").strip().lower()
+        for _k, _v in reg.items():
+            try:
+                if not _v:
+                    continue
+                if str(getattr(_v, "model", "")) != m:
+                    continue
+                if p and str(getattr(_v, "provider", "")).lower() != p:
+                    continue
+                return _v
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None

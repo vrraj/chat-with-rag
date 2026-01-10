@@ -61,11 +61,7 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
 from backend.llm.llm_handler import llm_handler, LLMError
-# Best-effort model registry for provider+model pricing (falls back to stage pricing if unavailable)
-try:  # pragma: no cover
-    from backend.llm import model_registry as _model_registry
-except Exception:  # pragma: no cover
-    _model_registry = None  # type: ignore
+from backend.llm import model_registry as _model_registry
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
@@ -278,7 +274,7 @@ def resolve_stage_specs(
                 "temperature": inference_temp,
                 "top_p": inference_top_p,
                 "max_output_tokens": inference_max_out,
-                "reasoning_effort": getattr(settings, "inference_reasoning_effort1", "low"),
+                "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
                 "debug_thoughts": getattr(settings, "debug_thoughts", False),
                 **tools_kwargs,
             },
@@ -514,45 +510,37 @@ def _extract_text_from_responses(resp) -> str:
 
 
 
-def _extract_usage_from_responses(resp) -> Dict[str, int] | None:
-    """Extract usage fields. Supports both old (prompt/completion) and new (input/output) names.
-       Returns: {prompt_tokens, completion_tokens, total_tokens, cached_tokens?}
+def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, int] | None:
+    """Extract canonical usage fields from a response object.
+
+    Delegates to LLMHandler for provider-specific normalization.
+    Returns canonical fields: {input_tokens, cached_tokens, output_tokens,
+                               reasoning_tokens, completion_tokens, total_tokens}
+    All fields default to 0 if missing.
     """
-    usage = getattr(resp, "usage", None)
-    if usage is None and isinstance(resp, dict):
-        usage = resp.get("usage")
-    if usage is None:
+    if resp is None:
         return None
 
-    def _get(u, name):
-        return getattr(u, name, None) if not isinstance(u, dict) else u.get(name)
+    # If already an LLMResult-like dict with canonical usage, return it directly.
+    if isinstance(resp, dict) and "usage" in resp:
+        u = resp["usage"]
+        if isinstance(u, dict) and "input_tokens" in u:
+            return u
 
-    # Accept both naming schemes
-    p = _get(usage, "prompt_tokens")
-    if p is None:
-        p = _get(usage, "input_tokens")
-
-    c = _get(usage, "completion_tokens")
-    if c is None:
-        c = _get(usage, "output_tokens")
-
-    t = _get(usage, "total_tokens")
-
-    # cached tokens can be in either prompt_tokens_details or input_tokens_details
-    details = _get(usage, "prompt_tokens_details") or _get(usage, "input_tokens_details")
-    cached = None
-    if details is not None:
-        cached = getattr(details, "cached_tokens", None) if not isinstance(details, dict) else details.get("cached_tokens")
-
-    if p is None and c is None and t is None and cached is None:
-        return None
-
-    out: Dict[str, int] = {}
-    if p is not None: out["prompt_tokens"] = int(p)
-    if c is not None: out["completion_tokens"] = int(c)
-    if t is not None: out["total_tokens"] = int(t)
-    if cached is not None: out["cached_tokens"] = int(cached)
-    return out
+    # Delegate to LLMHandler for provider-specific normalization.
+    try:
+        result = llm_handler._build_llm_result_from_openai(resp, provider=provider)
+        return result.get("usage")
+    except Exception:
+        # Fallback: return zeros if normalization fails.
+        return {
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
 
 
 # --- Small shared helpers for chat ---
@@ -882,7 +870,7 @@ def _summarize_messages_with_cache(
         except Exception:
             pass
         logger.debug(f"{log_prefix} summary cache MISS -> stored; len=%d", len(summary_text))
-        usage = _extract_usage_from_responses(resp)
+        usage = _extract_usage_from_responses(resp, provider=_provider)
         return summary_text, False, usage
     except LLMError:
         # Let LLMError (including rate_limit) propagate so outer callers can
@@ -1007,46 +995,27 @@ def _compute_stage_cost(
 ) -> Dict[str, float]:
     """Return cost breakdown for a stage using per-million rates and COST_BASIS.
 
-    Pricing resolution order:
-      1) If `backend.llm.model_registry` is available and `model` can be resolved, use provider+model pricing.
-      2) Otherwise, fall back to the existing stage-based pricing fields in settings.
+    Notes:
+      * ``prompt_tokens`` is the canonical ``input_tokens`` (includes cached).
+      * ``completion_tokens`` is the canonical ``output_tokens`` (includes reasoning).
+      * ``cached_tokens`` is a subset of ``prompt_tokens`` and priced separately when a
+        distinct cached-input rate is available in the model registry.
 
-    NOTE: This function only affects cost math. It does NOT change any runtime behavior.
+    Pricing is resolved **exclusively** from ``backend.llm.model_registry``:
+
+      * When a matching ``ModelInfo`` is found, per-million rates are taken from its
+        ``pricing`` field and costs are computed by splitting input into non-cached and
+        cached portions.
+      * If the model cannot be resolved from the registry, this function returns zeros
+        for all cost fields. In this deployment that should be treated as a
+        configuration error (missing ModelInfo or pricing), not as a valid "free" run.
+
+    NOTE: This function only affects cost math. It does NOT change any pipeline
+    control flow or LLM behavior.
     """
 
     # --- 1) Model-registry pricing (preferred) ---
-    mi = None
-    try:
-        if _model_registry is not None:
-            reg = getattr(_model_registry, "REGISTRY", {}) or {}
-
-            # (a) Prefer explicit model_key when provided.
-            mk = str(model_key).strip() if model_key else ""
-            if mk and mk in reg:
-                mi = reg.get(mk)
-
-            # (b) Fall back to matching on the provider-native model string.
-            if mi is None and model:
-                m = str(model).strip()
-                p = str(provider).strip().lower() if provider else ""
-
-                # Direct key hit (supports legacy registries keyed by model name)
-                if m in reg:
-                    mi = reg.get(m)
-                else:
-                    # Match by provider+model name
-                    for _k, _v in reg.items():
-                        try:
-                            if not _v:
-                                continue
-                            if str(getattr(_v, "model", "")) == m:
-                                if not p or str(getattr(_v, "provider", "")).lower() == p:
-                                    mi = _v
-                                    break
-                        except Exception:
-                            continue
-    except Exception:
-        mi = None
+    mi = _model_registry.resolve_model(provider=provider, model=model, model_key=model_key)
 
     if mi is not None:
         try:
@@ -1057,8 +1026,13 @@ def _compute_stage_cost(
         except Exception:
             in_rate = out_rate = cached_rate = 0.0
 
-        cost_prompt = (prompt_tokens / COST_BASIS) * in_rate
+        # Split canonical input_tokens into non-cached and cached portions so that
+        # only the non-cached portion is billed at the primary input rate.
+        non_cached = max(int(prompt_tokens) - int(cached_tokens), 0)
+
+        cost_prompt = (non_cached / COST_BASIS) * in_rate
         cost_cached = (cached_tokens / COST_BASIS) * cached_rate
+        # `completion_tokens` here is the canonical `output_tokens` (includes reasoning).
         cost_completion = (completion_tokens / COST_BASIS) * out_rate
         total = cost_prompt + cost_cached + cost_completion
         return {
@@ -1068,41 +1042,29 @@ def _compute_stage_cost(
             "cost_total": round(total, 8),
         }
 
-    # --- 2) Stage-based pricing fallback (existing behavior) ---
-    if stage == "inference":
-        in_rate = float(settings.inference_cost_per_MM_tokens_input)
-        out_rate = float(settings.inference_cost_per_MM_tokens_output)
-        cached_rate = float(getattr(settings, "inference_cost_per_MM_tokens_cached_input", in_rate / 2.0))
-    elif stage == "rerank":
-        in_rate = float(settings.re_ranker_cost_per_MM_tokens_input)
-        out_rate = float(settings.re_ranker_cost_per_MM_tokens_output)
-        cached_rate = float(getattr(settings, "re_ranker_cost_per_MM_tokens_cached_input", in_rate / 2.0))
-    elif stage == "summary":
-        in_rate = float(settings.summarizer_cost_per_MM_tokens_input)
-        out_rate = float(settings.summarizer_cost_per_MM_tokens_output)
-        cached_rate = float(getattr(settings, "summarizer_cost_per_MM_tokens_cached_input", in_rate / 2.0))
-    elif stage == "rewrite":
-        # Use dedicated rewrite pricing when available; fallback to summarizer rates
-        in_rate = float(getattr(settings, "rewrite_cost_per_MM_tokens_input", getattr(settings, "summarizer_cost_per_MM_tokens_input", 0.0)))
-        out_rate = float(getattr(settings, "rewrite_cost_per_MM_tokens_output", getattr(settings, "summarizer_cost_per_MM_tokens_output", 0.0)))
-        cached_rate = float(getattr(settings, "rewrite_cost_per_MM_tokens_cached_input", getattr(settings, "summarizer_cost_per_MM_tokens_cached_input", in_rate / 2.0)))
-    elif stage == "embedding":
-        # embeddings are input-only
-        in_rate = float(settings.embedding_cost_per_MM_tokens)
-        out_rate = 0.0
-        cached_rate = 0.0
-    else:
-        in_rate = out_rate = cached_rate = 0.0
+    # If model registry cannot be resolved, return zero costs rather than
+    # guessing. In this deployment, this should be treated as a configuration
+    # error (missing ModelInfo or pricing) and will be logged explicitly.
+    try:
+        _prov = str(provider or "").strip()
+        _model_str = str(model or "").strip()
+        _mk = str(model_key or "").strip()
+        logger.error(
+            "[METRICS] Missing pricing in model_registry for provider=%s model=%s model_key=%s; "
+            "returning zero costs.",
+            _prov,
+            _model_str,
+            _mk,
+        )
+    except Exception:
+        # Never break the pipeline due to logging.
+        pass
 
-    cost_prompt = (prompt_tokens / COST_BASIS) * in_rate
-    cost_cached = (cached_tokens / COST_BASIS) * cached_rate
-    cost_completion = (completion_tokens / COST_BASIS) * out_rate
-    total = cost_prompt + cost_cached + cost_completion
     return {
-        "cost_prompt": round(cost_prompt, 8),
-        "cost_cached": round(cost_cached, 8),
-        "cost_completion": round(cost_completion, 8),
-        "cost_total": round(total, 8),
+        "cost_prompt": 0.0,
+        "cost_cached": 0.0,
+        "cost_completion": 0.0,
+        "cost_total": 0.0,
     }
 
 
@@ -1133,23 +1095,25 @@ class Metrics:
             # Inference pass #1 (initial answer / tool-planning)
             "inference": {
                 "model": settings_obj.inference_model,
-                "prompt_tokens": 0,
-                "prompt_cached_tokens": 0,
-                "completion_tokens": 0,
-                "cost_prompt": 0.0,
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cost_input": 0.0,
                 "cost_cached": 0.0,
-                "cost_completion": 0.0,
+                "cost_output": 0.0,
                 "cost_total": 0.0,
             },
             # Inference pass #2 (tool synthesis). Uses same model as inference for consistency.
             "inference_tools_synth": {
                 "model": settings_obj.inference_model,
-                "prompt_tokens": 0,
-                "prompt_cached_tokens": 0,
-                "completion_tokens": 0,
-                "cost_prompt": 0.0,
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cost_input": 0.0,
                 "cost_cached": 0.0,
-                "cost_completion": 0.0,
+                "cost_output": 0.0,
                 "cost_total": 0.0,
             },
             "totals": {"tokens": {"turn_total": 0}, "cost": {"turn_total": 0.0}},
@@ -1158,23 +1122,25 @@ class Metrics:
         self.convo: Dict[str, Any] = convo_totals_ref
 
     # --- Helpers ---
-    def _normalize_usage(self, resp_or_usage: Any) -> Dict[str, int]:
-        """Return dict with prompt_tokens, completion_tokens, cached_tokens, total_tokens (zeros if missing)."""
+    def _normalize_usage(self, resp_or_usage: Any, provider: str = "openai") -> Dict[str, int]:
+        """Return dict with canonical usage fields (zeros if missing).
+
+        Canonical fields: input_tokens, cached_tokens, output_tokens,
+                          reasoning_tokens, completion_tokens, total_tokens.
+        """
         try:
             # Accept either a full response object, a dict with nested usage, or a plain usage dict
             if hasattr(resp_or_usage, "usage"):
                 # Full Responses API object
-                u = _extract_usage_from_responses(resp_or_usage)
+                u = _extract_usage_from_responses(resp_or_usage, provider=provider)
             elif isinstance(resp_or_usage, dict) and ("usage" in resp_or_usage):
                 # Dict wrapping usage -> extract
-                u = _extract_usage_from_responses(resp_or_usage)
+                u = _extract_usage_from_responses(resp_or_usage, provider=provider)
             elif isinstance(resp_or_usage, dict) and (
                 "input_tokens" in resp_or_usage
                 or "output_tokens" in resp_or_usage
-                or "prompt_tokens" in resp_or_usage
-                or "completion_tokens" in resp_or_usage
             ):
-                # Already a normalized/usage-like dict
+                # Already a canonical usage dict
                 u = resp_or_usage
             else:
                 u = None
@@ -1182,9 +1148,11 @@ class Metrics:
             u = None
         u = u or {}
         return {
-            "prompt_tokens": int(u.get("prompt_tokens", 0) or 0),
-            "completion_tokens": int(u.get("completion_tokens", 0) or 0),
+            "input_tokens": int(u.get("input_tokens", 0) or 0),
             "cached_tokens": int(u.get("cached_tokens", 0) or 0),
+            "output_tokens": int(u.get("output_tokens", 0) or 0),
+            "reasoning_tokens": int(u.get("reasoning_tokens", 0) or 0),
+            "completion_tokens": int(u.get("completion_tokens", 0) or 0),
             "total_tokens": int(u.get("total_tokens", 0) or 0),
         }
 
@@ -1222,12 +1190,15 @@ class Metrics:
         # Always stamp the model that ran
         self.turn[stage]["model"] = model
 
+        # Extract canonical usage fields
+        reasoning = 0
         if usage is not None and pt is None and ct is None and cached is None:
             u = self._normalize_usage(usage)
-            pt, ct, cached = u["prompt_tokens"], u["completion_tokens"], u["cached_tokens"]
+            pt, ct, cached, reasoning = u["input_tokens"], u["output_tokens"], u["cached_tokens"], u["reasoning_tokens"]
         pt = int(pt or 0)
         ct = int(ct or 0)
         cached = int(cached or 0)
+        reasoning = int(reasoning or 0)
 
         if stage == "embedding":
             # input-only; we treat provided pt as input_tokens
@@ -1235,39 +1206,43 @@ class Metrics:
             c = self._cost("embedding", model, pt, 0, 0, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_prompt"]
         elif stage == "rerank":
-            self.turn[stage]["input_tokens"] = pt + cached
+            # Use canonical input_tokens; cached is a subset and tracked separately via cost math.
+            self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rerank", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "summary":
-            self.turn[stage]["input_tokens"] = pt + cached
+            self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("summary", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "rewrite":
-            self.turn[stage]["input_tokens"] = pt + cached
+            self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rewrite", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage in ("inference", "inference_tools_synth"):
             # Accumulate tokens and costs across multiple inference calls in a single turn.
-            prev_pt = int(self.turn[stage].get("prompt_tokens") or 0)
-            prev_ck = int(self.turn[stage].get("prompt_cached_tokens") or 0)
-            prev_ct = int(self.turn[stage].get("completion_tokens") or 0)
+            prev_in = int(self.turn[stage].get("input_tokens") or 0)
+            prev_ck = int(self.turn[stage].get("cached_tokens") or 0)
+            prev_out = int(self.turn[stage].get("output_tokens") or 0)
+            prev_reason = int(self.turn[stage].get("reasoning_tokens") or 0)
 
-            pt_total = prev_pt + pt
+            in_total = prev_in + pt
             ck_total = prev_ck + cached
-            ct_total = prev_ct + ct
+            out_total = prev_out + ct
+            reason_total = prev_reason + reasoning
 
-            self.turn[stage]["prompt_tokens"] = pt_total
-            self.turn[stage]["prompt_cached_tokens"] = ck_total
-            self.turn[stage]["completion_tokens"] = ct_total
+            self.turn[stage]["input_tokens"] = in_total
+            self.turn[stage]["cached_tokens"] = ck_total
+            self.turn[stage]["output_tokens"] = out_total
+            self.turn[stage]["reasoning_tokens"] = reason_total
 
             # Cost for this specific call (still priced under the "inference" stage)
             c = self._cost("inference", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost_prompt"] = float(self.turn[stage].get("cost_prompt", 0.0)) + c["cost_prompt"]
+            self.turn[stage]["cost_input"] = float(self.turn[stage].get("cost_input", 0.0)) + c["cost_prompt"]
             self.turn[stage]["cost_cached"] = float(self.turn[stage].get("cost_cached", 0.0)) + c["cost_cached"]
-            self.turn[stage]["cost_completion"] = float(self.turn[stage].get("cost_completion", 0.0)) + c["cost_completion"]
+            self.turn[stage]["cost_output"] = float(self.turn[stage].get("cost_output", 0.0)) + c["cost_completion"]
             self.turn[stage]["cost_total"] = float(self.turn[stage].get("cost_total", 0.0)) + c["cost_total"]
 
         if extra:
@@ -1287,14 +1262,14 @@ class Metrics:
         rwout = int(self.turn["rewrite"].get("output_tokens") or 0)
 
         # Inference pass #1
-        ip1 = int(self.turn["inference"].get("prompt_tokens") or 0)
-        ik1 = int(self.turn["inference"].get("prompt_cached_tokens") or 0)
-        ic1 = int(self.turn["inference"].get("completion_tokens") or 0)
+        ip1 = int(self.turn["inference"].get("input_tokens") or 0)
+        ik1 = int(self.turn["inference"].get("cached_tokens") or 0)
+        ic1 = int(self.turn["inference"].get("output_tokens") or 0)
 
         # Inference pass #2 (tool synthesis)
-        ip2 = int(self.turn["inference_tools_synth"].get("prompt_tokens") or 0)
-        ik2 = int(self.turn["inference_tools_synth"].get("prompt_cached_tokens") or 0)
-        ic2 = int(self.turn["inference_tools_synth"].get("completion_tokens") or 0)
+        ip2 = int(self.turn["inference_tools_synth"].get("input_tokens") or 0)
+        ik2 = int(self.turn["inference_tools_synth"].get("cached_tokens") or 0)
+        ic2 = int(self.turn["inference_tools_synth"].get("output_tokens") or 0)
 
         # Combined for totals/conversation metrics
         ip = ip1 + ip2
@@ -1637,17 +1612,17 @@ def rewrite_query(
             input=prompt,
             **_kwargs,
         )
-        usage = _extract_usage_from_responses(resp)
+        usage = _extract_usage_from_responses(resp, provider=_provider)
         raw = _extract_text_from_responses(resp).strip()
         # Log the raw JSON candidate before parsing so we can debug provider outputs.
         logger.debug("[REWRITE] JSON candidate before parsing=%s", raw)
         try:
             if isinstance(usage, dict):
-                pt = int(usage.get("prompt_tokens") or 0)
-                ct = int(usage.get("completion_tokens") or 0)
+                pt = int(usage.get("input_tokens") or 0)
+                ct = int(usage.get("output_tokens") or 0)
                 ck = int(usage.get("cached_tokens") or 0)
                 tt = int(usage.get("total_tokens") or (pt + ct + ck))
-                logger.debug(f"{log_prefix} usage pt=%d cached=%d ct=%d total=%d", pt, ck, ct, tt)
+                logger.debug(f"{log_prefix} usage input=%d cached=%d output=%d total=%d", pt, ck, ct, tt)
         except Exception:
             pass
         # Tolerate fenced code blocks
@@ -2835,7 +2810,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             reranked = [pool[i] for i in order] or pool
             reranked = reranked[:kept]
 
-            usage_rr = _extract_usage_from_responses(resp_rerank) or {}
+            usage_rr = _extract_usage_from_responses(resp_rerank, provider=_provider) or {}
             # Record rerank metrics against the actual model used (from stage_specs).
             m.record_stage(
                 "rerank",
@@ -3259,7 +3234,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     except Exception:
         pass
     _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
-    usage_inf = _extract_usage_from_responses(resp_inf)
+    usage_inf = _extract_usage_from_responses(resp_inf, provider=_inf_provider)
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
         m.record_stage(
@@ -3438,7 +3413,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     pass
 
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined: %s  and answer_override %s ", combined, answer_override)
-                usage_synth = _extract_usage_from_responses(resp_synth)
+                usage_synth = _extract_usage_from_responses(resp_synth, provider=_ts_provider)
                 if usage_synth:
                     m.record_stage(
                         "inference_tools_synth",
@@ -3498,7 +3473,9 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         "turn_metrics": turn_metrics,
                         "conversation_totals": convo_snapshot,
                         "metrics": {"vectors_retrieved": 0},
-                        "tools_used": tools_out,
+                        # Normalize directly from used_tools here because tools_out
+                        # is computed later in the happy path.
+                        "tools_used": sorted({t for t in used_tools if t}) if used_tools else [],
                         "rewrite_display": rewrite_display,
                     }
 

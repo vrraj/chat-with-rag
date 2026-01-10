@@ -539,11 +539,11 @@
       const block = document.getElementById('inference2_block');
       if (block) {
         const paths = [
-          'turn_metrics.inference_tools_synth.prompt_tokens',
-          'turn_metrics.inference_tools_synth.prompt_cached_tokens',
-          'turn_metrics.inference_tools_synth.completion_tokens',
-          'turn_metrics.inference_tools_synth.cost_prompt',
-          'turn_metrics.inference_tools_synth.cost_completion',
+          'turn_metrics.inference_tools_synth.input_tokens',
+          'turn_metrics.inference_tools_synth.cached_tokens',
+          'turn_metrics.inference_tools_synth.output_tokens',
+          'turn_metrics.inference_tools_synth.cost_input',
+          'turn_metrics.inference_tools_synth.cost_output',
           'turn_metrics.inference_tools_synth.cost_total',
         ];
         const anyNonZero = paths.some(p => {
@@ -559,12 +559,13 @@
     // Backward-compat: if only legacy metrics were returned, map what we can.
     if (!data.turn_metrics && data.metrics) {
       const m = data.metrics;
-      setText('prompt_tokens', toNumber(m.prompt_tokens, 0));
-      setText('inference_cached_tokens', toNumber(m.prompt_cached_tokens || 0, 0));
-      setText('completion_tokens', toNumber(m.completion_tokens, 0));
+      setText('prompt_tokens', toNumber(m.input_tokens || m.prompt_tokens, 0));
+      setText('inference_cached_tokens', toNumber(m.cached_tokens || m.prompt_cached_tokens || 0, 0));
+      setText('completion_tokens', toNumber(m.output_tokens || m.completion_tokens, 0));
+      setText('reasoning_tokens', toNumber(m.reasoning_tokens || 0, 0));
       setText('total_tokens', toNumber(m.total_tokens, 0));
-      setText('prompt_cost', formatCost(m.prompt_cost));
-      setText('completion_cost', formatCost(m.completion_cost));
+      setText('prompt_cost', formatCost(m.cost_input || m.prompt_cost));
+      setText('completion_cost', formatCost(m.cost_output || m.completion_cost));
       setText('total_cost', formatCost(m.total_cost));
       setText('rerank_tokens_in', toNumber(m.rerank_input_tokens || m.rerank_tokens || 0, 0));
       setText('rerank_tokens_out', toNumber(m.rerank_output_tokens || 0, 0));

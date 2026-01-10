@@ -48,14 +48,21 @@ class LLMError(Exception):
 class LLMUsage(TypedDict, total=False):
     """Normalized token usage for LLM calls.
 
-    Fields are optional to accommodate providers that omit specific counters.
+    Canonical fields (provider-agnostic):
+      - input_tokens:      visible input tokens (includes cached)
+      - cached_tokens:     subset of input_tokens served from cache (display-only)
+      - output_tokens:     visible output tokens (includes reasoning, if any)
+      - reasoning_tokens:  subset of output_tokens used for reasoning (display-only)
+      - completion_tokens: output_tokens - reasoning_tokens (display-only)
+      - total_tokens:      input_tokens + output_tokens
     """
 
-    prompt_tokens: Optional[int]
-    completion_tokens: Optional[int]
-    total_tokens: Optional[int]
-    cached_tokens: Optional[int]
-    reasoning_tokens: Optional[int]
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+    reasoning_tokens: int
+    completion_tokens: int
+    total_tokens: int
 
 
 class LLMToolCall(TypedDict, total=False):
@@ -856,38 +863,142 @@ class LLMHandler:
             except Exception:
                 finish_reason = None
 
-        # ---- Usage mapping ----
+        # ---- Usage mapping (canonical LLMUsage) ----
         usage_block = getattr(resp, "usage", None)
-        usage: LLMUsage = {}
+        usage: LLMUsage = {
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
         if usage_block is not None:
             try:
-                prompt_tokens = getattr(usage_block, "prompt_tokens", None)
-                if prompt_tokens is None:
-                    prompt_tokens = getattr(usage_block, "input_tokens", None)
+                # Helper to read fields from either dict or object
+                def _uget(obj: Any, name: str) -> Any:
+                    if obj is None:
+                        return None
+                    if isinstance(obj, dict):
+                        return obj.get(name)
+                    return getattr(obj, name, None)
 
-                completion_tokens = getattr(usage_block, "completion_tokens", None)
-                if completion_tokens is None:
-                    completion_tokens = getattr(usage_block, "output_tokens", None)
+                # Provider-specific normalization
+                if provider == "openai":
+                    # OpenAI Responses semantics
+                    input_tokens = _uget(usage_block, "input_tokens")
+                    if input_tokens is None:
+                        input_tokens = _uget(usage_block, "prompt_tokens")
 
-                total_tokens = getattr(usage_block, "total_tokens", None)
+                    output_tokens = _uget(usage_block, "output_tokens")
+                    if output_tokens is None:
+                        output_tokens = _uget(usage_block, "completion_tokens")
 
-                # cached_tokens via *_tokens_details.cached_tokens
-                details_in = getattr(usage_block, "prompt_tokens_details", None)
-                if details_in is None:
-                    details_in = getattr(usage_block, "input_tokens_details", None)
-                cached_tokens = getattr(details_in, "cached_tokens", None) if details_in is not None else None
+                    total_tokens = _uget(usage_block, "total_tokens")
 
-                # reasoning_tokens via output_tokens_details.reasoning_tokens when present
-                details_out = getattr(usage_block, "output_tokens_details", None)
-                reasoning_tokens = getattr(details_out, "reasoning_tokens", None) if details_out is not None else None
+                    details_in = _uget(usage_block, "prompt_tokens_details") or _uget(usage_block, "input_tokens_details")
+                    cached_tokens = (
+                        getattr(details_in, "cached_tokens", None)
+                        if details_in is not None and not isinstance(details_in, dict)
+                        else (details_in.get("cached_tokens") if isinstance(details_in, dict) else None)
+                    )
 
-                usage["prompt_tokens"] = prompt_tokens
-                usage["completion_tokens"] = completion_tokens
-                usage["total_tokens"] = total_tokens
-                usage["cached_tokens"] = cached_tokens
-                usage["reasoning_tokens"] = reasoning_tokens
+                    details_out = _uget(usage_block, "output_tokens_details")
+                    reasoning_tokens = (
+                        getattr(details_out, "reasoning_tokens", None)
+                        if details_out is not None and not isinstance(details_out, dict)
+                        else (details_out.get("reasoning_tokens") if isinstance(details_out, dict) else None)
+                    )
+
+                elif provider == "gemini":
+                    # Gemini OpenAI-adapter semantics
+                    prompt_tokens = _uget(usage_block, "prompt_tokens")
+                    input_tokens = prompt_tokens if prompt_tokens is not None else _uget(usage_block, "input_tokens")
+
+                    completion_tokens_raw = _uget(usage_block, "completion_tokens")
+                    total_tokens = _uget(usage_block, "total_tokens")
+
+                    # No explicit output_tokens/cached/reasoning in current adapter usage
+                    output_tokens = None
+                    cached_tokens = None
+                    reasoning_tokens = None
+
+                    if total_tokens is not None and input_tokens is not None:
+                        try:
+                            output_tokens = int(total_tokens) - int(input_tokens)
+                        except Exception:
+                            output_tokens = None
+
+                    # Derive reasoning_tokens as the difference between output_tokens and completion_tokens
+                    # when both are available; otherwise leave at 0.
+                    if output_tokens is not None and completion_tokens_raw is not None:
+                        try:
+                            reasoning_tokens = int(output_tokens) - int(completion_tokens_raw)
+                            if reasoning_tokens < 0:
+                                reasoning_tokens = 0
+                        except Exception:
+                            reasoning_tokens = None
+
+                    # For completion_tokens field in usage, prefer completion_tokens_raw; we'll normalize later.
+                    completion_tokens = completion_tokens_raw
+
+                else:
+                    # Unknown provider: leave usage at zeros for safety.
+                    try:
+                        logger.debug(f"[LLMResult] Unknown provider '{provider}' for usage normalization; leaving usage at zeros.")
+                    except Exception:
+                        pass
+                    input_tokens = output_tokens = cached_tokens = reasoning_tokens = total_tokens = None
+                    completion_tokens = None
+
+                # --- Canonicalization for all branches ---
+                # Default missing values to 0 and compute any derived fields.
+                input_tokens = input_tokens if input_tokens is not None else 0
+                output_tokens = output_tokens if output_tokens is not None else 0
+                cached_tokens = cached_tokens if cached_tokens is not None else 0
+                reasoning_tokens = reasoning_tokens if reasoning_tokens is not None else 0
+
+                # total_tokens: prefer provider value, otherwise sum.
+                if total_tokens is None:
+                    total_tokens = (input_tokens or 0) + (output_tokens or 0)
+
+                # If completion_tokens wasn't set in provider-specific logic, derive as output - reasoning.
+                if 'completion_tokens' not in locals() or completion_tokens is None:
+                    try:
+                        completion_tokens = int(output_tokens or 0) - int(reasoning_tokens or 0)
+                        if completion_tokens < 0:
+                            completion_tokens = 0
+                    except Exception:
+                        completion_tokens = 0
+
+                # Coerce to ints into canonical usage.
+                try:
+                    usage["input_tokens"] = int(input_tokens or 0)
+                except Exception:
+                    usage["input_tokens"] = 0
+                try:
+                    usage["output_tokens"] = int(output_tokens or 0)
+                except Exception:
+                    usage["output_tokens"] = 0
+                try:
+                    usage["total_tokens"] = int(total_tokens or 0)
+                except Exception:
+                    usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+                try:
+                    usage["cached_tokens"] = int(cached_tokens or 0)
+                except Exception:
+                    usage["cached_tokens"] = 0
+                try:
+                    usage["reasoning_tokens"] = int(reasoning_tokens or 0)
+                except Exception:
+                    usage["reasoning_tokens"] = 0
+                try:
+                    usage["completion_tokens"] = int(completion_tokens or 0)
+                except Exception:
+                    usage["completion_tokens"] = 0
             except Exception:
-                # Best-effort only; leave usage partially filled on error.
+                # Best-effort only; on error keep the zero-initialized usage block.
                 pass
 
         # ---- Text extraction ----
