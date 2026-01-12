@@ -115,7 +115,9 @@ class AdapterResponse:
     """Minimal OpenAI Responses-compatible response shim.
 
     Your existing tooling can read `output_text` (and optionally `usage`).
-    `raw` preserves the provider-native response for debugging.
+    `adapter_response` holds any adapter-level Responses-like wrapper (e.g.,
+    a Gemini wrapper that exposes `output_text` / `output` / `usage`).
+    `model_response` preserves the provider-native response for debugging.
     `finish_reason` indicates why the response stopped (e.g., 'stop', 'length', 'content_filter').
     """
 
@@ -125,13 +127,32 @@ class AdapterResponse:
         output_text: str,
         model: str,
         usage: Optional[Dict[str, int]] = None,
-        raw: Any = None,
+        adapter_response: Any | None = None,
+        model_response: Any | None = None,
         finish_reason: Optional[str] = None,
     ):
         self.output_text = output_text
         self.model = model
         self.usage = usage
-        self.raw = raw
+        # New fields:
+        #   - adapter_response: adapter-level Responses-like wrapper, if any
+        #     (e.g., _GeminiResponsesWrapper for Gemini).
+        #   - model_response: the provider-native model response, if available
+        #     (e.g., adapter_response.model_response for Gemini); otherwise falls back to
+        #     the adapter_response or output surface itself.
+        self.adapter_response = adapter_response
+        try:
+            if model_response is not None:
+                self.model_response = model_response
+            elif adapter_response is not None and hasattr(adapter_response, "model_response"):
+                # Common case for Gemini: adapter_response is a _GeminiResponsesWrapper
+                # that already exposes a provider-native model_response.
+                self.model_response = getattr(adapter_response, "model_response")
+            else:
+                # Fallback: treat adapter_response (or None) as the best-effort model_response.
+                self.model_response = model_response or adapter_response
+        except Exception:
+            self.model_response = None
         self.finish_reason = finish_reason
 
 
@@ -825,7 +846,7 @@ class LLMHandler:
             pass
         return None
 
-    def _build_llm_result_from_openai(self, resp: Any, *, provider: str = "openai") -> LLMResult:
+    def build_llm_result_from_response(self, resp: Any, *, provider: str = "openai") -> LLMResult:
         """Build an LLMResult from a non-streaming OpenAI Responses API response.
 
         This helper is internal for now and does not change existing call sites.
@@ -1111,6 +1132,31 @@ class LLMHandler:
                                     tool_calls.append({"name": name, "args": args, "id": cid})
         except Exception:
             # Best-effort only; if anything goes wrong, leave tool_calls empty.
+            pass
+
+        # Legacy fallback: ChatCompletions-style choices[0].message.tool_calls
+        # Only used when no canonical output-derived tool calls were found.
+        try:
+            if not tool_calls:
+                choices = _safe_get(resp, "choices")
+                if isinstance(choices, list) and choices:
+                    c0 = choices[0]
+                    msg = _safe_get(c0, "message")
+                    tc_list = _safe_get(msg, "tool_calls")
+                    if isinstance(tc_list, list):
+                        for t in tc_list:
+                            t_type = _safe_get(t, "type")
+                            # OpenAI ChatCompletions: tool_calls[].type == "function"
+                            if t_type not in ("function", "tool_call"):
+                                continue
+                            func = _safe_get(t, "function") or t
+                            name = _safe_get(func, "name")
+                            args = _safe_get(func, "arguments")
+                            cid = _safe_get(t, "id")
+                            if isinstance(name, str) and name:
+                                tool_calls.append({"name": name, "args": args, "id": cid})
+        except Exception:
+            # Best-effort only; do not let legacy shapes break normalization.
             pass
 
         # ---- Assemble LLMResult ----
@@ -1423,17 +1469,17 @@ class LLMHandler:
         logger.debug(f"  📋 Final kwargs after token conversion: {mapped_kwargs}")
 
         try:
-            raw_response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
+            response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
 
             # DEBUG: Print raw response details
             logger.debug(f"\n📄 [OPENAI DEBUG] Raw Response:")
-            logger.debug(f"  📋 Response type: {type(raw_response)}")
-            logger.debug(f"  📋 Response dict: {raw_response.__dict__ if hasattr(raw_response, '__dict__') else 'NO_DICT_ATTR'}")
-            logger.debug(f"  📋 Output text: {getattr(raw_response, 'output_text', 'NO_OUTPUT_TEXT_ATTR')}")
-            logger.debug(f"  🔢 Usage: {getattr(raw_response, 'usage', 'NO_USAGE_ATTR')}")
-            logger.debug(f"  🏁 Finish reason: {getattr(raw_response, 'finish_reason', 'NO_FINISH_REASON_ATTR')}")
+            logger.debug(f"  📋 Response type: {type(response)}")
+            logger.debug(f"  📋 Response dict: {response.__dict__ if hasattr(response, '__dict__') else 'NO_DICT_ATTR'}")
+            logger.debug(f"  📋 Output text: {getattr(response, 'output_text', 'NO_OUTPUT_TEXT_ATTR')}")
+            logger.debug(f"  🔢 Usage: {getattr(response, 'usage', 'NO_USAGE_ATTR')}")
+            logger.debug(f"  🏁 Finish reason: {getattr(response, 'finish_reason', 'NO_FINISH_REASON_ATTR')}")
 
-            return raw_response
+            return response
         except Exception as e:
             # Preserve existing behavior (exception type) while also exposing
             # a structured LLMError for call sites that wish to distinguish
@@ -1564,7 +1610,14 @@ class LLMHandler:
                             usage_dict = None
 
                     wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                    return AdapterResponse(output_text=text, model=model, usage=usage_dict, raw=wrapped, finish_reason=self._extract_finish_reason(resp))
+                    return AdapterResponse(
+                        output_text=text,
+                        model=model,
+                        usage=usage_dict,
+                        adapter_response=wrapped,
+                        model_response=getattr(wrapped, "model_response", None),
+                        finish_reason=self._extract_finish_reason(resp),
+                    )
 
                 def event_gen() -> Iterator[AdapterEvent]:
                     # Apply capability filtering, parameter mapping, and token limit conversion
@@ -1656,7 +1709,14 @@ class LLMHandler:
                     pass
             # Native SDK responses may not expose ChatCompletion `choices`; still wrap for Responses-like fields.
             wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text or "", usage=getattr(resp, "usage", None))
-            return AdapterResponse(output_text=text or "", model=model, usage=None, raw=wrapped, finish_reason=None)
+            return AdapterResponse(
+                output_text=text or "",
+                model=model,
+                usage=None,
+                adapter_response=wrapped,
+                model_response=getattr(wrapped, "model_response", None),
+                finish_reason=None,
+            )
         def native_event_gen() -> Iterator[AdapterEvent]:
             if hasattr(client, "generate_content_stream"):
                 stream_iter = client.generate_content_stream(model=resolved_model, contents=contents, **final_kwargs)
@@ -1786,7 +1846,7 @@ class LLMHandler:
         output.extend(tool_items)
 
         class _GeminiResponsesWrapper:
-            def __init__(self, *, output_text: str, output: list[dict], usage: Any, choices: Any, raw: Any):
+            def __init__(self, *, output_text: str, output: list[dict], usage: Any, choices: Any, model_response: Any):
                 # === CANONICAL FIELDS (must use for all logic) ===
                 self.output_text = output_text      # Canonical: final text
                 self.output = output                # Canonical: tools + content
@@ -1794,7 +1854,8 @@ class LLMHandler:
                 
                 # === NON-CANONICAL FIELDS (compatibility/debug only) ===
                 self.choices = choices              # Legacy: DO NOT USE for logic
-                self.raw = raw                      # Provider-native: debug only
+                # Provider-native model response (e.g., Gemini ChatCompletion or native SDK response)
+                self.model_response = model_response
 
             # Minimal dict-like compatibility for existing debug/test code.
             def get(self, name: str, default: Any = None) -> Any:
@@ -1805,7 +1866,7 @@ class LLMHandler:
             output=output,                      # Canonical structured output
             usage=usage,                        # Canonical usage field
             choices=getattr(resp, "choices", None),  # Non-canonical compatibility
-            raw=resp,                           # Non-canonical debug
+            model_response=resp,                # Provider-native debug
         )
 
 

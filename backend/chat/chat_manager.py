@@ -384,11 +384,11 @@ def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
 # ---- end accumulator ----
 
 
-def _extract_text_from_responses(resp) -> str:
+def _extract_text_from_responses(resp: Any) -> str:
     """Return response text from a Responses-like object.
 
     Robust extraction contract (handles adapters/wrappers):
-      1) Consider BOTH `resp` and `resp.raw` (if present) as possible carriers of canonical fields.
+      1) Consider BOTH `resp` and `resp.adapter_response` (if present) as possible carriers of canonical fields.
       2) Gather candidate text from:
           - `.output_text` (if present)
           - `.output` items of the form {"type":"text","text":...}
@@ -396,14 +396,11 @@ def _extract_text_from_responses(resp) -> str:
       3) Return the LONGEST non-empty candidate. This protects against wrappers
          that accidentally set a truncated `output_text`.
     """
-    # Adapter-style unwrap: some facades put provider-native or canonical fields on `.raw`.
-    base = getattr(resp, "raw", None) or resp
-
-    try:
-        logger.debug(f"[RESP DEBUG] resp_type={type(resp)} base_type={type(base)}")
-    except Exception:
-        pass
-
+    # Adapter-style unwrap: prefer an explicit adapter_response when present
+    # (e.g., AdapterResponse.adapter_response for Gemini), otherwise fall back
+    # to legacy `.raw`, and finally to the response object itself.
+    base = getattr(resp, "adapter_response", resp)
+    
     def _get_attr(obj, name: str):
         try:
             if isinstance(obj, dict):
@@ -529,7 +526,7 @@ def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, i
 
     # Delegate to LLMHandler for provider-specific normalization.
     try:
-        result = llm_handler._build_llm_result_from_openai(resp, provider=provider)
+        result = llm_handler._build_llm_result_from_response(resp, provider=provider)
         return result.get("usage")
     except Exception:
         # Fallback: return zeros if normalization fails.
@@ -1898,7 +1895,12 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     """
     # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_handler)
     # so we always inspect the provider-native object for tool_calls.
-    base = getattr(resp, "raw", resp)
+    base = getattr(resp, "adapter_response", resp)
+    try:
+        logger.debug("[TOOLS] extract_tool_calls: base type=%s repr=%r", type(base), base)
+    except Exception:
+        # Never let logging break tool-call extraction
+        pass
 
     def _dedup(_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Best-effort deduplication across providers/wrappers.
@@ -1929,86 +1931,27 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
                 out.append(c)
         return out
 
-    calls: List[Dict[str, Any]] = []
-
-    # === Canonical path: Responses-style `output` ===
-    # If `output` exists and is non-empty, treat it as authoritative and do NOT
-    # also merge in legacy `choices` tool_calls. This avoids double-extraction
-    # for adapters that expose both formats.
     try:
-        output = getattr(base, "output", None) if not isinstance(base, dict) else base.get("output")
-        
-        if isinstance(output, list) and output:
-            for i, item in enumerate(output):
-                it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
-                
-                if it_type in ("function_call", "tool_use", "tool_call"):
-                    name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
-                    args = getattr(item, "arguments", None) if not isinstance(item, dict) else item.get("arguments")
-                    cid = getattr(item, "call_id", None) if not isinstance(item, dict) else (item.get("call_id") or item.get("id"))
-                    calls.append({"name": name, "args": args, "id": cid})
-                elif it_type == "message":
-                    # OpenAI Responses API: tool calls are in message.content
-                    content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
-                    
-                    if isinstance(content, list):
-                        for c in content:
-                            c_type = getattr(c, "type", None) if not isinstance(c, dict) else c.get("type")
-                            
-                            if c_type == "tool_call":
-                                # OpenAI Responses API tool call format
-                                name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
-                                args = getattr(c, "arguments", None) if not isinstance(c, dict) else c.get("arguments")
-                                cid = getattr(c, "id", None) if not isinstance(c, dict) else c.get("id")
-                                calls.append({"name": name, "args": args, "id": cid})
-                            elif c_type == "output_text":
-                                # Skip text content, only looking for tool calls
-                                continue
-                else:
-                    content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
-                    if isinstance(content, list):
-                        for c in content:
-                            c_type = getattr(c, "type", None) if not isinstance(c, dict) else c.get("type")
-                            if c_type in ("tool_use", "tool_call"):
-                                name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
-                                cid = getattr(c, "id", None) if not isinstance(c, dict) else c.get("id")
-                                a = None
-                                if isinstance(c, dict):
-                                    if "input" in c:
-                                        a = c.get("input")
-                                    elif "arguments" in c:
-                                        a = c.get("arguments")
-                                else:
-                                    a = getattr(c, "input", None) or getattr(c, "arguments", None)
-                                calls.append({"name": name, "args": a, "id": cid})
-
-            # Canonical output present: return early (no choices fallback).
-            calls = [c for c in calls if c.get("name")]
-            return _dedup(calls)
+        # Prefer adapter_response surface when present (e.g., Gemini
+        # _GeminiResponsesWrapper); otherwise, pass the response as-is.
+        llm_base = getattr(resp, "adapter_response", resp)
+        llm_result = llm_handler.build_llm_result_from_response(llm_base)
+        calls = list(llm_result.get("tool_calls") or [])
     except Exception:
-        # Fall through to legacy choices extraction.
-        pass
-
-    # === Legacy fallback: ChatCompletions-style `choices[].message.tool_calls` ===
-    try:
-        choices = getattr(base, "choices", None) if not isinstance(base, dict) else base.get("choices")
-        if isinstance(choices, list) and choices:
-            msg = getattr(choices[0], "message", None) if not isinstance(choices[0], dict) else choices[0].get("message")
-            tc = getattr(msg, "tool_calls", None) if not isinstance(msg, dict) else msg.get("tool_calls")
-            if isinstance(tc, list):
-                for t in tc:
-                    ttype = getattr(t, "type", None) if not isinstance(t, dict) else t.get("type")
-                    if ttype == "function":
-                        func = getattr(t, "function", None) if not isinstance(t, dict) else t.get("function")
-                        name = getattr(func, "name", None) if not isinstance(func, dict) else (func or {}).get("name")
-                        arguments = getattr(func, "arguments", None) if not isinstance(func, dict) else (func or {}).get("arguments")
-                        tc_id = getattr(t, "id", None) if not isinstance(t, dict) else t.get("id")
-                        calls.append({"name": name, "args": arguments, "id": tc_id})
-    except Exception:
-        pass
+        calls = []
 
     calls = [c for c in calls if c.get("name")]
-    return _dedup(calls)
+    try:
+        logger.debug("[TOOLS] extract_tool_calls: raw calls from LLMResult before dedup: %r", calls)
+    except Exception:
+        pass
+    deduped = _dedup(calls)
+    try:
+        logger.debug("[TOOLS] extract_tool_calls: deduped calls from LLMResult: %r", deduped)
+    except Exception:
+        pass
+
+    return deduped
 
 
 def parse_tool_args(raw: Any) -> Dict[str, Any]:
