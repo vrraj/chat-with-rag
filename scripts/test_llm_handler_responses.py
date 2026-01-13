@@ -75,12 +75,13 @@ def run_test(
             print(json.dumps(summary, default=str, indent=2))
 
             # Build LLMResult for inspection without changing handler contract.
-            from backend.llm.llm_handler import LLMHandler  # type: ignore
-
-            # Use the singleton instance's helper via its class to avoid changing imports.
-            # NOTE: _build_llm_result_from_openai is an internal helper; this script is for
+            # NOTE: build_llm_result_from_response is an internal helper; this script is for
             # local debugging only.
-            result = llm_handler._build_llm_result_from_openai(resp, provider="openai")  # type: ignore[attr-defined]
+            try:
+                result = llm_handler.build_llm_result_from_response(resp, provider="openai")
+            except Exception as e:  # pragma: no cover - best-effort debug path
+                print(f"Error building LLMResult for openai response: {e}")
+                result = {}
             print("--- LLMResult view ---")
             print(json.dumps(result, default=str, indent=2))
 
@@ -106,9 +107,14 @@ def run_test(
             }
             print(json.dumps(summary, default=str, indent=2))
 
-            # For Gemini via adapter, we can still reuse the same helper since the
-            # adapter returns Responses-compatible objects.
-            result = llm_handler._build_llm_result_from_openai(resp, provider="gemini")  # type: ignore[attr-defined]
+            # For Gemini via adapter, unwrap adapter_response before building LLMResult
+            # so that llm_handler sees the canonical Responses-like surface.
+            base = getattr(resp, "adapter_response", resp)
+            try:
+                result = llm_handler.build_llm_result_from_response(base, provider="gemini")
+            except Exception as e:  # pragma: no cover - best-effort debug path
+                print(f"Error building LLMResult for gemini response: {e}")
+                result = {}
             print("--- LLMResult view ---")
             print(json.dumps(result, default=str, indent=2))
 

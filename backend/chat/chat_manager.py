@@ -1521,7 +1521,7 @@ def rewrite_query(
             _model_for_est = str(_rw.get("model") or settings.rewrite_model)
             enc = _get_encoder_for_model(_model_for_est)
             pt_est = len(enc.encode(prompt))
-            logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, _model_for_est)
+            #logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, _model_for_est)
         except Exception:
             pass
         # Invoke the rewrite model with the prompt for the user's latest message for it to rewrite it
@@ -1544,7 +1544,7 @@ def rewrite_query(
         usage = _extract_usage_from_responses(resp, provider=_provider)
         raw = _extract_text_from_responses(resp).strip()
         # Log the raw JSON candidate before parsing so we can debug provider outputs.
-        logger.debug("[REWRITE] JSON candidate before parsing=%s", raw)
+        #logger.debug("[REWRITE] JSON candidate before parsing=%s", raw)
         try:
             if isinstance(usage, dict):
                 pt = int(usage.get("input_tokens") or 0)
@@ -1570,7 +1570,7 @@ def rewrite_query(
             
             # Retry with stronger emphasis on JSON format
             retry_prompt = prompt + "\n\nIMPORTANT: You MUST return ONLY a complete JSON object. No conversational text. Ensure all fields are included."
-            logger.debug(f"{log_prefix} Retrying with stronger JSON instruction")
+            #logger.debug(f"{log_prefix} Retrying with stronger JSON instruction")
             
             resp_retry = _responses_create(
                 provider=_provider,
@@ -1601,17 +1601,17 @@ def rewrite_query(
                 }
         
         # Debug: log parsed JSON (truncated)
-        try:
-            logger.debug(f"{log_prefix} Parsed JSON: {str(data)[:100]}...")
-        except Exception:
-            pass
+        #try:
+            #logger.debug(f"{log_prefix} Parsed JSON: {str(data)[:100]}...")
+        #except Exception:
+            #pass
         try:
             _t = int(getattr(settings, "debug_log_truncate_chars", 4000))
         except Exception:
             _t = 400
         try:
             _js = json.dumps(data, ensure_ascii=False)
-            logger.debug(f"{log_prefix} json=%s", _js if len(_js) <= _t else (_js[:_t] + "…"))
+            #logger.debug(f"{log_prefix} json=%s", _js if len(_js) <= _t else (_js[:_t] + "…"))
         except Exception:
             pass
         # Normalize/validate fields

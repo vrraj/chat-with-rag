@@ -92,10 +92,11 @@ Today, most call sites use `LLMHandler` via its OpenAI-compatible facades
 objects. The `LLMResult` helper is intentionally additive and can be
 introduced gradually without breaking existing code.
 
-#### Helper: `_build_llm_result_from_openai`
+#### Helper: `build_llm_result_from_response`
 
 `LLMHandler` exposes an internal helper that converts a non-streaming
-Responses-style object into an `LLMResult`:
+Responses-style object (or an adapter-wrapped equivalent) into an
+`LLMResult`:
 
 ```python
 handler: LLMHandler = llm_handler  # singleton instance
@@ -107,19 +108,125 @@ raw = handler._openai_call(  # or _gemini_call via adapter
     temperature=0.2,
 )
 
-result: LLMResult = handler._build_llm_result_from_openai(raw, provider="openai")
-print(result["text"])       # normalized assistant output
-print(result["reasoning"])  # optional reasoning trace (e.g., Gemini debug thoughts)
-print(result["usage"])      # token accounting across providers
+result: LLMResult = handler.build_llm_result_from_response(raw, provider="openai")
+print(result["text"])        # normalized assistant output
+print(result["reasoning"])   # optional reasoning trace (e.g., Gemini debug thoughts)
+print(result["usage"])       # token accounting across providers
+print(result["tool_calls"])  # normalized tool/function calls (if any)
 ```
 
 Notes:
 
 - `provider` is a simple string hint (e.g. `"openai"`, `"gemini"`) used
-  for provider-specific post-processing such as Gemini `<thought>` splitting.
+  for provider-specific post-processing such as Gemini `<thought>` splitting
+  and provider-specific usage normalization.
 - The helper assumes **non-streaming** responses (i.e. `stream=False`).
-- The shape of `raw` is whatever the underlying SDK returns; the handler
-  only reads common fields (model, id, usage, output/output_text, etc.).
+- The shape of `raw` is whatever the underlying SDK (or adapter surface)
+  returns; the handler only reads common fields (model, id, usage,
+  output/output_text, output tool calls, etc.).
+
+##### AdapterResponse and Gemini
+
+For non-OpenAI providers, `LLMHandler` may return an `AdapterResponse` shim
+that mimics the OpenAI Responses surface:
+
+```python
+class AdapterResponse:
+    def __init__(
+        *,
+        output_text: str,
+        model: str,
+        usage: Optional[Dict[str, int]] = None,
+        adapter_response: Any | None = None,
+        model_response: Any | None = None,
+        finish_reason: Optional[str] = None,
+    ): ...
+```
+
+- `output_text`, `model`, `usage`, and `finish_reason` are the familiar
+  OpenAI-style fields used by existing call sites.
+- `adapter_response` holds an adapter-level Responses-like wrapper (for
+  example, a `_GeminiResponsesWrapper` that exposes `output`, `output_text`,
+  and `usage`).
+- `model_response` preserves the provider-native response object for
+  debugging or special use cases.
+
+When building an `LLMResult` for Gemini, callers should generally unwrap
+to the adapter surface first:
+
+```python
+base = getattr(resp, "adapter_response", resp)
+result = handler.build_llm_result_from_response(base, provider="gemini")
+```
+
+#### Usage Guidelines
+
+Most callers should follow a two-step pattern:
+
+1. **Call `LLMHandler.create(...)` to get a provider/native or adapter response.**
+2. **Optionally build an `LLMResult` when you need normalized text/usage/tool_calls.**
+
+Examples:
+
+**OpenAI (Responses API):**
+
+```python
+from backend.llm.llm_handler import llm_handler
+
+resp = llm_handler.create(
+    provider="openai",
+    model="gpt-4o",
+    input="Hello",
+    stream=False,
+)
+
+# Direct usage for most apps
+print(resp.output_text)
+print(resp.usage)
+
+# Normalized view when you need canonical fields
+llm_result = llm_handler.build_llm_result_from_response(resp, provider="openai")
+print(llm_result["text"])
+print(llm_result["usage"])        # input_tokens/output_tokens/...
+print(llm_result["tool_calls"])   # if tools were used
+```
+
+**Gemini (AdapterResponse + underlying model response):**
+
+```python
+from backend.llm.llm_handler import llm_handler
+
+resp = llm_handler.create(
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",
+    input="Hello",
+    stream=False,
+    debug_thoughts=True,
+)
+
+# Surface compatible with OpenAI Responses
+print(resp.output_text)
+print(resp.usage)
+
+# Canonical, provider-agnostic view
+base = getattr(resp, "adapter_response", resp)
+llm_result = llm_handler.build_llm_result_from_response(base, provider="gemini")
+print(llm_result["text"])         # user-facing answer (after <thought>...</thought>)
+print(llm_result["reasoning"])    # optional Gemini debug thoughts
+print(llm_result["usage"])        # normalized usage
+print(llm_result["tool_calls"])   # normalized tool calls
+
+# Access the original provider-native response if needed
+model_resp = getattr(resp, "model_response", None)
+```
+
+In general:
+
+- Use `create(...)` return values directly for most application logic.
+- Use `build_llm_result_from_response(...)` when you need a
+  **provider-agnostic view** (metrics, logging, tooling, UI overlays).
+- Use `adapter_response`/`model_response` only for debugging or advanced
+  provider-specific behavior.
 
 #### Using LLMResult at System Boundaries
 
@@ -139,6 +246,27 @@ Responses-like objects (for maximum compatibility) and normalize into
 This approach keeps the existing call surface compatible with plain
 OpenAI Responses while providing a normalized view for higher-level
 orchestration and UI.
+
+##### Chat Manager Delegation
+
+`backend/chat/chat_manager.py` delegates all provider-specific parsing of
+LLM responses into `LLMHandler` and avoids duplicating extraction logic:
+
+- `_extract_text_from_responses(resp)` unwraps `adapter_response` (when
+  present) and returns `LLMResult["text"]` from
+  `build_llm_result_from_response`.
+- `_extract_usage_from_responses(resp, provider)` unwraps
+  `adapter_response`, calls `build_llm_result_from_response`, and
+  normalizes the canonical usage fields (`input_tokens`, `cached_tokens`,
+  `output_tokens`, `reasoning_tokens`, `completion_tokens`,
+  `total_tokens`), defaulting missing values to `0`.
+- `extract_tool_calls(resp)` unwraps `adapter_response`, calls
+  `build_llm_result_from_response`, and reads `LLMResult["tool_calls"]`,
+  applying only chat-manager–local deduplication and logging.
+
+With this structure, `backend/llm/llm_handler.py` is the single source of
+truth for text, usage, and tool-call extraction across providers, and
+`chat_manager` focuses on orchestration, metrics, and UI-facing concerns.
 
 ### Token Usage Metrics
 

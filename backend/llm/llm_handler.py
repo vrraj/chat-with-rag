@@ -1447,38 +1447,9 @@ class LLMHandler:
             # Do not overwrite an explicit reasoning object if already provided.
             mapped_kwargs.setdefault("reasoning", {"effort": reasoning_value})
 
-        # DEBUG: Log final kwargs after token conversion
-
-        # DEBUG: Print input request details for OpenAI Responses API
-        logger.debug(f"\n🔍 [OPENAI DEBUG] Input Request:")
-        logger.debug(f"  📋 Model: {resolved_model}")
-        logger.debug(f"  📋 Input: {input}")
-        logger.debug(f"  🔢 max_completion_tokens: {mapped_kwargs.get('max_completion_tokens', 'NOT_SET')}")
-        logger.debug(f"  🔢 max_tokens: {mapped_kwargs.get('max_tokens', 'NOT_SET')}")
-        logger.debug(f"  🧠 reasoning: {mapped_kwargs.get('reasoning', 'NOT_SET')}")
-        logger.debug(f"  📋 Full kwargs: {mapped_kwargs}")
-
-        # DEBUG: Print input request details for OpenAI Responses API
-        logger.debug(f"\n🔍 [OPENAI DEBUG] Input Request:")
-        logger.debug(f"  📋 Model: {resolved_model}")
-        logger.debug(f"  📋 Input: {input}")
-        logger.debug(f"  🔢 max_completion_tokens: {mapped_kwargs.get('max_completion_tokens', 'NOT_SET')}")
-        logger.debug(f"  🔢 max_tokens: {mapped_kwargs.get('max_tokens', 'NOT_SET')}")
-        logger.debug(f"  🧠 reasoning: {mapped_kwargs.get('reasoning', 'NOT_SET')}")
-        logger.debug(f"  📋 Full kwargs: {mapped_kwargs}")
-        logger.debug(f"  📋 Final kwargs after token conversion: {mapped_kwargs}")
-
+        
         try:
             response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
-
-            # DEBUG: Print raw response details
-            logger.debug(f"\n📄 [OPENAI DEBUG] Raw Response:")
-            logger.debug(f"  📋 Response type: {type(response)}")
-            logger.debug(f"  📋 Response dict: {response.__dict__ if hasattr(response, '__dict__') else 'NO_DICT_ATTR'}")
-            logger.debug(f"  📋 Output text: {getattr(response, 'output_text', 'NO_OUTPUT_TEXT_ATTR')}")
-            logger.debug(f"  🔢 Usage: {getattr(response, 'usage', 'NO_USAGE_ATTR')}")
-            logger.debug(f"  🏁 Finish reason: {getattr(response, 'finish_reason', 'NO_FINISH_REASON_ATTR')}")
-
             return response
         except Exception as e:
             # Preserve existing behavior (exception type) while also exposing
