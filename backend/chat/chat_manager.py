@@ -436,20 +436,40 @@ def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, i
         if isinstance(u, dict) and "input_tokens" in u:
             return u
 
+    # Prefer adapter_response surface when present (e.g., Gemini
+    # _GeminiResponsesWrapper); otherwise, use the response as-is.
+    base = getattr(resp, "adapter_response", resp)
+
     # Delegate to LLMHandler for provider-specific normalization.
     try:
-        result = llm_handler._build_llm_result_from_response(resp, provider=provider)
-        return result.get("usage")
+        result = llm_handler.build_llm_result_from_response(base, provider=provider)
+        usage = result.get("usage") or {}
     except Exception:
-        # Fallback: return zeros if normalization fails.
-        return {
-            "input_tokens": 0,
-            "cached_tokens": 0,
-            "output_tokens": 0,
-            "reasoning_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+        try:
+            logger.exception("[USAGE DEBUG] failed to build LLMResult for usage extraction")
+        except Exception:
+            pass
+        usage = {}
+
+    # Normalize and ensure all canonical fields are present and numeric.
+    norm = {
+        "input_tokens": 0,
+        "cached_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    if isinstance(usage, dict):
+        for k in norm.keys():
+            v = usage.get(k)
+            try:
+                if isinstance(v, (int, float)):
+                    norm[k] = int(v)
+            except Exception:
+                continue
+
+    return norm
 
 
 # --- Small shared helpers for chat ---
