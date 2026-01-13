@@ -77,6 +77,44 @@ REGISTRY: Dict[str, ModelInfo] = {
         },
         max_tokens_parameter="max_output_tokens", 
     ),
+    # Opt-in OpenAI Chat Completions variants (endpoint="chat_completions").
+    # These are intentionally separate keys so existing "openai:*" models that
+    # use the Responses API remain unchanged. Callers can explicitly choose
+    # these keys when they want to route via chat.completions instead of
+    # responses, while still targeting the same underlying model IDs.
+    "openai:chat_fast": ModelInfo(
+        key="openai:chat_fast",
+        provider="openai",
+        model="gpt-4o-mini",
+        endpoint="chat_completions",
+        pricing=Pricing(input_per_mm=0.15, output_per_mm=0.60, cached_input_per_mm=0.075),
+        capabilities={
+            "tools": True,
+            "stream": True,
+            "temperature": True,
+            "reasoning_effort": False,
+            "top_p": True,
+        },
+        # Chat Completions token limit parameter is "max_completion_tokens";
+        # callers should continue to pass model-agnostic max_output_tokens and
+        # let llm_handler map it using this field.
+        max_tokens_parameter="max_completion_tokens",
+    ),
+    "openai:chat_best": ModelInfo(
+        key="openai:chat_best",
+        provider="openai",
+        model="gpt-4o",
+        endpoint="chat_completions",
+        pricing=Pricing(input_per_mm=2.50, output_per_mm=10.00, cached_input_per_mm=1.25),
+        capabilities={
+            "tools": True,
+            "stream": True,
+            "temperature": True,
+            "reasoning_effort": False,
+            "top_p": True,
+        },
+        max_tokens_parameter="max_completion_tokens",
+    ),
     "openai:reasoning_mini": ModelInfo(
         key="openai:reasoning_mini",
         provider="openai",

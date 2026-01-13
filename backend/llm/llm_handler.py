@@ -1447,15 +1447,136 @@ class LLMHandler:
             # Do not overwrite an explicit reasoning object if already provided.
             mapped_kwargs.setdefault("reasoning", {"effort": reasoning_value})
 
-        
+        # Determine which OpenAI endpoint to use for this model. For backward
+        # compatibility, default to the Responses API when the registry is
+        # unavailable or the model is unknown.
+        endpoint = "responses"
+        model_key_dbg = None
+        try:
+            model_info = self._lookup_model_info_from_registry(model)
+            if model_info is not None:
+                endpoint = getattr(model_info, "endpoint", "responses") or "responses"
+                # Best-effort: capture the registry key used for this model for debugging.
+                try:
+                    model_key_dbg = getattr(model_info, "key", None)
+                except Exception:
+                    model_key_dbg = None
+        except Exception:
+            endpoint = "responses"
+
+        # DEBUG: Log the resolved endpoint for observability.
+        try:
+            logger.debug(
+                "[OPENAI CALL] model_identifier=%s registry_key=%s resolved_model=%s endpoint=%s stream=%s kwargs_keys=%s",
+                str(model),
+                str(model_key_dbg or ""),
+                str(resolved_model),
+                str(endpoint),
+                bool(stream),
+                list(mapped_kwargs.keys()),
+            )
+        except Exception:
+            pass
+
+        # --- Standard OpenAI Responses API path (existing behavior) ---
+        if endpoint == "responses":
+            try:
+                logger.debug("[OPENAI CALL] Using Responses API for model=%s stream=%s", resolved_model, bool(stream))
+            except Exception:
+                pass
+            try:
+                response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
+                return response
+            except Exception:
+                # Preserve existing behavior (exception type) and re-raise.
+                raise
+
+        # --- Opt-in Chat Completions path for models configured with endpoint="chat_completions" ---
+        if endpoint == "chat_completions":
+            # Normalize tools into the nested {"type":"function","function":{...}}
+            # shape expected by the Chat Completions endpoint. This mirrors
+            # the schema used for Gemini adapter tools, but is applied only
+            # for OpenAI chat.completions calls so the Responses API path
+            # remains unchanged.
+            if "tools" in mapped_kwargs:
+                try:
+                    mapped_kwargs = dict(mapped_kwargs)
+                    mapped_kwargs["tools"] = self._sanitize_tools_for_gemini_adapter(mapped_kwargs["tools"])
+                except Exception:
+                    # Best-effort only; if normalization fails, fall back to
+                    # the original tools payload and let the provider surface
+                    # any validation error.
+                    pass
+
+            # Normalize the input into Chat Completions messages. If callers
+            # already pass a list of messages, forward it as-is; otherwise,
+            # wrap the input in a single user message.
+            messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
+
+            # Non-streaming Chat Completions: return the raw response object.
+            if not stream:
+                try:
+                    logger.debug("[OPENAI CALL] Using Chat Completions (non-stream) for model=%s", resolved_model)
+                except Exception:
+                    pass
+                try:
+                    resp = client.chat.completions.create(
+                        model=resolved_model,
+                        messages=messages,
+                        stream=False,
+                        **mapped_kwargs,
+                    )
+                    # Return the raw ChatCompletion response. Downstream helpers
+                    # (build_llm_result_from_response, _extract_text_from_responses,
+                    # _extract_usage_from_responses, extract_tool_calls) already
+                    # understand Chat Completions shapes and will normalize text,
+                    # usage, and tool calls into LLMResult.
+                    return resp
+                except Exception:
+                    raise
+
+            # Streaming Chat Completions: adapt chunks into AdapterEvent stream,
+            # mirroring the Gemini event surface so existing streaming
+            # consumers continue to work unchanged.
+            def event_gen() -> Iterator[AdapterEvent]:
+                try:
+                    try:
+                        logger.debug("[OPENAI CALL] Using Chat Completions (stream) for model=%s", resolved_model)
+                    except Exception:
+                        pass
+                    stream_obj = client.chat.completions.create(
+                        model=resolved_model,
+                        messages=messages,
+                        stream=True,
+                        **mapped_kwargs,
+                    )
+                except Exception as e:
+                    # Surface provider errors as-is to preserve existing
+                    # exception semantics for callers.
+                    raise e
+
+                for chunk in stream_obj:
+                    try:
+                        if not getattr(chunk, "choices", None):
+                            continue
+                        delta_obj = getattr(chunk.choices[0], "delta", None)
+                        delta_text = getattr(delta_obj, "content", None)
+                        if delta_text:
+                            yield AdapterEvent("response.output_text.delta", delta=delta_text)
+                    except Exception:
+                        # Best-effort only; ignore malformed chunks and
+                        # continue streaming.
+                        continue
+                yield AdapterEvent("response.output_text.done")
+
+            return event_gen()
+
+        # Fallback: if an unknown endpoint is configured, treat it as Responses
+        # to avoid breaking callers; this is effectively the legacy behavior.
         try:
             response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
             return response
-        except Exception as e:
-            # Preserve existing behavior (exception type) while also exposing
-            # a structured LLMError for call sites that wish to distinguish
-            # provider/config failures. For now we re-raise the original to
-            # avoid any breaking change.
+        except Exception:
             raise
 
     def _openai_embedding_call(self, *, model: str, input: Any, **kwargs: Any):

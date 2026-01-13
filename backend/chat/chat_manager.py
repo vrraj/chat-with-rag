@@ -140,6 +140,22 @@ def resolve_stage_specs(
     inference_provider_override = str(p.get("inference_provider") or "").strip()
     inference_model_override = str(p.get("inference_model") or "").strip()
 
+    # Optional per-request model_keys map (stage -> registry key). When
+    # present, these override the model name for that stage so callers can
+    # select registry entries like "openai:chat_fast" while keeping
+    # provider settings/backwards compatibility intact.
+    model_keys = p.get("model_keys") or {}
+    try:
+        inference_model_key_override = str(model_keys.get("inference") or "").strip()
+        rewrite_model_key_override = str(model_keys.get("rewrite") or "").strip()
+        summary_model_key_override = str(model_keys.get("summary") or "").strip()
+        rerank_model_key_override = str(model_keys.get("rerank") or "").strip()
+    except Exception:
+        inference_model_key_override = ""
+        rewrite_model_key_override = ""
+        summary_model_key_override = ""
+        rerank_model_key_override = ""
+
     # Base models from settings (stage defaults)
     rewrite_model = getattr(settings_obj, "rewrite_model", getattr(settings_obj, "inference_model", ""))
     summarizer_model = getattr(settings_obj, "summarizer_model", getattr(settings_obj, "inference_model", ""))
@@ -147,7 +163,14 @@ def resolve_stage_specs(
 
     # Inference model: allow per-request override to affect downstream defaults.
     inference_model = getattr(settings_obj, "inference_model", "")
-    effective_inference_model = (inference_model_override or inference_model)
+    # Prefer explicit model_key override when present, then legacy name override,
+    # then settings default. This lets callers opt into registry keys such as
+    # "openai:chat_fast" without breaking existing configs.
+    effective_inference_model = (
+        inference_model_key_override
+        or inference_model_override
+        or inference_model
+    )
     
     # Inference provider: allow per-request override to affect downstream defaults.
     inference_provider = getattr(settings_obj, "inference_provider", "openai")
@@ -243,7 +266,7 @@ def resolve_stage_specs(
         },
         "rewrite": {
             "provider": (rewrite_provider_override or "openai"),
-            "model": (rewrite_model_override or rewrite_model),
+            "model": (rewrite_model_key_override or rewrite_model_override or rewrite_model),
             "kwargs": {
                 "temperature": rewrite_temp,
                 "max_output_tokens": rewrite_max_out
@@ -251,7 +274,7 @@ def resolve_stage_specs(
         },
         "summary": {
             "provider": (summary_provider_override or "openai"),
-            "model": (summary_model_override or summarizer_model),
+            "model": (summary_model_key_override or summary_model_override or summarizer_model),
             "kwargs": {
                 "temperature": summarizer_temp,
                 "max_output_tokens": summarizer_max_out,
@@ -261,7 +284,7 @@ def resolve_stage_specs(
         },
         "rerank": {
             "provider": (rerank_provider_override or "openai"),
-            "model": (rerank_model_override or rerank_model),
+            "model": (rerank_model_key_override or rerank_model_override or rerank_model),
             "kwargs": {
                 "temperature": rerank_temp,
                 "max_output_tokens": rerank_max_out,
@@ -269,7 +292,12 @@ def resolve_stage_specs(
         },
         "inference": {
             "provider": effective_inference_provider,
-            "model": (inference_model_override or inference_model),
+            # Prefer the effective_inference_model, which already folds in
+            # model_keys.inference (registry key) when provided. This remains
+            # backward-compatible because when model_keys is absent,
+            # effective_inference_model falls back to the legacy
+            # inference_model_override or settings.inference_model.
+            "model": effective_inference_model,
             "kwargs": {
                 "temperature": inference_temp,
                 "top_p": inference_top_p,
@@ -2457,7 +2485,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Best-effort debug log of the embedding spec used for retrieval (provider/model/dimensions).
     try:
         _emb_spec_dbg = resolve_embedding_spec(settings_obj)
-        logger.debug("[RETRIEVE] (%s) embedding_spec=%r", log_origin, _emb_spec_dbg)
+        logger.debug("[EMB] (%s) db.last_embedding_usage=%r", log_origin, getattr(db, "last_embedding_usage", None))
     except Exception:
         pass
 
@@ -2550,9 +2578,19 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
     except Exception:
         embed_tokens = 0
+    # Use the concrete embedding model name resolved from settings so that
+    # pricing in model_registry can be applied correctly for cost metrics.
+    try:
+        _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
+        _emb_model_for_cost = str(
+            (_emb_spec_cost.get("model") or getattr(settings_obj, "embedding_model", "embedding"))
+        )
+    except Exception:
+        _emb_model_for_cost = getattr(settings_obj, "embedding_model", "embedding")
+
     m.record_stage(
-        "embedding", 
-        model=getattr(settings_obj, "embedding_model", "embedding"), 
+        "embedding",
+        model=_emb_model_for_cost,
         pt=embed_tokens,
         model_key=(_stage_model_keys or {}).get("embedding"),
     )
