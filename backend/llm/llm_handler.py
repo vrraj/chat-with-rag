@@ -467,19 +467,14 @@ class LLMHandler:
         if getattr(model_info, "provider", None) != "gemini":
             return clean_kwargs
 
-        # If the registry says this model does NOT support reasoning effort, do not apply
-        # any thinking-tax inflation (even if a thinking_tax map exists).
+        # Only apply thinking-tax inflation when the registry explicitly marks the model
+        # as supporting reasoning/thinking. This prevents accidental inflation for models
+        # that accept token limits but do not expose thinking knobs.
         try:
             caps = getattr(model_info, "capabilities", {}) or {}
             if not bool(caps.get("reasoning_effort", False)):
                 return clean_kwargs
         except Exception:
-            return clean_kwargs
-        # Only apply thinking-tax inflation when the registry explicitly marks the model
-        # as supporting reasoning/thinking. This prevents accidental inflation for models
-        # that accept token limits but do not expose thinking knobs.
-        caps = getattr(model_info, "capabilities", None) or {}
-        if not bool(caps.get("reasoning_effort", False)):
             return clean_kwargs
 
         effort_map = self._extract_effort_map(model_info, spec)
@@ -546,17 +541,13 @@ class LLMHandler:
         if model_info is None or getattr(model_info, "provider", None) != "gemini":
             return kwargs
 
-        # If the registry says this model does NOT support reasoning effort, do not inject
-        # any Gemini thinking configuration (even if thinking_tax is present).
+        # Only inject Gemini thinking_config when the registry says this model supports reasoning.
+        # This prevents injecting thinking_config for models/adapters that don't expose reasoning knobs.
         try:
             caps = getattr(model_info, "capabilities", {}) or {}
             if not bool(caps.get("reasoning_effort", False)):
                 return kwargs
         except Exception:
-            return kwargs
-        # Only inject Gemini thinking_config when the registry says this model supports reasoning.
-        caps = getattr(model_info, "capabilities", None) or {}
-        if not bool(caps.get("reasoning_effort", False)):
             return kwargs
 
         thinking_tax = getattr(model_info, "thinking_tax", None)
@@ -571,15 +562,13 @@ class LLMHandler:
         rp = getattr(model_info, "reasoning_parameter", None)
         rp_name = None
         rp_default = None
-        if isinstance(rp, tuple) and len(rp) >= 1:
-            rp_name = rp[0]
-            rp_default = rp[1] if len(rp) > 1 else None
-        elif hasattr(model_info, 'reasoning_parameter'):
-            # Model has reasoning_parameter field, use it
+
+        # Only proceed when the registry provides a tuple/list like (param_name, default_value).
+        if isinstance(rp, (tuple, list)) and len(rp) >= 1:
             rp_name = rp[0]
             rp_default = rp[1] if len(rp) > 1 else None
         else:
-            # No reasoning_parameter field - no reasoning support
+            # No usable reasoning_parameter => no reasoning support for this model.
             return kwargs
 
         if not rp_name:
@@ -611,7 +600,11 @@ class LLMHandler:
                 budget = None
             if budget is None or budget == -1:
                 return out  # nothing injected
-            inner["google"]["thinking_config"] = {"thinking_budget": budget}
+            tc = inner["google"].get("thinking_config")
+            if not isinstance(tc, dict):
+                tc = {}
+            tc["thinking_budget"] = budget
+            inner["google"]["thinking_config"] = tc
 
         elif kind == "level":
             level = requested_value
@@ -620,7 +613,11 @@ class LLMHandler:
             if isinstance(param_map, dict):
                 key = str(level).strip().lower()
                 level = param_map.get(key, level)
-            inner["google"]["thinking_config"] = {"thinking_level": str(level)}
+            tc = inner["google"].get("thinking_config")
+            if not isinstance(tc, dict):
+                tc = {}
+            tc["thinking_level"] = str(level)
+            inner["google"]["thinking_config"] = tc
 
         # Double-wrap so OpenAI Python SDK merges `{ "extra_body": ... }` into request body.
         out["extra_body"] = {"extra_body": inner}
@@ -906,6 +903,7 @@ class LLMHandler:
                     return getattr(obj, name, None)
 
                 # Provider-specific normalization
+                completion_tokens = None  # explicit init; derived later if needed
                 if provider == "openai":
                     # OpenAI Responses semantics
                     input_tokens = _uget(usage_block, "input_tokens")
@@ -985,7 +983,7 @@ class LLMHandler:
                     total_tokens = (input_tokens or 0) + (output_tokens or 0)
 
                 # If completion_tokens wasn't set in provider-specific logic, derive as output - reasoning.
-                if 'completion_tokens' not in locals() or completion_tokens is None:
+                if completion_tokens is None:
                     try:
                         completion_tokens = int(output_tokens or 0) - int(reasoning_tokens or 0)
                         if completion_tokens < 0:
@@ -1236,7 +1234,9 @@ class LLMHandler:
                         mapped_kwargs.pop("reasoning_effort", None)
                     
                     # DEBUG: Show reasoning parameter mapping
-                    logger.debug(f"[GEMINI REASONING MAP] model={model} param_name={param_name} reasoning_value={reasoning_value} converted_value={converted_value}")
+                    logger.debug(
+                        f"[REASONING MAP] model={model} param_name={param_name} reasoning_value={reasoning_value} converted_value={converted_value}"
+                    )
                 elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
                     # Use registry default when no value passed and capability is supported
                     mapped_kwargs[param_name] = default_value
@@ -1604,11 +1604,22 @@ class LLMHandler:
         # Prepare kwargs for the Gemini OpenAI-compatible adapter in one place.
         working_kwargs = self._prepare_gemini_adapter_kwargs(model, kwargs)
 
+        # Determine which endpoint is configured for this Gemini model. For backward
+        # compatibility, default to the chat_completions adapter when the registry
+        # is unavailable or the model is unknown.
+        endpoint = "chat_completions"
+        try:
+            model_info = self._lookup_model_info_from_registry(model)
+            if model_info is not None:
+                endpoint = getattr(model_info, "endpoint", "chat_completions") or "chat_completions"
+        except Exception:
+            endpoint = "chat_completions"
+
         # Keep max_output_tokens consistent - let each provider handle conversion internally
         # OpenAI chat completions will use model registry to determine correct parameter name
 
-        # --- OpenAI-adapter path (chat.completions) ---
-        if hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
+        # --- OpenAI-adapter path (chat.completions) when endpoint is chat_completions ---
+        if endpoint == "chat_completions" and hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
             create_fn = getattr(getattr(client.chat, "completions"), "create", None)
             if callable(create_fn):
                 messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]

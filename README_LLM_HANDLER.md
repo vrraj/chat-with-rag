@@ -780,23 +780,128 @@ if provider == "openai":
 - Parameter mapping for `max_completion_tokens` on reasoning models
 
 #### 2. "chat_completions" Endpoint  
-```python
-# Used for OpenAI-compatible chat completion APIs (including Gemini via adapter)
-"gemini:fast": ModelInfo(
-    endpoint="chat_completions",  # Uses OpenAI-compatible format
-    model="models/gemini-2.5-flash-lite",
-),
 
-# Handler routes to Gemini adapter with OpenAI interface:
-if provider == "gemini":
-    return self._gemini_call(model=model, input=input, stream=stream, **kwargs)
+The `"chat_completions"` endpoint is used in two cases:
+
+1. **Gemini via OpenAI adapter** (existing behavior)
+2. **Opt-in OpenAI chat completions models** (new behavior)
+
+```python
+# Gemini via OpenAI-compatible adapter
+"gemini:fast": ModelInfo(
+    key="gemini:fast",
+    provider="gemini",
+    model="models/gemini-2.5-flash-lite",
+    endpoint="chat_completions",
+    ...,
+)
+
+# OpenAI chat-completions variants (opt-in; keep existing models on Responses)
+"openai:chat_fast": ModelInfo(
+    key="openai:chat_fast",
+    provider="openai",
+    model="gpt-4o-mini",
+    endpoint="chat_completions",
+    ...,
+)
+
+"openai:chat_best": ModelInfo(
+    key="openai:chat_best",
+    provider="openai",
+    model="gpt-4o",
+    endpoint="chat_completions",
+    ...,
+)
 ```
 
-**Characteristics:**
-- OpenAI-compatible chat completion format
-- Used by Gemini via OpenAI adapter
-- Supports standard chat completion parameters
-- May have limited tool support compared to native responses API
+**Routing behavior:**
+
+- **Gemini** registry entries with `endpoint="chat_completions"` still route through
+  `_gemini_call(...)`, which in turn uses `client.chat.completions.create(...)` on the
+  adapter client and wraps results into an OpenAI-Responses-like adapter surface.
+
+- **OpenAI** registry entries with `endpoint="chat_completions"` route through
+  a dedicated branch inside `_openai_call(...)`:
+
+  ```python
+  def _openai_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
+      ...
+      endpoint = self._lookup_model_info_from_registry(model).endpoint or "responses"
+
+      if endpoint == "responses":
+          return client.responses.create(...)
+
+      if endpoint == "chat_completions":
+          # tools normalization + chat.completions.create(...)
+          ...
+  ```
+
+**Call signature for OpenAI chat_completions models:**
+
+```python
+from backend.llm.llm_handler import llm_handler
+
+# Non-streaming
+resp = llm_handler.create(
+    provider="openai",
+    model="openai:chat_fast",        # registry key (endpoint="chat_completions")
+    input=[
+        {"role": "user", "content": "Hello"},
+    ],
+    stream=False,
+    temperature=0.3,
+    top_p=0.9,
+)
+
+# Streaming
+events = llm_handler.create(
+    provider="openai",
+    model="openai:chat_fast",
+    input=[{"role": "user", "content": "Hello"}],
+    stream=True,
+)
+for ev in events:
+    if ev.type == "response.output_text.delta":
+        print(ev.delta, end="", flush=True)
+    elif ev.type == "response.output_text.done":
+        print("\n[done]")
+```
+
+**Tools normalization for Chat Completions:**
+
+- The handler expects existing tool definitions in either
+  flattened OpenAI function form or nested `{"type": "function", "function": {...}}`.
+- For `endpoint="chat_completions"` models, `_openai_call(...)` applies the
+  same `_sanitize_tools_for_gemini_adapter(...)` helper used by the Gemini
+  adapter to ensure tools are always sent in the nested form required by
+  `chat.completions`:
+
+  ```python
+  if endpoint == "chat_completions" and "tools" in mapped_kwargs:
+      mapped_kwargs["tools"] = self._sanitize_tools_for_gemini_adapter(mapped_kwargs["tools"])
+  ```
+
+**Output shape:**
+
+- For **non-streaming** OpenAI chat-completions responses, `_openai_call` returns
+  the raw ChatCompletion SDK object (with `choices`, `usage`, etc.).
+- `build_llm_result_from_response(...)` already knows how to normalize both
+  Responses-style objects **and** Chat Completions objects into the same
+  `LLMResult` shape:
+
+  - Text is taken from, in order:
+    1. `output_text` / `output` (Responses-style), then
+    2. `choices[0].message.content` (Chat Completions fallback).
+  - Tool calls are taken from:
+    1. canonical `output` items (Responses-style), then
+    2. `choices[0].message.tool_calls` (Chat Completions fallback).
+  - Usage is normalized from the Chat Completions `usage` block into the
+    canonical `LLMUsage` fields.
+
+This means downstream code (e.g. `chat_manager`) can stay entirely agnostic to
+whether a given OpenAI model is using the Responses or Chat Completions API;
+it always consumes an `LLMResult` with stable `text`, `usage`, and
+`tool_calls` fields.
 
 #### 3. "embeddings" Endpoint
 ```python
@@ -827,26 +932,45 @@ def create_embedding(self, provider: str, model: str, input: Any, **kwargs: Any)
 
 ### Endpoint Routing Logic
 
-The LLM handler uses provider-based routing to select the appropriate endpoint:
+The LLM handler uses both the **provider** and the **registry endpoint field** to
+select the appropriate API shape and method:
 
 ```python
 def create(self, provider: str, model: str, input: Any, stream: bool = False, **kwargs: Any):
-    # Provider determines which endpoint/method to use
     if provider == "openai":
+        # _openai_call() inspects the model registry entry to decide between
+        # the Responses API and the Chat Completions API.
         return self._openai_call(model=model, input=input, stream=stream, **kwargs)
+    elif provider == "gemini":
+        # Gemini uses chat.completions via adapter or native SDK fallback.
+        return self._gemini_call(model=model, input=input, stream=stream, **kwargs)
     elif provider == "anthropic":
         return self._anthropic_call(model=model, input=input, stream=stream, **kwargs)
-    elif provider == "gemini":
-        return self._gemini_call(model=model, input=input, stream=stream, **kwargs)
 ```
 
 ### Endpoint-Specific Behavior
 
-#### OpenAI "responses" Endpoint
+#### OpenAI: Responses vs Chat Completions
+
 ```python
 def _openai_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
-    # Direct OpenAI responses API usage
-    return client.responses.create(model=model, input=input, stream=stream, **mapped_kwargs)
+    client = self._get_openai()
+    resolved_model = self._resolve_model_name(model)  # registry key -> native id
+    mapped_kwargs = ...  # capabilities + reasoning mapping
+
+    endpoint = "responses"
+    model_info = self._lookup_model_info_from_registry(model)
+    if model_info is not None:
+        endpoint = getattr(model_info, "endpoint", "responses") or "responses"
+
+    if endpoint == "responses":
+        # Direct OpenAI Responses API usage
+        return client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
+
+    if endpoint == "chat_completions":
+        # Tools normalization + chat.completions.create(...), with streaming
+        # adapted into AdapterEvent("response.output_text.delta"/".done").
+        ...
 ```
 
 #### Gemini "chat_completions" Endpoint
