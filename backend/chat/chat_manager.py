@@ -381,130 +381,42 @@ def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
     if existed:
         _CONVO_TOTALS_BY_NS.pop(ns, None)
     return {"cleared": bool(existed), "namespace": ns, "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
-# ---- end accumulator ----
+ # ---- end accumulator ----
 
 
 def _extract_text_from_responses(resp: Any) -> str:
     """Return response text from a Responses-like object.
 
-    Robust extraction contract (handles adapters/wrappers):
-      1) Consider BOTH `resp` and `resp.adapter_response` (if present) as possible carriers of canonical fields.
-      2) Gather candidate text from:
-          - `.output_text` (if present)
-          - `.output` items of the form {"type":"text","text":...}
-          - `.output[...].content[...].text`
-      3) Return the LONGEST non-empty candidate. This protects against wrappers
-         that accidentally set a truncated `output_text`.
+    Delegates to llm_handler.build_llm_result_from_response so that
+    provider-specific parsing (Responses vs ChatCompletions vs adapters)
+    is centralized in one place.
     """
-    # Adapter-style unwrap: prefer an explicit adapter_response when present
-    # (e.g., AdapterResponse.adapter_response for Gemini), otherwise fall back
-    # to legacy `.raw`, and finally to the response object itself.
+
+    # Prefer adapter_response surface when present (e.g., Gemini
+    # _GeminiResponsesWrapper); otherwise, use the response as-is.
     base = getattr(resp, "adapter_response", resp)
-    
-    def _get_attr(obj, name: str):
-        try:
-            if isinstance(obj, dict):
-                return obj.get(name)
-            return getattr(obj, name, None)
-        except Exception:
-            return None
-
-    def _extract_from_output(obj) -> str:
-        output = _get_attr(obj, "output")
-        if not isinstance(output, list):
-            return ""
-        parts: List[str] = []
-        for item in output:
-            it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
-
-            # (A) Canonical direct text items: {"type": "text", "text": "..."}
-            if it_type == "text":
-                txt = getattr(item, "text", None) if not isinstance(item, dict) else item.get("text")
-                if isinstance(txt, str) and txt:
-                    parts.append(txt)
-                continue
-
-            # (B) Nested content arrays: output[i].content[j].text
-            content = getattr(item, "content", None)
-            if content is None and isinstance(item, dict):
-                content = item.get("content")
-            if not isinstance(content, list):
-                continue
-            for c in content:
-                txt = getattr(c, "text", None)
-                if txt is None and isinstance(c, dict):
-                    txt = c.get("text")
-                if isinstance(txt, str) and txt:
-                    parts.append(txt)
-        return "".join(parts).strip() if parts else ""
-
-    candidates: List[str] = []
-
-    # Collect output_text candidates from both resp and base
-    for obj in (resp, base):
-        t = _get_attr(obj, "output_text")
-        if isinstance(t, str):
-            t = t.strip()
-            if t:
-                candidates.append(t)
-
-    # Collect output-derived candidates from both resp and base
-    for obj in (resp, base):
-        t = _extract_from_output(obj)
-        if t:
-            candidates.append(t)
-
-    # Choose the longest candidate (best-effort against truncation)
-    best = ""
-    for c in candidates:
-        if isinstance(c, str) and len(c) > len(best):
-            best = c
-
-    # Fallbacks: some providers/wrappers may not populate `output_text`/`output`.
-    # Prefer ChatCompletions-style `choices[0].message.content` if present.
-    if not best:
-        try:
-            for obj in (resp, base):
-                choices = _get_attr(obj, "choices")
-                if isinstance(choices, list) and choices:
-                    c0 = choices[0]
-                    msg = getattr(c0, "message", None) if not isinstance(c0, dict) else c0.get("message")
-                    content = getattr(msg, "content", None) if not isinstance(msg, dict) else (msg or {}).get("content")
-                    if isinstance(content, str) and content.strip():
-                        best = content.strip()
-                        break
-        except Exception:
-            pass
-
-    # Fallbacks for Google/Gemini-style responses: candidates[0].content.parts[].text
-    if not best:
-        try:
-            for obj in (resp, base):
-                cands = _get_attr(obj, "candidates")
-                if isinstance(cands, list) and cands:
-                    cand0 = cands[0]
-                    content = getattr(cand0, "content", None) if not isinstance(cand0, dict) else cand0.get("content")
-                    parts = getattr(content, "parts", None) if not isinstance(content, dict) else (content or {}).get("parts")
-                    if isinstance(parts, list):
-                        parts_txt: List[str] = []
-                        for p in parts:
-                            txt = getattr(p, "text", None) if not isinstance(p, dict) else p.get("text")
-                            if isinstance(txt, str) and txt:
-                                parts_txt.append(txt)
-                        joined = "".join(parts_txt).strip() if parts_txt else ""
-                        if joined:
-                            best = joined
-                            break
-        except Exception:
-            pass
 
     try:
-        logger.debug(f"[RESP DEBUG] candidates={len(candidates)} best_len={len(best)}")
+        llm_result = llm_handler.build_llm_result_from_response(base)
+    except Exception:
+        try:
+            logger.exception("[RESP DEBUG] failed to build LLMResult for text extraction")
+        except Exception:
+            pass
+        return ""
+
+    text = ""
+    try:
+        text = str(llm_result.get("text") or "")
+    except Exception:
+        text = ""
+
+    try:
+        logger.debug("[RESP DEBUG] extracted text length=%d", len(text))
     except Exception:
         pass
 
-    return best
-
+    return text
 
 
 def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, int] | None:
