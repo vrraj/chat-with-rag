@@ -525,6 +525,32 @@ chat-with-rag/
 - Set global or per-document chunking and processing options
 - Preview and edit configuration before processing
 
+### Embedding Batch Indexing
+
+To reduce latency and API overhead, the ingestion pipeline batches **multiple chunks** into a single embeddings call wherever possible:
+
+- **Pre-chunked ingestion** (`/mediawiki/url`, `/index`, `frontend/process-batch-docs.html`)
+  - Uses `EmbeddingsManager.index_chunks`, which groups chunks into batches and calls `llm_handler.embeddings.create` once per batch.
+- **Raw document ingestion** (HTML/PDF via `/index` and `/pdf`)
+  - Uses `EmbeddingsManager.process_document`, which also batches chunk texts before calling the embedding provider.
+
+Batch size is provider-aware and configurable in `backend/core/config.py`:
+
+```python
+embedding_batch_size_default: int = 25
+embedding_batch_size_openai: int = 25
+embedding_batch_size_gemini: int = 25
+```
+
+- For **OpenAI embeddings**, the system uses `embedding_batch_size_openai`.
+- For **Gemini embeddings**, the system uses `embedding_batch_size_gemini`.
+- Any future providers fall back to `embedding_batch_size_default`.
+
+The effective behavior is roughly:
+
+- `num_chunks = 40`, `embedding_batch_size_gemini = 25` → 2 embedding calls (25 + 15 chunks).
+- Token usage and cost accounting remain accurate because each batched call returns aggregate usage, which is tracked per document.
+
 ### Example Batch Configuration
 ```json
 {

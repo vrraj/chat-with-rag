@@ -165,9 +165,6 @@ class QdrantDB:
                 dims = spec.get("dimensions")
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
-                    # Hint to the Gemini OpenAI-compatible embeddings endpoint that this
-                    # call is for retrieval queries, not corpus indexing.
-                    kwargs["extra_body"] = {"task_type": "RETRIEVAL_QUERY"}
                 response = llm_handler.embeddings.create(**kwargs)
             # Record token usage if the SDK returns it
             try:

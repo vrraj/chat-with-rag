@@ -165,6 +165,12 @@ class Settings(BaseSettings):
     # Cost basis tokens
     cost_basis_tokens: int = 1_000_000
 
+    # Embedding batch sizes (number of texts sent in a single embeddings.create call).
+    # Provider-specific knobs with a sane default for future providers.
+    embedding_batch_size_default: int = 25
+    embedding_batch_size_openai: int = 25
+    embedding_batch_size_gemini: int = 25
+
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)
     # -------------------------------------------------------------------------
@@ -172,8 +178,8 @@ class Settings(BaseSettings):
     # Examples: "openai:fast", "openai:best", "gemini:fast", "openai:embed_small".
 
     # Embeddings profile key (should align with `embedding_model` provider selector).
-    embedding_model_key: str = "openai:embed_small"
-
+    #embedding_model_key: str = "openai:embed_small"
+    embedding_model_key: str = "gemini:embed"
     # Stage model profile keys
     rewrite_model_key: str = "openai:fast"
     rerank_model_key: str = "openai:fast"

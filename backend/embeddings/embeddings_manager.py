@@ -56,7 +56,7 @@ class EmbeddingsManager:
             # Fallback to character count estimation if tiktoken fails
             return max(1, len(text) // 4)
 
-    def generate_embeddings(self, text: str) -> List[float]:
+    def generate_embeddings(self, text: Any):
         """
         Generate embeddings using the configured provider/model.
 
@@ -64,9 +64,10 @@ class EmbeddingsManager:
         - All embeddings now route through `llm_handler.embeddings.create()` regardless of model type.
         - The handler automatically handles both legacy OpenAI model ids and provider keys.
         Args:
-            text: Text to embed
+            text: Text to embed, or a list of texts for batched embeddings.
         Returns:
-            List of float values representing the embedding
+            - If `text` is a str: a single embedding vector (List[float]).
+            - If `text` is a list of str: a list of embedding vectors (List[List[float]]).
         """
         attempt = 0
         backoff = max(0.0, float(settings.embeddings_initial_backoff_secs))
@@ -89,8 +90,9 @@ class EmbeddingsManager:
 
                 if llm_handler is None:
                     raise ValueError("llm_handler is not available for embeddings generation")
-                
-                # Always use llm_handler for embeddings
+                # Always use llm_handler for embeddings. Support both single-text
+                # and batched (list-of-texts) inputs.
+                is_batch = isinstance(text, list)
                 kwargs: Dict[str, Any] = {
                     "provider": provider,
                     "model": model,
@@ -98,9 +100,6 @@ class EmbeddingsManager:
                 }
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
-                    # Hint to the Gemini OpenAI-compatible embeddings endpoint that this
-                    # call is for document indexing (retrieval corpus).
-                    kwargs["extra_body"] = {"task_type": "RETRIEVAL_DOCUMENT"}
 
                 # DEBUG: Log the resolved embedding provider/model/dimensions
                 try:
@@ -114,7 +113,8 @@ class EmbeddingsManager:
                     pass
 
                 response = llm_handler.embeddings.create(**kwargs)
-                embedding = response.data[0].embedding
+                # Normalize embeddings into a list for simpler handling.
+                embeddings_list = [d.embedding for d in response.data]
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
                 total_tokens = response.usage.total_tokens if response.usage else 0
                 try:
@@ -122,8 +122,12 @@ class EmbeddingsManager:
                 except Exception:
                     pass
                 logger.debug("Tokens used - prompt: %s, total: %s", prompt_tokens, total_tokens)
+                if is_batch:
+                    # Return list-of-embeddings aligned with the input list.
+                    return embeddings_list
                 #logger.debug("Received embedding vector of length: %d", len(embedding))
-                return embedding
+                # Single-text path: return the first embedding.
+                return embeddings_list[0] if embeddings_list else []
             except Exception as e:
                 last_err = e
                 attempt += 1
@@ -205,14 +209,82 @@ class EmbeddingsManager:
         try:
             _emb_spec_doc = resolve_embedding_spec(settings)
             _emb_model_name_doc = _emb_spec_doc.get("model")
+            _emb_provider_doc = _emb_spec_doc.get("provider", "openai")
         except Exception:
             _emb_model_name_doc = getattr(settings, "embedding_model", None)
+            _emb_provider_doc = "openai"
 
-        for idx, chunk in enumerate(chunks):
+        # Determine batch size based on embedding provider, with a safe default.
+        try:
+            if _emb_provider_doc == "openai":
+                batch_size = int(getattr(settings, "embedding_batch_size_openai", 25))
+            elif _emb_provider_doc == "gemini":
+                batch_size = int(getattr(settings, "embedding_batch_size_gemini", 25))
+            else:
+                batch_size = int(getattr(settings, "embedding_batch_size_default", 25))
+        except Exception:
+            batch_size = 25
+        if batch_size <= 0:
+            batch_size = 1
+
+        # DEBUG: Log the provider and chosen batch size for this document.
+        try:
+            logger.debug(
+                "[EMBEDDINGS] Using provider=%s batch_size=%s for document chunks",
+                _emb_provider_doc,
+                batch_size,
+            )
+        except Exception:
+            pass
+
+        # Process chunks in batches, but keep token accounting and usage logic
+        # centralized inside generate_embeddings.
+        for batch_start in range(0, len(chunks), batch_size):
+            batch = chunks[batch_start: batch_start + batch_size]
+            try:
+                logger.debug(
+                    "[EMBEDDINGS] Embedding batch starting_at=%s batch_len=%s",
+                    batch_start,
+                    len(batch),
+                )
+            except Exception:
+                pass
+            batch_texts = []
+            for chunk in batch:
+                chunk_text = chunk if isinstance(chunk, str) else chunk.get('text', '')
+                batch_texts.append(chunk_text)
+
+            try:
+                # generate_embeddings will handle provider routing, retries, and
+                # token accounting. When passed a list, it should return a list
+                # of embeddings aligned with batch_texts.
+                if len(batch_texts) == 1:
+                    batch_embeddings = [self.generate_embeddings(batch_texts[0])]
+                else:
+                    batch_embeddings = self.generate_embeddings(batch_texts)  # type: ignore[arg-type]
+            except Exception as e:
+                failures += 1
+                logger.error("Error generating embeddings for batch starting at %s: %s", batch_start, e, exc_info=True)
+                if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
+                    logger.error("Aborting document processing due to excessive embedding failures")
+                    break
+                # Time budget guard
+                if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                    logger.error("Aborting document processing due to time limit exceeded")
+                    break
+                continue
+
+            for offset, chunk in enumerate(batch):
+                idx = batch_start + offset
             try:
                 chunk_id = str(uuid.uuid4())
                 chunk_text = chunk if isinstance(chunk, str) else chunk.get('text', '')
-                embedding = self.generate_embeddings(chunk_text)
+                # Align embedding with chunk in the current batch.
+                try:
+                    embedding = batch_embeddings[offset]
+                except Exception:
+                    # Fallback: regenerate singly if batch alignment fails for any reason.
+                    embedding = self.generate_embeddings(chunk_text)
 
                 # Optional per-document token budget guard
                 try:
@@ -451,63 +523,130 @@ class EmbeddingsManager:
         try:
             _emb_spec_chunks = resolve_embedding_spec(settings)
             _emb_model_name_chunks = _emb_spec_chunks.get("model")
+            _emb_provider_chunks = _emb_spec_chunks.get("provider", "openai")
         except Exception:
             _emb_model_name_chunks = getattr(settings, "embedding_model", None)
+            _emb_provider_chunks = "openai"
+
+        # Determine batch size based on embedding provider, with a safe default.
+        try:
+            if _emb_provider_chunks == "openai":
+                batch_size = int(getattr(settings, "embedding_batch_size_openai", 25))
+            elif _emb_provider_chunks == "gemini":
+                batch_size = int(getattr(settings, "embedding_batch_size_gemini", 25))
+            else:
+                batch_size = int(getattr(settings, "embedding_batch_size_default", 25))
+        except Exception:
+            batch_size = 25
+        if batch_size <= 0:
+            batch_size = 1
+
+        # DEBUG: Log the provider and chosen batch size for this pre-chunked indexing run.
+        try:
+            logger.debug(
+                "[EMBEDDINGS] Using provider=%s batch_size=%s for pre-chunked inputs",
+                _emb_provider_chunks,
+                batch_size,
+            )
+        except Exception:
+            pass
+
         points = []
         failures = 0
         started_at = time.time()
-        for i, chunk in enumerate(chunks):
-            text = chunk.get("text", "")
-            if not text:
-                logger.warning("Embeddings: Skipping empty chunk at index %d", i)
-                continue
+
+        # Process pre-chunked inputs in batches.
+        for batch_start in range(0, len(chunks), batch_size):
+            batch = chunks[batch_start: batch_start + batch_size]
             try:
-                # Ensure URL-derived helpers exist on the payload
-                u = chunk.get("url") or ""
-                if "url_lower" not in chunk:
-                    chunk["url_lower"] = u.lower()
-                base = chunk.get("base_url")
-                if not base:
-                    base = _strip_fragment(u)
-                    chunk["base_url"] = base
-                if "base_url_lower" not in chunk:
-                    chunk["base_url_lower"] = (base or "").lower()
+                logger.debug(
+                    "[EMBEDDINGS] Embedding pre-chunked batch starting_at=%s batch_len=%s",
+                    batch_start,
+                    len(batch),
+                )
+            except Exception:
+                pass
 
-                # Best-effort: record the embedding model used, without overwriting
-                # any value that might already be present in the incoming chunk.
-                if _emb_model_name_chunks and "embedding_model" not in chunk:
-                    chunk["embedding_model"] = _emb_model_name_chunks
+            batch_texts: List[str] = []
+            for chunk in batch:
+                text = chunk.get("text", "")
+                if not text:
+                    batch_texts.append("")
+                else:
+                    batch_texts.append(text)
 
-                embedding = self.generate_embeddings(text)
-
-                # Optional per-document token budget guard for pre-chunked inputs
-                try:
-                    max_tokens_budget = int(getattr(settings, "embeddings_max_tokens_per_doc", 0) or 0)
-                except Exception:
-                    max_tokens_budget = 0
-                if max_tokens_budget > 0 and self._tokens_used > max_tokens_budget:
-                    logger.error(
-                        "Aborting chunk indexing: embedding token budget exceeded (%s > %s)",
-                        self._tokens_used,
-                        max_tokens_budget,
-                    )
-                    break
-
-                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{u}-{i}"))
-                points.append({
-                    "id": point_id,
-                    "vector": embedding,
-                    "payload": chunk
-                })
+            try:
+                if len(batch_texts) == 1:
+                    batch_embeddings = [self.generate_embeddings(batch_texts[0])]
+                else:
+                    batch_embeddings = self.generate_embeddings(batch_texts)  # type: ignore[arg-type]
             except Exception as e:
                 failures += 1
-                logger.error("Failed to embed chunk %d: %s", i, e, exc_info=True)
+                logger.error("Failed to embed batch starting at %d: %s", batch_start, e, exc_info=True)
                 if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
                     logger.error("Aborting chunk indexing due to excessive embedding failures")
                     break
-            if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
-                logger.error("Aborting chunk indexing due to time limit exceeded")
-                break
+                if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                    logger.error("Aborting chunk indexing due to time limit exceeded")
+                    break
+                continue
+
+            for offset, chunk in enumerate(batch):
+                i = batch_start + offset
+                text = chunk.get("text", "")
+                if not text:
+                    logger.warning("Embeddings: Skipping empty chunk at index %d", i)
+                    continue
+                try:
+                    # Ensure URL-derived helpers exist on the payload
+                    u = chunk.get("url") or ""
+                    if "url_lower" not in chunk:
+                        chunk["url_lower"] = u.lower()
+                    base = chunk.get("base_url")
+                    if not base:
+                        base = _strip_fragment(u)
+                        chunk["base_url"] = base
+                    if "base_url_lower" not in chunk:
+                        chunk["base_url_lower"] = (base or "").lower()
+
+                    # Best-effort: record the embedding model used, without overwriting
+                    # any value that might already be present in the incoming chunk.
+                    if _emb_model_name_chunks and "embedding_model" not in chunk:
+                        chunk["embedding_model"] = _emb_model_name_chunks
+
+                    try:
+                        embedding = batch_embeddings[offset]
+                    except Exception:
+                        embedding = self.generate_embeddings(text)
+
+                    # Optional per-document token budget guard for pre-chunked inputs
+                    try:
+                        max_tokens_budget = int(getattr(settings, "embeddings_max_tokens_per_doc", 0) or 0)
+                    except Exception:
+                        max_tokens_budget = 0
+                    if max_tokens_budget > 0 and self._tokens_used > max_tokens_budget:
+                        logger.error(
+                            "Aborting chunk indexing: embedding token budget exceeded (%s > %s)",
+                            self._tokens_used,
+                            max_tokens_budget,
+                        )
+                        break
+
+                    point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{u}-{i}"))
+                    points.append({
+                        "id": point_id,
+                        "vector": embedding,
+                        "payload": chunk
+                    })
+                except Exception as e:
+                    failures += 1
+                    logger.error("Failed to embed chunk %d: %s", i, e, exc_info=True)
+                    if failures >= int(settings.embeddings_max_consecutive_failures_per_doc):
+                        logger.error("Aborting chunk indexing due to excessive embedding failures")
+                        break
+                if (time.time() - started_at) > float(settings.embeddings_total_time_limit_secs):
+                    logger.error("Aborting chunk indexing due to time limit exceeded")
+                    break
 
         if force_delete:
             url_set = {point["payload"].get("url") for point in points}
