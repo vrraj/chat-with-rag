@@ -305,7 +305,16 @@ For `provider == "openai"` (Responses API):
 
 #### Gemini Normalization
 
-For `provider == "gemini"` (OpenAI-compatible adapter):
+Gemini models can be reached via two paths:
+
+1. **OpenAI-compatible adapter** (endpoint = `chat_completions`)
+2. **Native SDK path** (endpoint = `gemini_sdk`, via `google-genai`)
+
+In both cases, `LLMResult.usage` exposes the same canonical fields.
+
+##### 1. Gemini via OpenAI-compatible adapter
+
+For `provider == "gemini"` and adapter responses:
 
 | Raw Field | Canonical Field |
 |-----------|-----------------|
@@ -320,6 +329,50 @@ For `provider == "gemini"` (OpenAI-compatible adapter):
 - The adapter returns `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 - `output_tokens` is derived as `total_tokens - prompt_tokens`.
 - `reasoning_tokens` is derived as `output_tokens - completion_tokens`.
+
+##### 2. Gemini via native SDK (endpoint = `gemini_sdk`)
+
+When the registry configures a Gemini model with `endpoint="gemini_sdk"`,
+`LLMHandler` uses the native `google-genai` client (e.g. `client.models.generate_content`).
+Usage is taken from `resp.usage_metadata` and normalized into the same
+canonical shape via an internal wrapper (`_GeminiSDKResponsesWrapper`):
+
+| Raw Field (usage_metadata) | Canonical Field |
+|----------------------------|-----------------|
+| `prompt_token_count` | `input_tokens` |
+| `candidates_token_count` | `output_tokens` |
+| `total_token_count` | `total_tokens` |
+| Derived: `output_tokens` (if `total_token_count` missing) | `prompt_tokens + candidates_token_count` |
+| Derived: `output_tokens - completion_tokens` (when available) | `reasoning_tokens` |
+| Not provided | `cached_tokens` (defaults to 0) |
+
+Additionally, when available, the native field `thoughts_token_count` is
+exposed as an extra, non-canonical metric (e.g. `thoughts_tokens`) for
+debugging/telemetry, but it does not affect the canonical cost fields.
+
+The native SDK response is wrapped in a small attribute-style shim that
+exposes `output_text`, `output` (assistant message + canonical
+`function_call` items from `function_calls`), and `usage`. That shim is
+then passed as `adapter_response` inside `AdapterResponse`, so the
+existing `build_llm_result_from_response(provider="gemini")` code path
+can treat both adapter and native SDK responses uniformly.
+
+##### Gemini Embeddings
+
+Gemini embeddings are issued through the **OpenAI-compatible adapter** path
+using the same `_get_gemini()` client as chat completions:
+
+- `LLMHandler.create_embedding(provider="gemini", ...)` calls the internal
+  `_gemini_embedding_call`, which:
+  - Requires an explicit `dimensions` argument and raises an `LLMError` with
+    `kind="config"` / `code="missing_dimensions"` if it is absent.
+  - Uses the adapter client’s `embeddings.create(model=..., input=..., **kwargs)`
+    method after resolving the model name.
+
+Native Gemini embeddings (via `google-genai`) are not invoked implicitly by
+`create_embedding`; the **only** native-entry path is via models whose
+registry entry sets `endpoint="gemini_sdk"`, which are handled by
+`_get_gemini_native()` as described above.
 
 #### Unknown Providers
 

@@ -127,7 +127,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    collection_name: str = "document_index"  # collection name
+    #collection_name: str = "document_index"  # collection name
+    collection_name: str = "document_index_gemini"  # collection name
 
     # Vector/search shape & retrieval knobs
     vector_size: int = 1536  # use with text-embedding-3-small
@@ -149,7 +150,7 @@ class Settings(BaseSettings):
     # NOTE: embedding_model is the single source of truth for both corpus indexing
     # and query-time retrieval embeddings; changing this requires re-embedding docs
     # so the retriever and stored vectors stay in the same embedding space.
-    embedding_model: str = "openai"  # "openai" or "gemini"
+    embedding_model: str = "gemini"  # "openai" or "gemini"
 
     # Gemini embeddings (adapter-based) - additive, optional
     # Default model: "gemini-embedding-001".

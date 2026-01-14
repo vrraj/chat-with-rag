@@ -1645,6 +1645,22 @@ class LLMHandler:
         resolved_model = self._resolve_model_name(model)
         return client.embeddings.create(model=resolved_model, input=input, **kwargs)
 
+    def _estimate_embedding_tokens(self, text: Any) -> int:
+        """Best-effort token estimate for embeddings when provider usage is missing.
+
+        This is only used for providers (currently Gemini) that do not return
+        usage for embedding calls. It is intentionally lightweight and does
+        not affect model behavior, only metrics/cost accounting.
+        """
+        try:
+            import tiktoken  # type: ignore
+
+            enc = tiktoken.get_encoding("cl100k_base")
+            return len(enc.encode(str(text), disallowed_special=()))
+        except Exception:
+            s = str(text) if text is not None else ""
+            return max(1, len(s) // 4)
+
     def _gemini_call(self, *, model: str, input: Any, stream: bool, skip_reasoning: bool = False, **kwargs: Any):
         """Gemini adapter that returns OpenAI-compatible response objects/events.
 
@@ -1907,6 +1923,13 @@ class LLMHandler:
                                 fargs = getattr(fc, "args", None)
                                 if fargs is None:
                                     fargs = getattr(fc, "arguments", None)
+                                # Normalize args: SDK may return JSON string in some versions.
+                                if isinstance(fargs, str):
+                                    try:
+                                        import json
+                                        fargs = json.loads(fargs)
+                                    except Exception:
+                                        pass
                                 fid = getattr(fc, "id", None) or getattr(fc, "call_id", None)
                                 if fname:
                                     tool_items.append(
@@ -1968,6 +1991,322 @@ class LLMHandler:
                     model_response=resp,
                     finish_reason=None,
                 )
+
+        # --- OpenAI-adapter path (chat.completions) when endpoint is chat_completions ---
+        if endpoint == "chat_completions" and hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
+            create_fn = getattr(getattr(client.chat, "completions"), "create", None)
+            if callable(create_fn):
+                messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
+
+                if not stream:
+                    # Apply capability filtering, parameter mapping, and token limit conversion
+                    call_kwargs = working_kwargs.copy()
+                    # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint.
+                    try:
+                        token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
+                        # Include both generic and Gemini-specific reasoning knobs so we can confirm mapping.
+                        reasoning_keys = ("reasoning_effort", "thinking_budget", "thinking_level")
+                        debug_keys = token_keys + reasoning_keys
+                        debug_part = {k: call_kwargs.get(k) for k in debug_keys if k in call_kwargs}
+                        extra_body = call_kwargs.get("extra_body")
+                        has_tools = bool(call_kwargs.get("tools"))
+                        logger.debug(
+                            "[GEMINI DEBUG] chat.completions.create model=%s stream=%s kwargs_subset=%s has_tools=%s has_extra_body=%s extra_body=%s",
+                            resolved_model,
+                            False,
+                            debug_part,
+                            has_tools,
+                            bool(extra_body),
+                            extra_body,
+                        )
+                    except Exception:
+                        pass
+                    # (Token parameter mapping now handled centrally in create())
+                    try:
+                        resp = create_fn(model=resolved_model, messages=messages, **call_kwargs)
+                    except openai.RateLimitError as e:  # type: ignore[attr-defined]
+                        # Map Gemini adapter rate limits into a structured LLMError
+                        # so callers (e.g., handle_chat) can surface a clear message.
+                        retry_after = None
+                        try:
+                            # Best-effort extraction from the error structure; safe if shape changes.
+                            data = getattr(e, "response", None)
+                            if data and hasattr(data, "json"):
+                                j = data.json()
+                                # Look for google.rpc.RetryInfo style hints if present.
+                                # Fallback to None if parsing fails.
+                                retry_after = None  # keep as placeholder; concrete parsing can be added later.
+                        except Exception:
+                            retry_after = None
+                        raise LLMError(
+                            provider="gemini",
+                            model=model,
+                            kind="rate_limit",
+                            code="rate_limit",
+                            message=str(e),
+                            retry_after=retry_after,
+                        ) from e
+                    except openai.NotFoundError as e:  # type: ignore[attr-defined]
+                        # Map Gemini adapter 404s (e.g., unknown model) into LLMError so callers
+                        # can surface a clear, structured message to users.
+                        raise LLMError(
+                            provider="gemini",
+                            model=model,
+                            kind="model_not_found",
+                            code="not_found",
+                            message=str(e),
+                            retry_after=None,
+                        ) from e
+
+                    text = ""
+                    try:
+                        if resp and getattr(resp, "choices", None):
+                            choice0 = resp.choices[0]
+                            msg = getattr(choice0, "message", None)
+                            text = getattr(msg, "content", "") or ""
+                    except Exception:
+                        text = ""
+
+                    usage_dict: Optional[Dict[str, int]] = None
+                    usage = getattr(resp, "usage", None)
+                    if usage is not None:
+                        try:
+                            if isinstance(usage, dict):
+                                usage_dict = {
+                                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                                    "completion_tokens": int(usage.get("completion_tokens") or 0),
+                                    "total_tokens": int(usage.get("total_tokens") or 0),
+                                }
+                            else:
+                                usage_dict = {
+                                    "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                                    "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                                    "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+                                }
+                        except Exception:
+                            usage_dict = None
+
+                    wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
+                    return AdapterResponse(
+                        output_text=text,
+                        model=model,
+                        usage=usage_dict,
+                        adapter_response=wrapped,
+                        model_response=getattr(wrapped, "model_response", None),
+                        finish_reason=self._extract_finish_reason(resp),
+                    )
+
+                def event_gen() -> Iterator[AdapterEvent]:
+                    # Apply capability filtering, parameter mapping, and token limit conversion
+                    call_kwargs = working_kwargs.copy()
+                    # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint (streaming).
+                    try:
+                        token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
+                        # Include both generic and Gemini-specific reasoning knobs so we can confirm mapping.
+                        reasoning_keys = ("reasoning_effort", "thinking_budget", "thinking_level")
+                        debug_keys = token_keys + reasoning_keys
+                        debug_part = {k: call_kwargs.get(k) for k in debug_keys if k in call_kwargs}
+                        extra_body = call_kwargs.get("extra_body")
+                        has_tools = bool(call_kwargs.get("tools"))
+                        logger.debug(
+                            "[GEMINI DEBUG] chat.completions.create model=%s stream=%s kwargs_subset=%s has_tools=%s has_extra_body=%s extra_body=%s",
+                            resolved_model,
+                            True,
+                            debug_part,
+                            has_tools,
+                            bool(extra_body),
+                            extra_body,
+                        )
+                    except Exception:
+                        pass
+                    # (Token parameter mapping now handled centrally in create())
+                    try:
+                        stream_obj = create_fn(model=resolved_model, messages=messages, stream=True, **call_kwargs)
+                    except openai.RateLimitError as e:  # type: ignore[attr-defined]
+                        raise LLMError(
+                            provider="gemini",
+                            model=model,
+                            kind="rate_limit",
+                            code="rate_limit",
+                            message=str(e),
+                            retry_after=None,
+                        ) from e
+                    except openai.NotFoundError as e:  # type: ignore[attr-defined]
+                        raise LLMError(
+                            provider="gemini",
+                            model=model,
+                            kind="model_not_found",
+                            code="not_found",
+                            message=str(e),
+                            retry_after=None,
+                        ) from e
+                    for chunk in stream_obj:
+                        try:
+                            if not getattr(chunk, "choices", None):
+                                continue
+                            delta_obj = getattr(chunk.choices[0], "delta", None)
+                            delta_text = getattr(delta_obj, "content", None)
+                            if delta_text:
+                                yield AdapterEvent("response.output_text.delta", delta=delta_text)
+                        except Exception:
+                            continue
+                    yield AdapterEvent("response.output_text.done")
+
+                return event_gen()
+    
+   
+    def _gemini_embedding_call(self, *, model: str, input: Any, **kwargs: Any):
+        """Gemini embedding call via the OpenAI-compatible adapter client.
+
+        Assumes `_get_gemini()` returns an OpenAI-style client pointed at a
+        Gemini adapter that exposes `client.embeddings.create(...)`.
+
+        The typical model is `gemini-embedding-001`. Dimensions are required
+        and must be explicitly provided by the caller.
+        """
+        if "dimensions" not in kwargs:
+            raise LLMError(
+                provider="gemini",
+                model=model,
+                kind="config",
+                code="missing_dimensions",
+                message="Gemini embeddings require explicit 'dimensions' parameter",
+            )
+        client = self._get_gemini()
+        resolved_model = self._resolve_model_name(model)
+        resp = client.embeddings.create(model=resolved_model, input=input, **kwargs)
+
+        # Some Gemini adapter surfaces do not currently populate `usage` for
+        # embeddings. To keep callers simple and provide reasonable metrics,
+        # synthesize a minimal usage object when missing. This does not affect
+        # model behavior, only accounting.
+        try:
+            usage_obj = getattr(resp, "usage", None)
+        except Exception:
+            usage_obj = None
+
+        if usage_obj is None:
+            approx = self._estimate_embedding_tokens(input)
+
+            class _EmbeddingUsageShim:
+                def __init__(self, prompt_tokens: int, total_tokens: int) -> None:
+                    self.prompt_tokens = prompt_tokens
+                    self.total_tokens = total_tokens
+
+            try:
+                setattr(resp, "usage", _EmbeddingUsageShim(prompt_tokens=approx, total_tokens=approx))
+            except Exception:
+                # If we cannot attach usage (e.g., immutable type), just leave as-is.
+                pass
+
+        return resp
+ 
+    
+    def _wrap_gemini_chatcompletion_as_responses(self, *, resp: Any, output_text: str, usage: Any = None) -> Any:
+        """Wrap a Gemini ChatCompletion-style response to look like an OpenAI Responses object.
+
+        === CANONICAL OUTPUTS (must use for all logic) ===
+        - resp.output_text → final user-visible text (PRIMARY for text extraction)
+        - resp.output → tool calls + structured content (PRIMARY for tool extraction)
+        - resp.usage → token usage statistics
+        - resp.raw → provider-native response (debug only)
+
+        === NON-CANONICAL OUTPUTS (compatibility/debug only) ===
+        - resp.choices → legacy ChatCompletions format, DO NOT USE for logic
+        - resp.choices[].message.tool_calls → legacy tool format, IGNORED
+
+        === STRUCTURE CREATED ===
+        output: [
+            {"type": "text", "text": "full response text"},           # Canonical text item
+            {"type": "function_call", "name": "...", "arguments": "...", "call_id": "..."}  # Canonical tool items
+        ]
+
+        === EXTRACTION CONTRACT ===
+        1. All tool calls must be read from resp.output (canonical)
+        2. All text must be read from resp.output_text first, then resp.output
+        3. Never use resp.choices for production logic
+        4. Treat resp.choices as debug/compatibility only
+
+        This wrapper ensures Gemini responses are compatible with OpenAI Responses API extraction functions.
+        """
+
+        # DEBUG: Check if truncation happens before wrapper
+        logger.debug(f"[GEMINI WRAPPER] Input output_text length: {len(output_text)}")
+        logger.debug(f"[GEMINI WRAPPER] Input output_text preview: '{output_text[:200]}...'")
+
+        # Also check original response content
+        finish_reason = None
+        try:
+            if resp and getattr(resp, "choices", None):
+                choice0 = resp.choices[0]
+                finish_reason = getattr(choice0, "finish_reason", None)
+                msg = getattr(choice0, "message", None)
+                original_content = getattr(msg, "content", "") or ""
+                logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content length: {len(original_content)}")
+                logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content preview: '{original_content[:200]}...'")
+        except Exception as e:
+            logger.debug(f"[GEMINI WRAPPER] Could not check original content: {e}")
+
+        # Collect tool calls from ChatCompletion message.tool_calls (NON-CANONICAL source)
+        tool_items: list[dict] = []
+        try:
+            choices = getattr(resp, "choices", None)
+            if isinstance(choices, list) and choices:
+                msg = getattr(choices[0], "message", None)
+                tc = getattr(msg, "tool_calls", None)
+                if isinstance(tc, list):
+                    for t in tc:
+                        ttype = getattr(t, "type", None)
+                        if ttype != "function":
+                            continue
+                        func = getattr(t, "function", None)
+                        name = getattr(func, "name", None) if func is not None else None
+                        arguments = getattr(func, "arguments", None) if func is not None else None
+                        call_id = getattr(t, "id", None)
+                        if name:
+                            tool_items.append({
+                                "type": "function_call",
+                                "name": name,
+                                "arguments": arguments,
+                                "call_id": call_id,
+                            })
+        except Exception:
+            tool_items = []
+
+        # Build canonical Responses API output structure (CANONICAL output)
+        output: list[dict] = []
+
+        # Add text as direct canonical item (not nested in message.content)
+        if isinstance(output_text, str) and output_text:
+            output.append({"type": "text", "text": output_text})
+
+        # Add tool calls as direct canonical items
+        output.extend(tool_items)
+
+        class _GeminiResponsesWrapper:
+            def __init__(self, *, output_text: str, output: list[dict], usage: Any, choices: Any, model_response: Any):
+                # === CANONICAL FIELDS (must use for all logic) ===
+                self.output_text = output_text      # Canonical: final text
+                self.output = output                # Canonical: tools + content
+                self.usage = usage                  # Canonical: tokens
+
+                # === NON-CANONICAL FIELDS (compatibility/debug only) ===
+                self.choices = choices              # Legacy: DO NOT USE for logic
+                # Provider-native model response (e.g., Gemini ChatCompletion or native SDK response)
+                self.model_response = model_response
+
+            # Minimal dict-like compatibility for existing debug/test code.
+            def get(self, name: str, default: Any = None) -> Any:
+                return getattr(self, name, default)
+
+        return _GeminiResponsesWrapper(
+            output_text=output_text or "",      # Canonical text field
+            output=output,                      # Canonical structured output
+            usage=usage,                        # Canonical usage field
+            choices=getattr(resp, "choices", None),  # Non-canonical compatibility
+            model_response=resp,                # Provider-native debug
+        )
+
 
 # Singleton instance (kept for backwards-compatibility with existing imports)
 llm_handler = LLMHandler()

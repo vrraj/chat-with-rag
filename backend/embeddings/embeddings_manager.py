@@ -98,7 +98,21 @@ class EmbeddingsManager:
                 }
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
-                
+                    # Hint to the Gemini OpenAI-compatible embeddings endpoint that this
+                    # call is for document indexing (retrieval corpus).
+                    kwargs["extra_body"] = {"task_type": "RETRIEVAL_DOCUMENT"}
+
+                # DEBUG: Log the resolved embedding provider/model/dimensions
+                try:
+                    logger.debug(
+                        "[EMBEDDINGS] Generating embedding via provider=%s model=%s dimensions=%s",
+                        provider,
+                        model,
+                        dims,
+                    )
+                except Exception:
+                    pass
+
                 response = llm_handler.embeddings.create(**kwargs)
                 embedding = response.data[0].embedding
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
