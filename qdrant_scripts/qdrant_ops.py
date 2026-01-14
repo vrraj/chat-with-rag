@@ -174,6 +174,7 @@ def cmd_list_fields(args) -> int:
     return 0
 
 
+
 def cmd_list_titles(args) -> int:
     client = build_client(args.host, args.port)
     seen_urls = set()
@@ -206,6 +207,81 @@ def cmd_list_titles(args) -> int:
     for title_display, base_url_lower in unique_points:
         print(f"{title_display}\t{base_url_lower}")
     print(f"\nTotal unique URLs: {len(unique_points)}")
+    return 0
+
+
+# New command: vector-dims
+def cmd_vector_dims(args) -> int:
+    """Print vector configuration for the given collection.
+
+    Outputs whether the collection uses named vectors, and prints
+    dimension(s) + distance metric(s) when available.
+
+    Supports both single-vector collections and named-vectors collections.
+    """
+    client = build_client(args.host, args.port)
+
+    try:
+        info = client.get_collection(args.collection)
+    except Exception as e:
+        print(f"Error retrieving collection '{args.collection}': {e}")
+        return 1
+
+    named_vectors = False
+    vectors_cfg = None
+
+    try:
+        cfg = getattr(info, "config", None)
+        if cfg is not None:
+            params = getattr(cfg, "params", cfg)
+            vectors_cfg = getattr(params, "vectors", None)
+            named_vectors = isinstance(vectors_cfg, dict)
+    except Exception:
+        vectors_cfg = None
+        named_vectors = False
+
+    # Collect per-vector config: name -> {size, distance}
+    vecs: dict[str, dict[str, object]] = {}
+
+    try:
+        # Single unnamed vector
+        if vectors_cfg is not None and hasattr(vectors_cfg, "size"):
+            vecs["default"] = {
+                "size": getattr(vectors_cfg, "size", "unknown"),
+                "distance": getattr(vectors_cfg, "distance", "unknown"),
+            }
+
+        # Named vectors (dict)
+        elif isinstance(vectors_cfg, dict):
+            for name, vcfg in vectors_cfg.items():
+                vecs[str(name)] = {
+                    "size": getattr(vcfg, "size", "unknown"),
+                    "distance": getattr(vcfg, "distance", "unknown"),
+                }
+
+        # Best-effort fallback for other shapes
+        else:
+            size = getattr(vectors_cfg, "size", None)
+            if size is not None:
+                vecs["default"] = {
+                    "size": size,
+                    "distance": getattr(vectors_cfg, "distance", "unknown"),
+                }
+    except Exception:
+        vecs = {}
+
+    print(f"Collection: {args.collection}")
+    print(f"Named vectors: {'yes' if named_vectors else 'no'}")
+
+    if vecs:
+        print("Vector config:")
+        for name in sorted(vecs.keys()):
+            size = vecs[name].get("size", "unknown")
+            dist = vecs[name].get("distance", "unknown")
+            print(f"- {name}: size={size}, distance={dist}")
+    else:
+        print("Vector config: unknown")
+
     return 0
 
 
@@ -471,6 +547,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scroll page size for fetching points (default: 256)",
     )
     list_titles_parser.set_defaults(func=cmd_list_titles)
+
+    # Vector dimensions command
+    dims_parser = subparsers.add_parser(
+        "vector-dims",
+        help="Show vector config (dims + distance) for the collection (supports named vectors)",
+    )
+    dims_parser.set_defaults(func=cmd_vector_dims)
     
     # Count chunks by base_url command
     count_parser = subparsers.add_parser("count-chunks", help="Count chunks by base URL (case-insensitive)")

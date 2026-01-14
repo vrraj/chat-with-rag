@@ -794,6 +794,7 @@ Supported operations include:
 - **Export a collection** to JSONL for backup or seeding into another environment.
 - **Truncate a collection** while preserving its configuration (distance, vector size, payload schema).
 - **Delete points** by id or by payload filter, with interactive confirmation for destructive actions.
+ - **Inspect vector configuration** (dimensions + distance metric, including named vectors) for a collection.
 
 Example invocations:
 
@@ -812,6 +813,36 @@ python qdrant_scripts/qdrant_ops.py export -f docs-index-export.jsonl
 
 # Safely truncate the active collection (interactive confirmation)
 python qdrant_scripts/qdrant_ops.py truncate
+
+# Inspect vector configuration (dimensions + distance)
+python qdrant_scripts/qdrant_ops.py vector-dims
+
+# Explicitly target a different collection (e.g., Gemini-backed index)
+python qdrant_scripts/qdrant_ops.py --collection document_index_gemini vector-dims
+```
+
+The `vector-dims` command is especially useful when:
+
+- verifying that **Qdrant’s stored vector size matches your embedding model**, e.g.
+  - OpenAI `text-embedding-3-small` vs `text-embedding-3-large`
+  - Gemini `gemini-embedding-001` with `gemini_embedding_dimensions` in `backend/core/config.py`
+- inspecting whether a collection uses **named vectors** and what distance metric each vector uses.
+
+Example outputs:
+
+```text
+Collection: document_index
+Named vectors: no
+Vector config:
+- default: size=1536, distance=Cosine
+```
+
+```text
+Collection: my_multi_vector_collection
+Named vectors: yes
+Vector config:
+- content: size=1536, distance=Cosine
+- title:   size=384,  distance=Dot
 ```
 
 This CLI complements the Makefile targets by providing more granular and scriptable control over the Qdrant collection, and it can be extended with additional commands as operational needs evolve.
