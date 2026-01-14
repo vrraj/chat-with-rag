@@ -141,6 +141,18 @@ class AdapterResponse:
         #     (e.g., adapter_response.model_response for Gemini); otherwise falls back to
         #     the adapter_response or output surface itself.
         self.adapter_response = adapter_response
+        # Best-effort: expose Responses-style `output` on the top-level AdapterResponse
+        # so downstream normalization/tool-extraction can read tool calls uniformly.
+        try:
+            output_val = None
+            if adapter_response is not None:
+                if isinstance(adapter_response, dict):
+                    output_val = adapter_response.get("output")
+                else:
+                    output_val = getattr(adapter_response, "output", None)
+            self.output = output_val
+        except Exception:
+            self.output = None
         try:
             if model_response is not None:
                 self.model_response = model_response
@@ -222,6 +234,7 @@ class LLMHandler:
     def __init__(self, *, openai_client=None, gemini_client=None):
         self._openai = openai_client
         self._gemini = gemini_client
+        self._gemini_native = None  # native google-genai client (only used when endpoint=="gemini_sdk")
         # Facade for compatibility with existing `client.responses.create(...)` call sites.
         self.responses = _ResponsesFacade(self)
         # New additive facade for embeddings; does not affect existing behavior.
@@ -1181,15 +1194,37 @@ class LLMHandler:
         if _model_registry is None:
             return value
 
-        # Resolve model_info either by registry key or by provider-native model name.
+        # Resolve model_info using the same matching breadth as _map_reasoning_parameter_with_default:
+        #   1) registry key (exact match)
+        #   2) provider-native model name (ModelInfo.model)
+        #   3) registry key suffix match (provider:model)
         model_info = None
-        if model in _model_registry.REGISTRY:
-            model_info = _model_registry.REGISTRY[model]
-        else:
-            for info in _model_registry.REGISTRY.values():
-                if info.model == model:
-                    model_info = info
-                    break
+
+        try:
+            # 1) Direct registry key match
+            model_info = _model_registry.REGISTRY.get(model)
+        except Exception:
+            model_info = None
+
+        # 2) Provider-native model name match
+        if model_info is None:
+            try:
+                for info in _model_registry.REGISTRY.values():
+                    if getattr(info, "model", None) == model:
+                        model_info = info
+                        break
+            except Exception:
+                model_info = None
+
+        # 3) Registry key suffix match (provider:model)
+        if model_info is None:
+            try:
+                for key, info in _model_registry.REGISTRY.items():
+                    if key.endswith(f":{model}") or key == model:
+                        model_info = info
+                        break
+            except Exception:
+                model_info = None
 
         if model_info is None:
             return value
@@ -1214,91 +1249,73 @@ class LLMHandler:
         """Map reasoning_effort to model-specific parameter with defaults."""
         if _model_registry is None:
             return kwargs
-        
-        # First try to find by registry key (most reliable)
-        if model in _model_registry.REGISTRY:
-            model_info = _model_registry.REGISTRY[model]
-            # Check if reasoning_parameter exists before accessing
-            if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
-                param_name, default_value = model_info.reasoning_parameter
-                mapped_kwargs = kwargs.copy()
-                
-                # Handle reasoning_effort parameter
-                if "reasoning_effort" in kwargs:
-                    # Use passed value, convert if needed
-                    reasoning_value = kwargs["reasoning_effort"]
-                    converted_value = self._convert_reasoning_value(model, reasoning_value)
-                    mapped_kwargs[param_name] = converted_value
-                    # Only pop the original key if we mapped it to a different param name.
-                    if param_name != "reasoning_effort":
-                        mapped_kwargs.pop("reasoning_effort", None)
-                    
-                    # DEBUG: Show reasoning parameter mapping
-                    logger.debug(
-                        f"[REASONING MAP] model={model} param_name={param_name} reasoning_value={reasoning_value} converted_value={converted_value}"
-                    )
-                elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
-                    # Use registry default when no value passed and capability is supported
-                    mapped_kwargs[param_name] = default_value
-                
-                return mapped_kwargs
-            else:
-                # No reasoning_parameter field - return kwargs unchanged
-                return kwargs
 
-        # Second try to find by exact model name
-        for model_info in _model_registry.REGISTRY.values():
-            if model_info.model == model:
-                # Check if reasoning_parameter exists before accessing
-                if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
-                    param_name, default_value = model_info.reasoning_parameter
-                    mapped_kwargs = kwargs.copy()
-                    
-                    # Handle reasoning_effort parameter
-                    if "reasoning_effort" in kwargs:
-                        # Use passed value, convert if needed
-                        reasoning_value = kwargs["reasoning_effort"]
-                        converted_value = self._convert_reasoning_value(model, reasoning_value)
-                        mapped_kwargs[param_name] = converted_value
-                        # Only pop the original key if we mapped it to a different param name.
-                        if param_name != "reasoning_effort":
-                            mapped_kwargs.pop("reasoning_effort", None)
-                    elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
-                        # Use registry default when no value passed and capability is supported
-                        mapped_kwargs[param_name] = default_value
-                    
-                    return mapped_kwargs
-                else:
-                    # No reasoning_parameter field - return kwargs unchanged
-                    return kwargs
+        # Resolve model_info using the same precedence as the previous implementation:
+        #   1) registry key (exact match)
+        #   2) provider-native model name (ModelInfo.model)
+        #   3) registry key pattern match (provider:model suffix, e.g., "openai:best" for model="best")
+        model_info = None
 
-        # Third try to find by registry key pattern (provider:model format)
-        for key, model_info in _model_registry.REGISTRY.items():
-            if key.endswith(f":{model}") or key == model:
-                # Check if reasoning_parameter exists before accessing
-                if hasattr(model_info, 'reasoning_parameter') and model_info.reasoning_parameter is not None:
-                    param_name, default_value = model_info.reasoning_parameter
-                    mapped_kwargs = kwargs.copy()
-                    
-                    # Handle reasoning_effort parameter
-                    if "reasoning_effort" in kwargs:
-                        # Use passed value, convert if needed
-                        reasoning_value = kwargs["reasoning_effort"]
-                        converted_value = self._convert_reasoning_value(model, reasoning_value)
-                        mapped_kwargs[param_name] = converted_value
-                        # Only pop the original key if we mapped it to a different param name.
-                        if param_name != "reasoning_effort":
-                            mapped_kwargs.pop("reasoning_effort", None)
-                    elif default_value is not None and model_info.capabilities.get("reasoning_effort", False):
-                        # Use registry default when no value passed and capability is supported
-                        mapped_kwargs[param_name] = default_value
-                    
-                    return mapped_kwargs
-                else:
-                    # No reasoning_parameter field - return kwargs unchanged
-                    return kwargs
+        # 1) Direct registry key match
+        try:
+            if model in _model_registry.REGISTRY:
+                model_info = _model_registry.REGISTRY[model]
+        except Exception:
+            model_info = None
 
-        return kwargs
+        # 2) Provider-native model name match
+        if model_info is None:
+            try:
+                for info in _model_registry.REGISTRY.values():
+                    if getattr(info, "model", None) == model:
+                        model_info = info
+                        break
+            except Exception:
+                model_info = None
+
+        # 3) Registry key suffix match (provider:model)
+        if model_info is None:
+            try:
+                for key, info in _model_registry.REGISTRY.items():
+                    if key.endswith(f":{model}") or key == model:
+                        model_info = info
+                        break
+            except Exception:
+                model_info = None
+
+        if model_info is None:
+            return kwargs
+
+        # Check if reasoning_parameter exists before accessing
+        if not hasattr(model_info, "reasoning_parameter") or model_info.reasoning_parameter is None:
+            return kwargs
+
+        param_name, default_value = model_info.reasoning_parameter
+        mapped_kwargs = kwargs.copy()
+
+        # Handle reasoning_effort parameter
+        if "reasoning_effort" in kwargs:
+            reasoning_value = kwargs["reasoning_effort"]
+            converted_value = self._convert_reasoning_value(model, reasoning_value)
+            mapped_kwargs[param_name] = converted_value
+            # Only pop the original key if we mapped it to a different param name.
+            if param_name != "reasoning_effort":
+                mapped_kwargs.pop("reasoning_effort", None)
+
+            # DEBUG: Show reasoning parameter mapping
+            logger.debug(
+                f"[REASONING MAP] model={model} param_name={param_name} reasoning_value={reasoning_value} converted_value={converted_value}"
+            )
+
+        elif (
+            default_value is not None
+            and getattr(model_info, "capabilities", {}).get("reasoning_effort", False)
+            and kwargs.get(param_name) is None
+        ):
+            # Use registry default when no value passed AND caller didn't already set the provider-specific param.
+            mapped_kwargs[param_name] = default_value
+
+        return mapped_kwargs
 
     # ---- lazy client getters (singletons inside the singleton) ----
     def _get_openai(self):
@@ -1345,6 +1362,45 @@ class LLMHandler:
                 ) from e
 
         return self._gemini
+
+    def _get_gemini_native(self):
+        """Return a native Gemini client (google-genai).
+
+        This client is ONLY used when the registry sets endpoint="gemini_sdk".
+        It is lazy-imported so existing OpenAI/Gemini-adapter flows do not
+        require the optional dependency.
+        """
+        if self._gemini_native is None:
+            try:
+                from google import genai  # type: ignore
+            except Exception as e:
+                raise LLMError(
+                    provider="gemini",
+                    kind="config",
+                    code="missing_dependency",
+                    message="Gemini native SDK not available. Install optional dependency: pip install google-genai",
+                ) from e
+
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise LLMError(
+                    provider="gemini",
+                    kind="config",
+                    code="missing_api_key",
+                    message="Gemini native SDK not configured: GEMINI_API_KEY is not set",
+                )
+
+            try:
+                self._gemini_native = genai.Client(api_key=api_key)
+            except Exception as e:  # pragma: no cover
+                raise LLMError(
+                    provider="gemini",
+                    kind="config",
+                    code="native_client_init_failed",
+                    message=f"Gemini native SDK client init failed: {e}",
+                ) from e
+
+        return self._gemini_native
 
     # ---- public API ----
     def create(
@@ -1599,7 +1655,7 @@ class LLMHandler:
         If a native Gemini SDK client is injected, we keep a best-effort fallback to
         `generate_content` / `generateContent`.
         """
-        client = self._get_gemini()
+        client = None
         resolved_model = self._resolve_model_name(model)
         # Prepare kwargs for the Gemini OpenAI-compatible adapter in one place.
         working_kwargs = self._prepare_gemini_adapter_kwargs(model, kwargs)
@@ -1615,363 +1671,303 @@ class LLMHandler:
         except Exception:
             endpoint = "chat_completions"
 
-        # Keep max_output_tokens consistent - let each provider handle conversion internally
-        # OpenAI chat completions will use model registry to determine correct parameter name
+        # Explicit routing: keep adapter default, and only use native SDK when configured.
+        if endpoint == "gemini_sdk":
+            client = self._get_gemini_native()
+        else:
+            client = self._get_gemini()
 
-        # --- OpenAI-adapter path (chat.completions) when endpoint is chat_completions ---
-        if endpoint == "chat_completions" and hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
-            create_fn = getattr(getattr(client.chat, "completions"), "create", None)
-            if callable(create_fn):
-                messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
+        # --- Native Gemini SDK path (endpoint == "gemini_sdk") ---
+        # IMPORTANT: Do not reuse adapter-only payload shaping (extra_body, OpenAI-style tool wrappers, etc.).
+        # Keep the outward return surface identical to the adapter path.
+        if endpoint == "gemini_sdk":
+            native_client = client
+            try:
+                model_key_dbg = None
+                try:
+                    mi = self._lookup_model_info_from_registry(model)
+                    if mi is not None:
+                        model_key_dbg = getattr(mi, "key", None)
+                except Exception:
+                    model_key_dbg = None
 
-                if not stream:
-                    # Apply capability filtering, parameter mapping, and token limit conversion
-                    call_kwargs = working_kwargs.copy()
-                    # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint.
-                    try:
-                        token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
-                        # Include both generic and Gemini-specific reasoning knobs so we can confirm mapping.
-                        reasoning_keys = ("reasoning_effort", "thinking_budget", "thinking_level")
-                        debug_keys = token_keys + reasoning_keys
-                        debug_part = {k: call_kwargs.get(k) for k in debug_keys if k in call_kwargs}
-                        extra_body = call_kwargs.get("extra_body")
-                        has_tools = bool(call_kwargs.get("tools"))
-                        logger.debug(
-                            "[GEMINI DEBUG] chat.completions.create model=%s stream=%s kwargs_subset=%s has_tools=%s has_extra_body=%s extra_body=%s",
-                            resolved_model,
-                            False,
-                            debug_part,
-                            has_tools,
-                            bool(extra_body),
-                            extra_body,
-                        )
-                    except Exception:
-                        pass
-                    # (Token parameter mapping now handled centrally in create())
-                    try:
-                        resp = create_fn(model=resolved_model, messages=messages, **call_kwargs)
-                    except openai.RateLimitError as e:  # type: ignore[attr-defined]
-                        # Map Gemini adapter rate limits into a structured LLMError
-                        # so callers (e.g., handle_chat) can surface a clear message.
-                        retry_after = None
-                        try:
-                            # Best-effort extraction from the error structure; safe if shape changes.
-                            data = getattr(e, "response", None)
-                            if data and hasattr(data, "json"):
-                                j = data.json()
-                                # Look for google.rpc.RetryInfo style hints if present.
-                                # Fallback to None if parsing fails.
-                                retry_after = None  # keep as placeholder; concrete parsing can be added later.
-                        except Exception:
-                            retry_after = None
-                        raise LLMError(
-                            provider="gemini",
-                            model=model,
-                            kind="rate_limit",
-                            code="rate_limit",
-                            message=str(e),
-                            retry_after=retry_after,
-                        ) from e
-                    except openai.NotFoundError as e:  # type: ignore[attr-defined]
-                        # Map Gemini adapter 404s (e.g., unknown model) into LLMError so callers
-                        # can surface a clear, structured message to users.
-                        raise LLMError(
-                            provider="gemini",
-                            model=model,
-                            kind="model_not_found",
-                            code="not_found",
-                            message=str(e),
-                            retry_after=None,
-                        ) from e
+                logger.info(
+                    "[GEMINI SDK CALL] registry_key=%s model_identifier=%s resolved_model=%s stream=%s",
+                    str(model_key_dbg or ""),
+                    str(model),
+                    str(resolved_model),
+                    bool(stream),
+                )
+            except Exception:
+                pass
 
-                    text = ""
-                    try:
-                        if resp and getattr(resp, "choices", None):
-                            choice0 = resp.choices[0]
-                            msg = getattr(choice0, "message", None)
-                            text = getattr(msg, "content", "") or ""
-                    except Exception:
-                        text = ""
+            def _extract_native_text(resp):
+                # Minimal text extraction for google-genai response
+                try:
+                    if hasattr(resp, "text") and isinstance(resp.text, str):
+                        return resp.text
+                    if hasattr(resp, "candidates"):
+                        candidates = getattr(resp, "candidates")
+                        if isinstance(candidates, list) and candidates:
+                            cand = candidates[0]
+                            if hasattr(cand, "content") and hasattr(cand.content, "parts"):
+                                parts = cand.content.parts
+                                if isinstance(parts, list) and parts:
+                                    # Return first text part
+                                    for p in parts:
+                                        if isinstance(p, str):
+                                            return p
+                                        if hasattr(p, "text") and isinstance(p.text, str):
+                                            return p.text
+                    # Fallback: str(resp)
+                    return str(resp)
+                except Exception:
+                    return ""
 
-                    usage_dict: Optional[Dict[str, int]] = None
-                    usage = getattr(resp, "usage", None)
-                    if usage is not None:
-                        try:
-                            if isinstance(usage, dict):
-                                usage_dict = {
-                                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                                    "completion_tokens": int(usage.get("completion_tokens") or 0),
-                                    "total_tokens": int(usage.get("total_tokens") or 0),
-                                }
-                            else:
-                                usage_dict = {
-                                    "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                                    "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                                    "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                                }
-                        except Exception:
-                            usage_dict = None
+            contents = input
+            if isinstance(input, list):
+                def _messages_to_text(messages: Any) -> str:
+                    if not isinstance(messages, list):
+                        return str(messages)
+                    parts: list[str] = []
+                    for m in messages:
+                        if not isinstance(m, dict):
+                            continue
+                        role = str(m.get("role") or "")
+                        content = m.get("content")
+                        if isinstance(content, list):
+                            joined = []
+                            for c in content:
+                                if isinstance(c, dict) and "text" in c:
+                                    joined.append(str(c.get("text") or ""))
+                                else:
+                                    joined.append(str(c))
+                            content_s = "".join(joined)
+                        else:
+                            content_s = "" if content is None else str(content)
+                        if role:
+                            parts.append(f"{role}: {content_s}")
+                        else:
+                            parts.append(content_s)
+                    return "\n".join([p for p in parts if p is not None])
+                contents = _messages_to_text(input)
 
-                    wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text, usage=usage)
-                    return AdapterResponse(
-                        output_text=text,
-                        model=model,
-                        usage=usage_dict,
-                        adapter_response=wrapped,
-                        model_response=getattr(wrapped, "model_response", None),
-                        finish_reason=self._extract_finish_reason(resp),
-                    )
+            sdk_kwargs: Dict[str, Any] = dict(kwargs or {}) if isinstance(kwargs, dict) else {}
+            try:
+                sdk_kwargs = self._filter_kwargs_by_capabilities(model, sdk_kwargs)
+                sdk_kwargs = self._map_reasoning_parameter_with_default(model, sdk_kwargs)
+            except Exception:
+                pass
+            try:
+                sdk_kwargs = self._apply_gemini_thinking_tax(model, sdk_kwargs)
+            except Exception:
+                pass
 
-                def event_gen() -> Iterator[AdapterEvent]:
-                    # Apply capability filtering, parameter mapping, and token limit conversion
-                    call_kwargs = working_kwargs.copy()
-                    # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint (streaming).
-                    try:
-                        token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
-                        # Include both generic and Gemini-specific reasoning knobs so we can confirm mapping.
-                        reasoning_keys = ("reasoning_effort", "thinking_budget", "thinking_level")
-                        debug_keys = token_keys + reasoning_keys
-                        debug_part = {k: call_kwargs.get(k) for k in debug_keys if k in call_kwargs}
-                        extra_body = call_kwargs.get("extra_body")
-                        has_tools = bool(call_kwargs.get("tools"))
-                        logger.debug(
-                            "[GEMINI DEBUG] chat.completions.create model=%s stream=%s kwargs_subset=%s has_tools=%s has_extra_body=%s extra_body=%s",
-                            resolved_model,
-                            True,
-                            debug_part,
-                            has_tools,
-                            bool(extra_body),
-                            extra_body,
-                        )
-                    except Exception:
-                        pass
-                    # (Token parameter mapping now handled centrally in create())
-                    try:
-                        stream_obj = create_fn(model=resolved_model, messages=messages, stream=True, **call_kwargs)
-                    except openai.RateLimitError as e:  # type: ignore[attr-defined]
-                        raise LLMError(
-                            provider="gemini",
-                            model=model,
-                            kind="rate_limit",
-                            code="rate_limit",
-                            message=str(e),
-                            retry_after=None,
-                        ) from e
-                    except openai.NotFoundError as e:  # type: ignore[attr-defined]
-                        raise LLMError(
-                            provider="gemini",
-                            model=model,
-                            kind="model_not_found",
-                            code="not_found",
-                            message=str(e),
-                            retry_after=None,
-                        ) from e
-                    for chunk in stream_obj:
-                        try:
-                            if not getattr(chunk, "choices", None):
+            cfg: Dict[str, Any] = {}
+            if sdk_kwargs.get("temperature") is not None:
+                cfg["temperature"] = sdk_kwargs.get("temperature")
+            if sdk_kwargs.get("top_p") is not None:
+                cfg["top_p"] = sdk_kwargs.get("top_p")
+            if sdk_kwargs.get("max_output_tokens") is not None:
+                cfg["max_output_tokens"] = sdk_kwargs.get("max_output_tokens")
+            elif sdk_kwargs.get("max_tokens") is not None:
+                cfg["max_output_tokens"] = sdk_kwargs.get("max_tokens")
+            elif sdk_kwargs.get("max_completion_tokens") is not None:
+                cfg["max_output_tokens"] = sdk_kwargs.get("max_completion_tokens")
+
+            # Map reasoning knobs into native Gemini thinking_config
+            try:
+                tc_kwargs: Dict[str, Any] = {}
+                if sdk_kwargs.get("include_thoughts") is not None:
+                    tc_kwargs["include_thoughts"] = bool(sdk_kwargs.get("include_thoughts"))
+                if sdk_kwargs.get("thinking_budget") is not None:
+                    tc_kwargs["thinking_budget"] = sdk_kwargs.get("thinking_budget")
+                if sdk_kwargs.get("thinking_level") is not None:
+                    tc_kwargs["thinking_level"] = sdk_kwargs.get("thinking_level")
+
+                # Gemini rejects using both at once; prefer level
+                if "thinking_budget" in tc_kwargs and "thinking_level" in tc_kwargs:
+                    tc_kwargs.pop("thinking_budget", None)
+
+                if tc_kwargs:
+                    from google.genai import types as _types  # local import
+                    cfg["thinking_config"] = _types.ThinkingConfig(**tc_kwargs)
+            except Exception:
+                pass
+
+            # Map OpenAI-style tools into native google-genai tool declarations.
+            try:
+                raw_tools = sdk_kwargs.get("tools") if isinstance(sdk_kwargs, dict) else None
+                if isinstance(raw_tools, list) and raw_tools:
+                    from google.genai import types as _types  # local import
+
+                    def _clean_schema(obj: Any) -> Any:
+                        if isinstance(obj, list):
+                            return [_clean_schema(x) for x in obj]
+                        if not isinstance(obj, dict):
+                            return obj
+                        forbidden = {"default", "title", "$schema", "additionalProperties", "additional_properties"}
+                        out: Dict[str, Any] = {}
+                        for k, v in obj.items():
+                            if k in forbidden:
                                 continue
-                            delta_obj = getattr(chunk.choices[0], "delta", None)
-                            delta_text = getattr(delta_obj, "content", None)
-                            if delta_text:
-                                yield AdapterEvent("response.output_text.delta", delta=delta_text)
+                            out[k] = _clean_schema(v)
+                        return out
+
+                    fdecls: list[Any] = []
+                    for t in raw_tools:
+                        if not isinstance(t, dict):
+                            continue
+                        func = t.get("function")
+                        if not isinstance(func, dict):
+                            # flattened form
+                            func = t
+                        name = func.get("name")
+                        if not name:
+                            continue
+                        desc = func.get("description") or ""
+                        params = func.get("parameters") or {"type": "OBJECT", "properties": {}}
+                        params = _clean_schema(params)
+                        # Normalize type casing for Schema
+                        try:
+                            if isinstance(params, dict) and isinstance(params.get("type"), str):
+                                params["type"] = str(params.get("type")).strip().upper()
+                        except Exception:
+                            pass
+                        try:
+                            schema = _types.Schema(**params) if isinstance(params, dict) else _types.Schema(type="OBJECT")
+                        except Exception:
+                            schema = _types.Schema(type="OBJECT")
+                        try:
+                            fdecls.append(_types.FunctionDeclaration(name=str(name), description=str(desc), parameters=schema))
                         except Exception:
                             continue
-                    yield AdapterEvent("response.output_text.done")
 
-                return event_gen()
+                    if fdecls:
+                        cfg["tools"] = [_types.Tool(function_declarations=fdecls)]
+            except Exception:
+                pass
 
-        # --- Native Gemini SDK fallback (only if an injected client supports it) ---
-        contents = input
-        # Apply capability filtering and parameter mapping for native Gemini SDK
-        final_kwargs = working_kwargs.copy()
-        if not stream:
-            if hasattr(client, "generate_content"):
-                resp = client.generate_content(model=resolved_model, contents=contents, **final_kwargs)
-            elif hasattr(client, "generateContent"):
-                resp = client.generateContent(model=resolved_model, contents=contents, **final_kwargs)
-            else:
-                raise LLMError(
-                    provider="gemini",
-                    model=model,
-                    kind="config",
-                    code="no_known_method",
-                    message="Gemini client does not expose chat.completions or a known native generate method",
+            # Disable Automatic Function Calling (AFC) so the model returns planned tool calls
+            # for the orchestrator to execute (two-step tool loop), instead of attempting AFC.
+            try:
+                from google.genai import types as _types  # local import
+                if hasattr(_types, "AutomaticFunctionCallingConfig"):
+                    cfg["automatic_function_calling"] = _types.AutomaticFunctionCallingConfig(disable=True)
+            except Exception:
+                pass
+
+            # Non-streaming: call, extract text, usage, and wrap as AdapterResponse.
+            if not stream:
+                resp = native_client.models.generate_content(
+                    model=resolved_model,
+                    contents=contents,
+                    config=cfg or None,
                 )
-            text = ""
-            if hasattr(resp, "text") and getattr(resp, "text", None):
-                text = resp.text
-            else:
+
+                text = _extract_native_text(resp)
+
+                # Usage: google-genai surfaces token counts via `usage_metadata`.
+                usage_like: Optional[Dict[str, int]] = None
                 try:
-                    candidates = getattr(resp, "candidates", None) or []
-                    if candidates:
-                        content = getattr(candidates[0], "content", None)
-                        parts = getattr(content, "parts", None) if content is not None else None
-                        if parts:
-                            text = "".join([getattr(p, "text", "") or "" for p in parts])
+                    um = getattr(resp, "usage_metadata", None)
+
+                    def _ug(obj: Any, name: str) -> Any:
+                        if obj is None:
+                            return None
+                        if isinstance(obj, dict):
+                            return obj.get(name)
+                        return getattr(obj, name, None)
+
+                    if um is not None:
+                        pt = _ug(um, "prompt_token_count")
+                        ct = _ug(um, "candidates_token_count")
+                        tt = _ug(um, "total_token_count")
+                        th = _ug(um, "thoughts_token_count")
+
+                        usage_like = {
+                            "prompt_tokens": int(pt or 0),
+                            "completion_tokens": int(ct or 0),
+                            "total_tokens": int(tt or (int(pt or 0) + int(ct or 0))),
+                        }
+                        # Keep thoughts tokens for debugging/telemetry when available.
+                        if th is not None:
+                            usage_like["thoughts_tokens"] = int(th or 0)
+                except Exception:
+                    usage_like = None
+
+                # Tool calls: with AFC disabled, google-genai returns planned calls in `function_calls`.
+                tool_items: list[dict] = []
+                try:
+                    fcs = getattr(resp, "function_calls", None)
+                    if isinstance(fcs, list):
+                        for fc in fcs:
+                            try:
+                                fname = getattr(fc, "name", None) or getattr(fc, "function_name", None)
+                                fargs = getattr(fc, "args", None)
+                                if fargs is None:
+                                    fargs = getattr(fc, "arguments", None)
+                                fid = getattr(fc, "id", None) or getattr(fc, "call_id", None)
+                                if fname:
+                                    tool_items.append(
+                                        {
+                                            "type": "function_call",
+                                            "name": str(fname),
+                                            "arguments": fargs,
+                                            "call_id": fid,
+                                        }
+                                    )
+                            except Exception:
+                                continue
                 except Exception:
                     pass
-            # Native SDK responses may not expose ChatCompletion `choices`; still wrap for Responses-like fields.
-            wrapped = self._wrap_gemini_chatcompletion_as_responses(resp=resp, output_text=text or "", usage=getattr(resp, "usage", None))
-            return AdapterResponse(
-                output_text=text or "",
-                model=model,
-                usage=None,
-                adapter_response=wrapped,
-                model_response=getattr(wrapped, "model_response", None),
-                finish_reason=None,
-            )
-        def native_event_gen() -> Iterator[AdapterEvent]:
-            if hasattr(client, "generate_content_stream"):
-                stream_iter = client.generate_content_stream(model=resolved_model, contents=contents, **final_kwargs)
-                for chunk in stream_iter:
-                    delta = chunk if isinstance(chunk, str) else getattr(chunk, "text", "") or ""
-                    if delta:
-                        yield AdapterEvent("response.output_text.delta", delta=delta)
-                yield AdapterEvent("response.output_text.done")
-                return
-            if hasattr(client, "generate_content"):
-                stream_iter = client.generate_content(model=resolved_model, contents=contents, stream=True, **final_kwargs)
-                for chunk in stream_iter:
-                    delta = chunk if isinstance(chunk, str) else getattr(chunk, "text", "") or ""
-                    if delta:
-                        yield AdapterEvent("response.output_text.delta", delta=delta)
-                yield AdapterEvent("response.output_text.done")
-                return
-            raise LLMError(
-                provider="gemini",
-                model=model,
-                kind="config",
-                code="no_known_streaming_method",
-                message="Gemini client does not expose a known streaming method",
-            )
-        return native_event_gen()
+                usage_dict: Optional[Dict[str, int]] = usage_like
 
-    def _gemini_embedding_call(self, *, model: str, input: Any, **kwargs: Any):
-        """Gemini embedding call via the OpenAI-compatible adapter client.
+                # Wrap the SDK response in an attribute-style Responses-like shim
+                # so downstream code can access adapter_response.output/usage consistently.
+                class _GeminiSDKResponsesWrapper:
+                    def __init__(
+                        self,
+                        *,
+                        output_text: str,
+                        output: Any,
+                        usage: Optional[Dict[str, int]],
+                        model: str,
+                        model_response: Any,
+                        finish_reason: Optional[str] = None,
+                    ) -> None:
+                        self.output_text = output_text
+                        self.output = output
+                        self.usage = usage
+                        self.model = model
+                        self.model_response = model_response
+                        self.finish_reason = finish_reason
 
-        Assumes `_get_gemini()` returns an OpenAI-style client pointed at a
-        Gemini adapter that exposes `client.embeddings.create(...)`.
+                output_list = tool_items + [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": text}],
+                    }
+                ]
 
-        The typical model is `gemini-embedding-001`. Dimensions are required
-        and must be explicitly provided by the caller.
-        """
-        if "dimensions" not in kwargs:
-            raise LLMError(
-                provider="gemini",
-                model=model,
-                kind="config",
-                code="missing_dimensions",
-                message="Gemini embeddings require explicit 'dimensions' parameter",
-            )
-        client = self._get_gemini()
-        resolved_model = self._resolve_model_name(model)
-        return client.embeddings.create(model=resolved_model, input=input, **kwargs)
+                wrapper = _GeminiSDKResponsesWrapper(
+                    output_text=text,
+                    output=output_list,
+                    usage=usage_like,
+                    model=resolved_model,
+                    model_response=resp,
+                    finish_reason=None,
+                )
 
-    def _wrap_gemini_chatcompletion_as_responses(self, *, resp: Any, output_text: str, usage: Any = None) -> Any:
-        """Wrap a Gemini ChatCompletion-style response to look like an OpenAI Responses object.
+                return AdapterResponse(
+                    output_text=text,
+                    model=resolved_model,
+                    usage=usage_dict,
+                    adapter_response=wrapper,
+                    model_response=resp,
+                    finish_reason=None,
+                )
 
-        === CANONICAL OUTPUTS (must use for all logic) ===
-        - resp.output_text → final user-visible text (PRIMARY for text extraction)
-        - resp.output → tool calls + structured content (PRIMARY for tool extraction)
-        - resp.usage → token usage statistics
-        - resp.raw → provider-native response (debug only)
-
-        === NON-CANONICAL OUTPUTS (compatibility/debug only) ===
-        - resp.choices → legacy ChatCompletions format, DO NOT USE for logic
-        - resp.choices[].message.tool_calls → legacy tool format, IGNORED
-
-        === STRUCTURE CREATED ===
-        output: [
-            {"type": "text", "text": "full response text"},           # Canonical text item
-            {"type": "function_call", "name": "...", "arguments": "...", "call_id": "..."}  # Canonical tool items
-        ]
-
-        === EXTRACTION CONTRACT ===
-        1. All tool calls must be read from resp.output (canonical)
-        2. All text must be read from resp.output_text first, then resp.output
-        3. Never use resp.choices for production logic
-        4. Treat resp.choices as debug/compatibility only
-
-        This wrapper ensures Gemini responses are compatible with OpenAI Responses API extraction functions.
-        """
-        
-        # DEBUG: Check if truncation happens before wrapper
-        logger.debug(f"[GEMINI WRAPPER] Input output_text length: {len(output_text)}")
-        logger.debug(f"[GEMINI WRAPPER] Input output_text preview: '{output_text[:200]}...'")
-        
-        # Also check original response content
-        finish_reason = None
-        try:
-            if resp and getattr(resp, "choices", None):
-                choice0 = resp.choices[0]
-                finish_reason = getattr(choice0, "finish_reason", None)
-                msg = getattr(choice0, "message", None)
-                original_content = getattr(msg, "content", "") or ""
-                logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content length: {len(original_content)}")
-                logger.debug(f"[GEMINI WRAPPER] Original choices[0].message.content preview: '{original_content[:200]}...'")
-        except Exception as e:
-            logger.debug(f"[GEMINI WRAPPER] Could not check original content: {e}")
-
-        # Collect tool calls from ChatCompletion message.tool_calls (NON-CANONICAL source)
-        tool_items: list[dict] = []
-        try:
-            choices = getattr(resp, "choices", None)
-            if isinstance(choices, list) and choices:
-                msg = getattr(choices[0], "message", None)
-                tc = getattr(msg, "tool_calls", None)
-                if isinstance(tc, list):
-                    for t in tc:
-                        ttype = getattr(t, "type", None)
-                        if ttype != "function":
-                            continue
-                        func = getattr(t, "function", None)
-                        name = getattr(func, "name", None) if func is not None else None
-                        arguments = getattr(func, "arguments", None) if func is not None else None
-                        call_id = getattr(t, "id", None)
-                        if name:
-                            tool_items.append({
-                                "type": "function_call",
-                                "name": name,
-                                "arguments": arguments,
-                                "call_id": call_id,
-                            })
-        except Exception:
-            tool_items = []
-
-        # Build canonical Responses API output structure (CANONICAL output)
-        output: list[dict] = []
-        
-        # Add text as direct canonical item (not nested in message.content)
-        if isinstance(output_text, str) and output_text:
-            output.append({"type": "text", "text": output_text})
-        
-        # Add tool calls as direct canonical items
-        output.extend(tool_items)
-
-        class _GeminiResponsesWrapper:
-            def __init__(self, *, output_text: str, output: list[dict], usage: Any, choices: Any, model_response: Any):
-                # === CANONICAL FIELDS (must use for all logic) ===
-                self.output_text = output_text      # Canonical: final text
-                self.output = output                # Canonical: tools + content
-                self.usage = usage                  # Canonical: tokens
-                
-                # === NON-CANONICAL FIELDS (compatibility/debug only) ===
-                self.choices = choices              # Legacy: DO NOT USE for logic
-                # Provider-native model response (e.g., Gemini ChatCompletion or native SDK response)
-                self.model_response = model_response
-
-            # Minimal dict-like compatibility for existing debug/test code.
-            def get(self, name: str, default: Any = None) -> Any:
-                return getattr(self, name, default)
-
-        return _GeminiResponsesWrapper(
-            output_text=output_text or "",      # Canonical text field
-            output=output,                      # Canonical structured output
-            usage=usage,                        # Canonical usage field
-            choices=getattr(resp, "choices", None),  # Non-canonical compatibility
-            model_response=resp,                # Provider-native debug
-        )
-
-
-# Singleton instance (optional)
+# Singleton instance (kept for backwards-compatibility with existing imports)
 llm_handler = LLMHandler()

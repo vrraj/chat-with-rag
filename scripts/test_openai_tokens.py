@@ -115,6 +115,34 @@ def test_openai_token_parameters():
         except Exception as e:
             print(f"  ❌ max_completion_tokens: ERROR - {e}")
         
+        # Additional streaming test for reasoning model to exercise reasoning_effort mapping
+        if model == "o3-mini":
+            try:
+                print("  🔹 Testing STREAMING with reasoning_effort='medium'...")
+                stream = handler.create(
+                    provider="openai",
+                    model=model,
+                    input="Give a step-by-step explanation of how to solve a quadratic equation.",
+                    max_output_tokens=200,
+                    reasoning_effort="medium",
+                    stream=True,
+                )
+
+                full_text = ""
+                for event in stream:
+                    etype = getattr(event, "type", None)
+                    if etype == "response.output_text.delta":
+                        chunk = getattr(event, "delta", "") or ""
+                        print(chunk, end="", flush=True)
+                        full_text += chunk
+                    elif etype == "response.output_text.done":
+                        print("\n  ✅ Streaming completed")
+                        break
+
+                print(f"  📏 Streaming response length: {len(full_text)} chars")
+            except Exception as e:
+                print(f"  ❌ STREAMING with reasoning_effort: ERROR - {e}")
+        
         print("-" * 60)
 
 if __name__ == "__main__":

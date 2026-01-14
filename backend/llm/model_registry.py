@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple, Literal
 
 Provider = Literal["openai", "gemini"]
-Endpoint = Literal["responses", "chat_completions", "embeddings"]
+Endpoint = Literal["responses", "chat_completions", "embeddings", "gemini_sdk"]
 
 @dataclass(frozen=True)
 class Pricing:
@@ -225,6 +225,42 @@ REGISTRY: Dict[str, ModelInfo] = {
         },
         max_tokens_parameter="max_completion_tokens",  # Can also be max_output_tokens or max_tokens 
         reasoning_parameter=("thinking_level", "minimal"),  
+        thinking_tax={
+            "effort_map": {
+                "none": {"reserve_ratio": 0.0},
+                "minimal": {"reserve_ratio": 0.25},
+                "low": {"reserve_ratio": 0.30},
+                "medium": {"reserve_ratio": 0.50},
+                "high": {"reserve_ratio": 0.80},
+            },
+            "param_map": {
+                "none": "minimal",
+                "minimal": "minimal",
+                "low": "low",
+                "medium": "medium",
+                "high": "high",
+            },
+            "kind": "level",
+        },
+    ),
+    # Native Gemini SDK variant of gemini:fast-3-flash (same underlying model and config)
+    # This is opt-in and uses endpoint="gemini_sdk" so that llm_handler routes
+    # through the google-genai client instead of the OpenAI-compatible adapter.
+    "gemini:native-sdk-fast-3-flash": ModelInfo(
+        key="gemini:native-sdk-fast-3-flash",
+        provider="gemini",
+        model="models/gemini-3-flash-preview",
+        endpoint="gemini_sdk",
+        pricing=Pricing(input_per_mm=0.50, output_per_mm=3.00),  # same rates as gemini:fast-3-flash
+        capabilities={
+            "tools": True,
+            "stream": True,
+            "temperature": True,
+            "reasoning_effort": True,
+            "top_p": True,
+        },
+        max_tokens_parameter="max_completion_tokens",
+        reasoning_parameter=("thinking_level", "minimal"),
         thinking_tax={
             "effort_map": {
                 "none": {"reserve_ratio": 0.0},
