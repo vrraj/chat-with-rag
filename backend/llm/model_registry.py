@@ -157,7 +157,10 @@ REGISTRY: Dict[str, ModelInfo] = {
         model="gemini-embedding-001",
         endpoint="embeddings",
         pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),  # use your real rates
-        capabilities={"dimensions": 1536},
+        capabilities={
+            "dimensions": 1536,
+            "normalize_embedding": True,
+        },
         max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
     # Native Gemini SDK embedding profile. This is opt-in and used by the
@@ -173,6 +176,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "dimensions": 1536,
             "task_type": "RETRIEVAL_DOCUMENT",
             "output_dimensionality": 1536,
+            "normalize_embedding": True,
         },
         max_tokens_parameter="max_tokens",
     ),

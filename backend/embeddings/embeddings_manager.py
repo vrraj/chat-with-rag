@@ -100,6 +100,13 @@ class EmbeddingsManager:
                 }
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
+                    # Apply config-driven normalization flag so that Gemini
+                    # embeddings are treated consistently for both indexing
+                    # and query-time embeddings.
+                    try:
+                        kwargs["normalize_embedding"] = bool(settings.gemini_embedding_normalize)
+                    except Exception:
+                        pass
 
                 # DEBUG: Log the resolved embedding provider/model/dimensions
                 try:

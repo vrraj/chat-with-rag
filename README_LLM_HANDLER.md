@@ -20,6 +20,201 @@ The LLM Handler system provides a unified interface for multiple LLM providers (
    - Capability-based parameter filtering
    - 4-tier model lookup strategy
 
+## Pricing Helpers and Model Registry
+
+`LLMHandler` exposes thin helper methods for accessing pricing information from the central `model_registry` without duplicating lookup logic in callers:
+
+- `get_pricing_for_model_key(model_key: str | None)`
+  - Looks up `ModelInfo` by registry key (e.g. `"openai:fast"`, `"gemini:embed"`).
+  - Returns the attached `Pricing` object (`input_per_mm`, `output_per_mm`, `cached_input_per_mm`) or `None`.
+- `get_pricing_for_model(provider: str | None, model: str | None, model_key: str | None)`
+  - Uses the same resolution strategy as the core handler (`provider` + `model` + `model_key`).
+  - Returns the resolved model's `Pricing` or `None`.
+
+These helpers are used by:
+
+- `backend/chat/chat_manager.py` to compute per-stage chat costs (rewrite, rerank, summary, inference, tool synthesis).
+- `backend/main.py` to compute embedding ingestion and estimate costs via `_get_embedding_rate_per_mm_tokens()`.
+
+All per-stage and embedding costs are now driven by the registry `Pricing` entries. Legacy per-stage `*_cost_per_MM_tokens_*` config fields were removed from `Settings` as obsolete.
+
+## Embedding Routing and Config
+
+### Embedding Settings (config.py)
+
+Embedding configuration in `backend/core/config.py` is grouped and kept in sync with the registry:
+
+- `embedding_model`: provider selector (`"openai"` or `"gemini"`) used for both indexing and query-time embeddings.
+- `openai_embedding_model`: default OpenAI embedding model (e.g. `"text-embedding-3-small"`).
+- `embedding_model_key`: registry key for the active embedding profile (e.g. `"openai:embed_small"`, `"gemini:embed"`).
+- `gemini_embedding_model`, `gemini_embedding_dimensions`: Gemini embedding model id and dimensions.
+- `vector_size`: Qdrant collection vector size (must match the active embedding model's dimensions).
+- `cost_basis_tokens`: global cost basis (tokens per 1M) used for cost math.
+- `embedding_batch_size_*`: provider-specific embedding batch sizes.
+
+The invariant is:
+
+- `vector_size` == embedding dimensions in use (from `embedding_model_key`'s `capabilities["dimensions"]`).
+- For Gemini, `gemini_embedding_dimensions` and `vector_size` must match the registry entry for the active embedding key.
+
+### Embedding Cost Refactor
+
+`backend/main.py` uses `_get_embedding_rate_per_mm_tokens()` to compute the embedding cost rate:
+
+- First attempts to resolve `settings.embedding_model_key` via `llm_handler.get_pricing_for_model_key` and use `pricing.input_per_mm`.
+- Falls back to `0.0` when pricing is missing or misconfigured.
+- All embedding cost calculations (PDF ingestion, URL ingestion, estimates) now route through this helper; the old flat `embedding_cost_per_MM_tokens` setting has been removed.
+
+## Embeddings API: Adapter vs Native SDK
+
+`LLMHandler.create_embedding` provides a provider-agnostic entry point for embeddings:
+
+```python
+resp = llm_handler.create_embedding(
+    provider="openai" | "gemini" | "gemini_native",
+    model="...",  # registry key or provider-native id
+    input=[...],   # text or list[str]
+    **kwargs,
+)
+```
+
+Routing rules:
+
+- `provider="openai"`
+  - Calls `_openai_embedding_call`, which uses the OpenAI `embeddings.create` API.
+- `provider="gemini"`
+  - Looks up `model` in `model_registry`.
+  - If the resolved `ModelInfo.endpoint == "gemini_sdk"`, routes to the native Gemini SDK embedding path (`_gemini_native_embedding_call`).
+  - Otherwise, routes to the OpenAI-compatible adapter path (`_gemini_embedding_call`), which in turn uses the Gemini OpenAI-style `embeddings.create` endpoint.
+- `provider="gemini_native"`
+  - Explicit override to use `_gemini_native_embedding_call` (kept for experiments/tests); not used in production routing.
+
+### Model Registry Entries
+
+Embedding profiles are defined in `backend/llm/model_registry.py`:
+
+- Adapter-based Gemini embedding profile:
+
+  ```python
+  "gemini:embed": ModelInfo(
+      key="gemini:embed",
+      provider="gemini",
+      model="gemini-embedding-001",
+      endpoint="embeddings",
+      pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),
+      capabilities={"dimensions": 1536},
+      max_tokens_parameter="max_tokens",
+  )
+  ```
+
+- Native Gemini SDK embedding profile:
+
+  ```python
+  "gemini:native-embed": ModelInfo(
+      key="gemini:native-embed",
+      provider="gemini",
+      model="gemini-embedding-001",  # native embedding model id
+      endpoint="gemini_sdk",
+      pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),
+      capabilities={
+          "dimensions": 1536,
+          "task_type": "RETRIEVAL_DOCUMENT",
+          "output_dimensionality": 1536,
+          "normalize_embedding": True,
+      },
+      max_tokens_parameter="max_tokens",
+  )
+  ```
+
+This profile is opt-in and used by the native SDK embedding path when `provider="gemini"` and `model="gemini:native-embed"`.
+
+## Native Gemini SDK Embeddings
+
+### `_gemini_native_embedding_call`
+
+`LLMHandler._gemini_native_embedding_call` implements the native Gemini SDK embeddings API:
+
+- Uses `_get_gemini_native()` to obtain a `google-genai` client.
+- Resolves `model` via `_resolve_model_name` (registry keys can map to provider-native ids).
+- Treats `input` as either a single string or a list of strings (`contents`).
+- Derives default embedding config from `ModelInfo.capabilities`:
+  - `task_type` (e.g. `"RETRIEVAL_DOCUMENT"`)
+  - `output_dimensionality` (e.g. `1536`)
+  - `dimensions`
+- Allows call-time overrides via kwargs:
+
+  ```python
+  task_type = kwargs.pop("task_type", default_task_type)
+  output_dim = kwargs.pop("output_dimensionality", default_output_dim)
+  normalize_embedding = bool(kwargs.pop("normalize_embedding", False))
+  ```
+
+- Builds a native `EmbedContentConfig`:
+
+  ```python
+  from google.genai import types as _types
+
+  cfg = _types.EmbedContentConfig(
+      task_type=task_type,
+      output_dimensionality=output_dim,
+  )
+  ```
+
+- Calls the native SDK:
+
+  ```python
+  resp = client.models.embed_content(
+      model=resolved_model,
+      contents=contents,
+      config=cfg,
+  )
+  ```
+
+- Extracts vectors from `resp.embeddings[*].values` and builds an OpenAI-style embeddings response:
+
+  ```python
+  class _EmbeddingItem:
+      def __init__(self, embedding):
+          self.embedding = embedding
+
+  class _EmbeddingResponse:
+      def __init__(self, vectors, usage_obj):
+          self.data = [_EmbeddingItem(v) for v in vectors]
+          self.usage = usage_obj
+  ```
+
+- Builds a minimal usage shim from `resp.usage_metadata` when available (prompt and total token counts).
+
+### Optional L2 Normalization
+
+For non-3072 dimensions, Google recommends L2-normalizing embeddings (e.g. 768, 1536) so that similarity compares vector direction, not magnitude. The native path supports this via the `normalize_embedding` flag:
+
+```python
+resp = llm_handler.create_embedding(
+    provider="gemini",
+    model="gemini:native-embed",
+    input="...",
+    normalize_embedding=True,
+)
+```
+
+When `normalize_embedding=True`, each embedding vector is L2-normalized client-side (using NumPy) before being returned. If NumPy is not available or normalization fails, the handler silently falls back to raw embeddings.
+
+### Testing Native Embeddings
+
+The script `scripts/test_gemini_embeddings.py` provides manual tests for both adapter-based and native Gemini embeddings:
+
+- `test_adapter_embedding()`
+  - Calls `llm_handler.create_embedding(provider="gemini", model="gemini-embedding-001", dimensions=768, ...)`.
+  - Verifies the adapter returns OpenAI-style embeddings with the expected length.
+- `test_native_via_llm_handler()`
+  - Calls `llm_handler.create_embedding(provider="gemini", model="gemini:native-embed", task_type=..., output_dimensionality=..., normalize_embedding=...)`.
+  - Exercises the native SDK path, prints the effective `EmbedContentConfig`, and inspects the returned embedding length/values.
+- `test_native_count_tokens()` and `test_native_embedding()`
+  - Use the `google-genai` client directly to validate `count_tokens` and `embed_content` behavior for the configured embedding model.
+
+These tests are intended for manual verification and debugging; they do not affect production behavior.
+
 ## LLMResult Shape and Usage
 
 ### LLMResult Structure

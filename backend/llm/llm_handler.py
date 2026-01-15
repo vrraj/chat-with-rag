@@ -1582,17 +1582,20 @@ class LLMHandler:
         # allow call-time overrides via kwargs.
         default_task_type = None
         default_output_dim = None
+        default_normalize = False
         try:
             mi = self._lookup_model_info_from_registry(model)
             caps = getattr(mi, "capabilities", {}) or {}
             default_task_type = caps.get("task_type")
             default_output_dim = caps.get("output_dimensionality") or caps.get("dimensions")
+            default_normalize = bool(caps.get("normalize_embedding", False))
         except Exception:
             default_task_type = None
             default_output_dim = None
 
         task_type = kwargs.pop("task_type", default_task_type)
         output_dim = kwargs.pop("output_dimensionality", default_output_dim)
+        normalize_embedding = bool(kwargs.pop("normalize_embedding", default_normalize))
 
         cfg = None
         if task_type is not None or output_dim is not None:
@@ -1649,6 +1652,26 @@ class LLMHandler:
                         vectors.append(list(vals))
         except Exception:
             vectors = []
+
+        # Optional L2 normalization for non-3072 dimensions when requested.
+        # Google recommends normalizing 768/1536 embeddings so comparisons
+        # rely on vector direction, not magnitude.
+        if normalize_embedding and vectors:
+            try:
+                import numpy as _np  # type: ignore
+
+                normalized: list[list[float]] = []
+                for v in vectors:
+                    arr = _np.asarray(v, dtype="float32")
+                    n = float(_np.linalg.norm(arr))
+                    if n > 0.0:
+                        arr = arr / n
+                    normalized.append(arr.tolist())
+                vectors = normalized
+            except Exception:
+                # If numpy isn't available or normalization fails, fall back
+                # to raw embeddings without raising.
+                pass
 
         # Build a minimal usage shim from usage_metadata if available
         usage = None
@@ -2362,6 +2385,11 @@ class LLMHandler:
                 code="missing_dimensions",
                 message="Gemini embeddings require explicit 'dimensions' parameter",
             )
+        # Optional client-side L2 normalization of adapter embeddings. This is
+        # opt-in and controlled via the normalize_embedding kwarg so existing
+        # callers remain unchanged unless they explicitly request it.
+        normalize_embedding = bool(kwargs.pop("normalize_embedding", False))
+
         client = self._get_gemini()
         resolved_model = self._resolve_model_name(model)
         resp = client.embeddings.create(model=resolved_model, input=input, **kwargs)
@@ -2387,6 +2415,47 @@ class LLMHandler:
                 setattr(resp, "usage", _EmbeddingUsageShim(prompt_tokens=approx, total_tokens=approx))
             except Exception:
                 # If we cannot attach usage (e.g., immutable type), just leave as-is.
+                pass
+
+        # Optional pure-Python L2 normalization of adapter embeddings when
+        # normalize_embedding is requested. This keeps the response shape the
+        # same (OpenAI CreateEmbeddingResponse) but adjusts vector direction
+        # to unit norm.
+        if normalize_embedding:
+            try:
+                import math as _math
+
+                data = getattr(resp, "data", None)
+                if isinstance(data, list):
+                    for item in data:
+                        vec = getattr(item, "embedding", None)
+                        if isinstance(vec, list) and vec:
+                            s = 0.0
+                            for x in vec:
+                                try:
+                                    fx = float(x)
+                                except Exception:
+                                    fx = 0.0
+                                s += fx * fx
+                            n = _math.sqrt(s)
+                            if n > 0.0:
+                                item.embedding = [float(x) / n for x in vec]
+                    # Log a single example embedding slice after normalization
+                    # for debugging (length and first 10 values).
+                    try:
+                        if data:
+                            v0 = getattr(data[0], "embedding", None)
+                            if isinstance(v0, list) and v0:
+                                logger.debug(
+                                    "[GEMINI ADAPTER EMBED] normalized embedding model=%s len=%s first10=%s",
+                                    resolved_model,
+                                    len(v0),
+                                    v0[:10],
+                                )
+                    except Exception:
+                        pass
+            except Exception:
+                # If normalization fails, fall back to raw vectors.
                 pass
 
         return resp

@@ -165,6 +165,15 @@ class QdrantDB:
                 dims = spec.get("dimensions")
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
+                    # Apply the same config-driven normalization flag used for
+                    # indexing so that Gemini query embeddings are treated
+                    # consistently with content embeddings.
+                    try:
+                        from backend.core.config import settings as _settings  # type: ignore
+
+                        kwargs["normalize_embedding"] = bool(getattr(_settings, "gemini_embedding_normalize", False))
+                    except Exception:
+                        pass
                 response = llm_handler.embeddings.create(**kwargs)
             # Record token usage if the SDK returns it
             try:

@@ -35,56 +35,69 @@ def test_adapter_embedding() -> None:
     text = "Hello from Gemini embeddings"
     dimensions = 768  # must match what your adapter/backend expects
 
-    print(f"Requesting Gemini embedding (adapter): model={model!r}, dimensions={dimensions}, text={text!r}")
+    print(f"Requesting Gemini embedding (adapter, no normalization): model={model!r}, dimensions={dimensions}, text={text!r}")
 
-    resp: Any = llm_handler.create_embedding(
+    resp_no: Any = llm_handler.create_embedding(
         provider="gemini",
         model=model,
         input=text,
         dimensions=dimensions,
     )
 
-    # The exact response shape depends on your adapter; this is a best-effort
-    # inspection that should work with OpenAI-style embeddings.create.
-    print("Raw embedding response type:", type(resp))
+    print("Raw embedding response type (no_norm):", type(resp_no))
 
-    # Dump high-level structure
+    print(f"\nRequesting Gemini embedding (adapter, with normalization): model={model!r}, dimensions={dimensions}, text={text!r}")
+    resp_yes: Any = llm_handler.create_embedding(
+        provider="gemini",
+        model=model,
+        input=text,
+        dimensions=dimensions,
+        normalize_embedding=True,
+    )
+
+    print("Raw embedding response type (norm):", type(resp_yes))
+
+    # Inspect first embedding and L2 norms before/after normalization using
+    # a tiny pure-Python norm helper.
     try:
-        from pprint import pprint
+        import math
 
-        print("\n=== Top-level attributes ===")
-        top_level = {
-            "has_data": hasattr(resp, "data"),
-            "has_usage": hasattr(resp, "usage"),
-            "dir": [n for n in dir(resp) if not n.startswith("__")],
-        }
-        pprint(top_level)
+        def _first_vec(r: Any) -> list[float] | None:
+            data = getattr(r, "data", None)
+            if isinstance(data, list) and data:
+                item0 = data[0]
+                return getattr(item0, "embedding", None)
+            return None
 
-        print("\n=== usage field (if any) ===")
-        usage = getattr(resp, "usage", None)
-        pprint(usage)
+        def _l2_norm(vec: list[float]) -> float:
+            s = 0.0
+            for x in vec:
+                try:
+                    fx = float(x)
+                except Exception:
+                    fx = 0.0
+                s += fx * fx
+            return math.sqrt(s)
 
-        print("\n=== data[0] summary ===")
-        data = getattr(resp, "data", None)
-        if isinstance(data, list) and data:
-            item0 = data[0]
-            summary = {
-                "type": type(item0),
-                "has_embedding": hasattr(item0, "embedding"),
-                "keys_or_dir": getattr(item0, "keys", None)() if hasattr(item0, "keys") else [n for n in dir(item0) if not n.startswith("__")],
-            }
-            pprint(summary)
+        v_no = _first_vec(resp_no)
+        v_yes = _first_vec(resp_yes)
 
-            embedding = getattr(item0, "embedding", None)
-            if embedding is not None:
-                print("First embedding length:", len(embedding))
-                print("First 8 embedding values:", embedding[:8])
+        if v_no is not None:
+            print("First embedding length (adapter no_norm):", len(v_no))
+            print("First 8 embedding values (adapter no_norm):", v_no[:8])
+            print("L2 norm (adapter no_norm):", _l2_norm(v_no))
         else:
-            print("Response has no 'data' list; raw response:")
-            pprint(resp)
+            print("No embedding found in adapter no_norm response")
+
+        if v_yes is not None:
+            print("First embedding length (adapter norm):", len(v_yes))
+            print("First 8 embedding values (adapter norm):", v_yes[:8])
+            print("L2 norm (adapter norm):", _l2_norm(v_yes))
+        else:
+            print("No embedding found in adapter norm response")
+
     except Exception as e:  # pragma: no cover - debug helper
-        print("Error while inspecting embedding response:", e)
-        print("Raw response:", resp)
+        print("Error while inspecting adapter embedding responses:", e)
 
 
 def test_native_via_llm_handler() -> None:
@@ -103,9 +116,10 @@ def test_native_via_llm_handler() -> None:
     task_type = "RETRIEVAL_DOCUMENT"
     output_dimensionality = 1536
 
-    print(f"\nRequesting Gemini native embedding via llm_handler: model={model!r}, text={text!r}")
+    print(f"\nRequesting Gemini native embedding via llm_handler (no normalization): model={model!r}, text={text!r}")
 
-    resp: Any = llm_handler.create_embedding(
+    # First call: no normalization
+    resp_no_norm: Any = llm_handler.create_embedding(
         provider="gemini",  # endpoint=="gemini_sdk" for this key routes to native SDK
         model=model,
         input=text,
@@ -113,44 +127,70 @@ def test_native_via_llm_handler() -> None:
         output_dimensionality=output_dimensionality,
     )
 
-    print("Raw native-embedding response type:", type(resp))
+    print("Raw native-embedding response type (no_norm):", type(resp_no_norm))
 
+    # Second call: with normalize_embedding=True
+    print(f"\nRequesting Gemini native embedding via llm_handler (with normalization): model={model!r}, text={text!r}")
+    resp_norm: Any = llm_handler.create_embedding(
+        provider="gemini",
+        model=model,
+        input=text,
+        task_type=task_type,
+        output_dimensionality=output_dimensionality,
+        normalize_embedding=True,
+    )
+
+    print("Raw native-embedding response type (norm):", type(resp_norm))
+
+    # Inspect shapes and (optionally) L2 norms before/after normalization.
     try:
         from pprint import pprint
+        import numpy as np  # type: ignore
 
-        print("\n=== Native via llm_handler: top-level attributes ===")
-        top_level = {
-            "has_data": hasattr(resp, "data"),
-            "has_usage": hasattr(resp, "usage"),
-            "dir": [n for n in dir(resp) if not n.startswith("__")],
+        def _get_first_embedding_vec(r: Any) -> list[float] | None:
+            data = getattr(r, "data", None)
+            if isinstance(data, list) and data:
+                item0 = data[0]
+                return getattr(item0, "embedding", None)
+            return None
+
+        v_no = _get_first_embedding_vec(resp_no_norm)
+        v_yes = _get_first_embedding_vec(resp_norm)
+
+        print("\n=== Native via llm_handler: top-level attributes (no_norm) ===")
+        top_level_no = {
+            "has_data": hasattr(resp_no_norm, "data"),
+            "has_usage": hasattr(resp_no_norm, "usage"),
+            "dir": [n for n in dir(resp_no_norm) if not n.startswith("__")],
         }
-        pprint(top_level)
+        pprint(top_level_no)
 
-        print("\n=== Native via llm_handler: usage field (if any) ===")
-        usage = getattr(resp, "usage", None)
-        pprint(usage)
+        print("\n=== Native via llm_handler: top-level attributes (norm) ===")
+        top_level_yes = {
+            "has_data": hasattr(resp_norm, "data"),
+            "has_usage": hasattr(resp_norm, "usage"),
+            "dir": [n for n in dir(resp_norm) if not n.startswith("__")],
+        }
+        pprint(top_level_yes)
 
-        print("\n=== Native via llm_handler: data[0] summary ===")
-        data = getattr(resp, "data", None)
-        if isinstance(data, list) and data:
-            item0 = data[0]
-            summary = {
-                "type": type(item0),
-                "has_embedding": hasattr(item0, "embedding"),
-                "dir": [n for n in dir(item0) if not n.startswith("__")],
-            }
-            pprint(summary)
-
-            embedding = getattr(item0, "embedding", None)
-            if embedding is not None:
-                print("First embedding length (native):", len(embedding))
-                print("First 8 embedding values (native):", embedding[:8])
+        if v_no is not None:
+            arr_no = np.asarray(v_no, dtype="float32")
+            print("First embedding length (no_norm):", len(v_no))
+            print("First 8 embedding values (no_norm):", v_no[:8])
+            print("L2 norm (no_norm):", float(np.linalg.norm(arr_no)))
         else:
-            print("Native via llm_handler response has no 'data' list; raw response:")
-            pprint(resp)
+            print("No embedding found in no_norm response")
+
+        if v_yes is not None:
+            arr_yes = np.asarray(v_yes, dtype="float32")
+            print("First embedding length (norm):", len(v_yes))
+            print("First 8 embedding values (norm):", v_yes[:8])
+            print("L2 norm (norm):", float(np.linalg.norm(arr_yes)))
+        else:
+            print("No embedding found in norm response")
+
     except Exception as e:  # pragma: no cover - debug helper
-        print("Error while inspecting native llm_handler embedding response:", e)
-        print("Raw response:", resp)
+        print("Error while inspecting native llm_handler embedding responses:", e)
 
 
 def test_native_count_tokens() -> None:
@@ -237,10 +277,10 @@ def test_native_embedding() -> None:
 
 
 def main() -> None:
-    test_adapter_embedding()
+    # test_adapter_embedding(). # enable to test OpenAI compatible adapter
     test_native_via_llm_handler()
-    test_native_count_tokens()
-    test_native_embedding()
+    # test_native_count_tokens() # enable to test native count_tokens
+    #test_native_embedding() # enable to test native embedding without llm_handler
 
 
 if __name__ == "__main__":

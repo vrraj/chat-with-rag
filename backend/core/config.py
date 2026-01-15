@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "gemini-embedding-001"
     # Must match vector_size and registry capabilities["dimensions"]
     gemini_embedding_dimensions: int = 1536
+    # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
+    # This should be applied consistently for both indexing and query embeddings.
+    gemini_embedding_normalize: bool = True
 
     # Cost basis for per‑MM pricing
     cost_basis_tokens: int = 1_000_000
