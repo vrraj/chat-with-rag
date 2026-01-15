@@ -254,6 +254,75 @@ Choose your provider(s) and set up appropriate API keys:
 > - OpenAI for embeddings (default sample data compatibility)
 > - Gemini for inference models (thinking capabilities)
 
+### 2.1.6 LLM Providers, Models, and Endpoints
+
+The application uses a centralized **model registry** (`backend/llm/model_registry.py`) and **LLM handler** (`backend/llm/llm_handler.py`) to route requests to the correct provider, model, and API surface. You typically configure models via registry keys (e.g. `openai:fast`, `gemini:fast`, `gemini:embed`).
+
+#### OpenAI Provider
+
+Routed through the native OpenAI Python client using the **Responses API**:
+
+- **Chat / Completions**
+  - Endpoint: `responses.create` (internally `_openai_call` in `LLMHandler`).
+  - Example registry profiles:
+    - `openai:fast` → `gpt-4o-mini` (chat/inference, tools, streaming).
+    - `openai:best` → `gpt-4o` (higher-quality chat/inference).
+    - `openai:reasoning` → `o3-mini` (reasoning tasks when enabled).
+
+- **Embeddings**
+  - Endpoint: `client.embeddings.create(model=..., input=...)`.
+  - Example registry profiles:
+    - `openai:embed_small` → `text-embedding-3-small`.
+    - `openai:embed_large` → `text-embedding-3-large`.
+
+#### Gemini Provider (OpenAI-Compatible Adapter)
+
+Routed through an OpenAI-compatible Gemini endpoint (e.g. `GEMINI_OPENAI_BASE_URL`), but still surfaced via OpenAI-style clients in `LLMHandler`.
+
+- **Chat / Completions**
+  - Endpoint: `chat.completions.create` on the Gemini adapter client.
+  - Registry profiles:
+    - `gemini:fast` → `models/gemini-2.5-flash-lite`, endpoint=`"chat_completions"`.
+      - Capabilities: tools, streaming, temperature, top_p, etc.
+
+- **Embeddings (Adapter Path)**
+  - Endpoint: `embeddings.create(model=..., input=..., dimensions=...)` on the Gemini adapter client.
+  - Registry profiles:
+    - `gemini:embed` → `gemini-embedding-001`, endpoint=`"embeddings"`.
+      - Capabilities: `dimensions=1536`, `normalize_embedding=True`.
+  - `LLMHandler` wraps this in `_gemini_embedding_call`, adds a usage shim when missing, and can optionally L2-normalize vectors based on config.
+
+#### Gemini Provider (Native SDK)
+
+For some experimental and advanced use cases, the app can talk directly to Gemini via the native `google-genai` SDK, using a **separate endpoint type**.
+
+- **Chat / Generative Content**
+  - Endpoint: `client.models.generate_content(...)` wrapped by `_gemini_sdk_call` and `_GeminiSDKResponsesWrapper`.
+  - Exposes a Responses-like surface with `output_text`, `output`, and normalized `usage`.
+
+- **Embeddings (Native SDK Path)**
+  - Endpoint: `client.models.embed_content(model=..., contents=..., config=EmbedContentConfig(...))`.
+  - Registry profile:
+    - `gemini:native-embed` → `gemini-embedding-001`, endpoint=`"gemini_sdk"`.
+      - Capabilities:
+        - `dimensions`: 1536
+        - `task_type`: `RETRIEVAL_DOCUMENT`
+        - `output_dimensionality`: 1536
+        - `normalize_embedding`: True
+  - `LLMHandler._gemini_native_embedding_call` uses these capabilities to build `EmbedContentConfig` and returns an OpenAI-style embeddings response (`data[].embedding`, `usage`).
+
+#### Model Registry as Source of Truth
+
+All of the above profiles live in `backend/llm/model_registry.py` and are referenced from config via stable keys (e.g. `embedding_model_key`, `rewrite_model_key`, `inference_model_key`). The registry defines, for each key:
+
+- `provider`: `"openai"` or `"gemini"`.
+- `model`: provider-native model id (`gpt-4o-mini`, `models/gemini-2.5-flash-lite`, `gemini-embedding-001`, etc.).
+- `endpoint`: which code path `LLMHandler` should use (`"responses"`, `"chat_completions"`, `"embeddings"`, or `"gemini_sdk"`).
+- `pricing`: input/output token rates used for per-stage cost calculation.
+- `capabilities`: feature flags (tools, streaming, temperature, reasoning_effort, dimensions, normalize_embedding, etc.).
+
+When you change a registry profile or pick a different key in `backend/core/config.py`, the LLM handler and chat manager automatically route to the correct provider, model, and endpoint while keeping cost accounting and parameter handling consistent.
+
 #### 2.1.5 Set up local environment variables
 
 Copy the example environment file and add your API key(s).

@@ -187,18 +187,87 @@ This profile is opt-in and used by the native SDK embedding path when `provider=
 
 ### Optional L2 Normalization
 
-For non-3072 dimensions, Google recommends L2-normalizing embeddings (e.g. 768, 1536) so that similarity compares vector direction, not magnitude. The native path supports this via the `normalize_embedding` flag:
+For non-3072 dimensions, Google recommends L2-normalizing embeddings (e.g. 768, 1536) so that similarity compares vector direction, not magnitude. Both the native SDK path and the OpenAI-compatible adapter path support this via a shared `normalize_embedding` flag and configuration.
+
+#### Native SDK Path
+
+The native path supports `normalize_embedding` as either a call-time flag or a registry-driven default:
 
 ```python
 resp = llm_handler.create_embedding(
     provider="gemini",
     model="gemini:native-embed",
     input="...",
-    normalize_embedding=True,
+    normalize_embedding=True,  # overrides capabilities["normalize_embedding"]
 )
 ```
 
 When `normalize_embedding=True`, each embedding vector is L2-normalized client-side (using NumPy) before being returned. If NumPy is not available or normalization fails, the handler silently falls back to raw embeddings.
+
+#### OpenAI-Compatible Adapter Path
+
+The adapter-based Gemini embeddings path (`_gemini_embedding_call`) also supports L2 normalization via the same `normalize_embedding` flag:
+
+```python
+resp = llm_handler.create_embedding(
+    provider="gemini",
+    model="gemini-embedding-001" or "gemini:embed",
+    input="...",
+    dimensions=1536,
+    normalize_embedding=True,
+)
+```
+
+Implementation details:
+
+- Uses a pure-Python L2 normalization (no NumPy dependency) to avoid coupling the adapter path to optional scientific libraries.
+- Normalizes `resp.data[i].embedding` in place, preserving the OpenAI `CreateEmbeddingResponse` shape.
+- Logs a small debug slice when enabled:
+
+  ```text
+  [GEMINI ADAPTER EMBED] normalized embedding model=gemini-embedding-001 len=1536 first10=[...]
+  ```
+
+#### Registry and Config Defaults
+
+Two layers control normalization behavior for Gemini:
+
+- **Model registry capabilities** (`backend/llm/model_registry.py`):
+
+  ```python
+  "gemini:embed": ModelInfo(
+      ...,
+      capabilities={
+          "dimensions": 1536,
+          "normalize_embedding": True,
+      },
+  )
+
+  "gemini:native-embed": ModelInfo(
+      ...,
+      capabilities={
+          "dimensions": 1536,
+          "task_type": "RETRIEVAL_DOCUMENT",
+          "output_dimensionality": 1536,
+          "normalize_embedding": True,
+      },
+  )
+  ```
+
+  - For the native SDK path, `capabilities["normalize_embedding"]` is used as the default when `normalize_embedding` is not passed explicitly.
+  - For the adapter path, `normalize_embedding` is currently configured via settings (see below); the registry flag documents the intended default behavior.
+
+- **Global config flag** (`backend/core/config.py`):
+
+  ```python
+  gemini_embedding_dimensions: int = 1536
+  # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
+  # This should be applied consistently for both indexing and query embeddings.
+  gemini_embedding_normalize: bool = True
+  ```
+
+  - When `gemini_embedding_normalize` is `True`, both content and query embeddings for provider `"gemini"` pass `normalize_embedding=True` into `LLMHandler`.
+  - This ensures the same normalization behavior is applied across ingestion and retrieval.
 
 ### Testing Native Embeddings
 
@@ -214,6 +283,57 @@ The script `scripts/test_gemini_embeddings.py` provides manual tests for both ad
   - Use the `google-genai` client directly to validate `count_tokens` and `embed_content` behavior for the configured embedding model.
 
 These tests are intended for manual verification and debugging; they do not affect production behavior.
+
+### End-to-End Embedding Usage (Indexing & Query)
+
+Both indexing and query-time embeddings are routed through `LLMHandler` and share the same configuration and normalization behavior.
+
+- **Indexing / Content Embeddings**
+
+  - Implemented in `backend/embeddings/embeddings_manager.py` via `EmbeddingsManager.generate_embeddings(text)`.
+  - Uses `resolve_embedding_spec(settings)` to derive `provider`, `model`, and `dimensions` from the registry and config.
+  - For `provider == "gemini"`:
+
+    ```python
+    kwargs = {
+        "provider": provider,
+        "model": model,
+        "input": text,
+    }
+    if provider == "gemini" and isinstance(dims, int) and dims > 0:
+        kwargs["dimensions"] = dims
+        kwargs["normalize_embedding"] = bool(settings.gemini_embedding_normalize)
+    response = llm_handler.embeddings.create(**kwargs)
+    ```
+
+  - This applies `gemini_embedding_normalize` consistently to all document chunks being indexed.
+
+- **Query Embeddings (Chat / Retrieval)**
+
+  - Implemented in `backend/db/qdrant_db.py` via `QdrantDB.generate_embeddings(text)` for search queries.
+  - Also uses `resolve_embedding_spec(settings)` and routes through `llm_handler.embeddings.create`.
+  - For `provider == "gemini"`:
+
+    ```python
+    kwargs = {
+        "provider": provider,
+        "model": model,
+        "input": text,
+    }
+    dims = spec.get("dimensions")
+    if provider == "gemini" and isinstance(dims, int) and dims > 0:
+        kwargs["dimensions"] = dims
+        kwargs["normalize_embedding"] = bool(settings.gemini_embedding_normalize)
+    response = llm_handler.embeddings.create(**kwargs)
+    ```
+
+  - This ensures that query embeddings fed into Qdrant have the same dimension and normalization policy as the indexed vectors.
+
+With this structure:
+
+- `resolve_embedding_spec(settings)` + `model_registry` remain the single source of truth for provider/model/dimensions.
+- `gemini_embedding_normalize` in config, together with `normalize_embedding` capabilities in the registry, control whether Gemini embeddings are L2-normalized.
+- `LLMHandler` centralizes the actual normalization logic for both adapter and native Gemini paths, while `EmbeddingsManager` and `QdrantDB` ensure the same flags are applied for indexing and query-time usage.
 
 ## LLMResult Shape and Usage
 
