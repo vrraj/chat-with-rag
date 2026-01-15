@@ -37,6 +37,7 @@ from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
+from backend.llm.llm_handler import llm_handler
 
 
 class ClearChatRequest(BaseModel):
@@ -64,6 +65,34 @@ def _parse_allowed_list(raw: str | None) -> set[str]:
 
 _ALLOWED_ORIGINS = _parse_allowed_list(getattr(settings, "allowed_origins", None))
 _ALLOWED_HOSTS = _parse_allowed_list(getattr(settings, "allowed_hosts", None))
+
+
+def _get_embedding_rate_per_mm_tokens() -> float:
+    """Return the embedding cost (USD) per 1M tokens for the active embedding model.
+
+    Preference order (non-breaking):
+      1) Use pricing.input_per_mm from model_registry for settings.embedding_model_key
+      2) Fall back to 0.0 when registry/pricing is unavailable or misconfigured.
+    """
+    # Safe default when no pricing is available
+    default_rate = 0.0
+
+    try:
+        embedding_key = str(getattr(settings, "embedding_model_key", "")).strip()
+        if not embedding_key:
+            return default_rate
+
+        pricing = llm_handler.get_pricing_for_model_key(embedding_key)
+        if pricing is None:
+            return default_rate
+
+        rate = getattr(pricing, "input_per_mm", None)
+        if rate is None:
+            return default_rate
+        return float(rate)
+    except Exception:
+        # Any lookup or config issue should silently fall back to the prior behavior.
+        return default_rate
 
 
 def enforce_origin_host(request: Request) -> None:
@@ -450,8 +479,9 @@ async def index_mediawiki_url(
                     tokens_used += embeddings_manager.estimate_tokens(chunk)
                     
             # logger.info("Estimate only; planned chunks: %d, tokens: %d", len(chunks), tokens_used)
-            # Calculate estimated embedding cost
-            estimated_cost = (tokens_used * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            # Calculate estimated embedding cost using provider/model-aware rate
+            rate_per_mm = _get_embedding_rate_per_mm_tokens()
+            estimated_cost = (tokens_used * rate_per_mm) / 1_000_000.0
             return {
                 "message": "Estimate only", 
                 "chunks_planned": len(chunks),
@@ -469,7 +499,8 @@ async def index_mediawiki_url(
             result.get('vectors_indexed', 0),
             result.get('tokens_used', 0),
         )
-        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        rate_per_mm = _get_embedding_rate_per_mm_tokens()
+        embedding_cost = (result.get("tokens_used", 0) * rate_per_mm) / 1_000_000.0
         return {
             "message": "MediaWiki content indexed successfully",
             "chunks_indexed": len(chunks),
@@ -654,8 +685,9 @@ async def index_pdf(
                 elif isinstance(chunk, str):
                     tokens_used += embeddings_manager.estimate_tokens(chunk)
                     
-            # Calculate estimated embedding cost
-            estimated_cost = (tokens_used * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            # Calculate estimated embedding cost using provider/model-aware rate
+            rate_per_mm = _get_embedding_rate_per_mm_tokens()
+            estimated_cost = (tokens_used * rate_per_mm) / 1_000_000.0
             return {
                 "message": "Estimate only", 
                 "chunks_planned": len(chunks),
@@ -669,7 +701,8 @@ async def index_pdf(
             max_chunks=pdf_input.max_chunks,
         )
         
-        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        rate_per_mm = _get_embedding_rate_per_mm_tokens()
+        embedding_cost = (result.get("tokens_used", 0) * rate_per_mm) / 1_000_000.0
         return {
             "message": "PDF content indexed successfully",
             "chunks_indexed": len(chunks),
@@ -1037,8 +1070,9 @@ async def index_content(url_input: URLInput, request: Request):
             #                 )
             #                 planned_chunks_total += result.get("vectors_indexed", 0)
             #                 tokens_total += result.get("tokens_used", 0)
+        rate_per_mm = _get_embedding_rate_per_mm_tokens()
         if url_input.estimate:
-            estimated_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            estimated_cost = (tokens_total * rate_per_mm) / 1_000_000.0
             return {
                 "message": "Estimate only", 
                 "chunks_planned": planned_chunks_total,
@@ -1046,7 +1080,7 @@ async def index_content(url_input: URLInput, request: Request):
                 "embedding_cost": round(estimated_cost, 8),
                 "errors": all_errors,
             }
-        embedding_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        embedding_cost = (tokens_total * rate_per_mm) / 1_000_000.0
         return {
             "message": "Content indexed successfully",
             "vectors_indexed": planned_chunks_total,

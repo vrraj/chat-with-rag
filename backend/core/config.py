@@ -131,7 +131,8 @@ class Settings(BaseSettings):
     collection_name: str = "document_index_gemini"  # collection name
 
     # Vector/search shape & retrieval knobs
-    vector_size: int = 1536  # use with text-embedding-3-small
+    # Qdrant vector size (must match embedding dimension)
+    vector_size: int = 1536
     top_k: int = 8  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
@@ -140,36 +141,30 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3) Embeddings
     # -------------------------------------------------------------------------
-    # embedding_model: str = "text-embedding-3-large"  # use for higher-quality embeddings
-    # vector_size: int = 3072  # use with text-embedding-3-large
-    # collection_name: str = "document_index_large"  # collection name for large embedding model
+    # Embedding provider: "openai" or "gemini" (used for docs + queries)
+    embedding_model: str = "gemini"
 
-    # Default OpenAI embedding model (current behavior).
+    # Default OpenAI embedding model
     openai_embedding_model: str = "text-embedding-3-small"
-    # Provider selector for embeddings: "openai" or "gemini".
-    # NOTE: embedding_model is the single source of truth for both corpus indexing
-    # and query-time retrieval embeddings; changing this requires re-embedding docs
-    # so the retriever and stored vectors stay in the same embedding space.
-    embedding_model: str = "gemini"  # "openai" or "gemini"
 
-    # Gemini embeddings (adapter-based) - additive, optional
-    # Default model: "gemini-embedding-001".
-    # Supported dimensions (per vendor docs): 3072, 1536, 768.
-    # The embedding adapter will default to 1536 dimensions when none are specified.
+    # Embedding profile key (must match model_registry)
+    # e.g. "openai:embed_small", "gemini:embed"
+    # Model and dimensions should stay in sync with vector_size.
+    # embedding_model_key: str = "openai:embed_small"
+    embedding_model_key: str = "gemini:embed"
+
+    # Gemini embeddings
     gemini_embedding_model: str = "gemini-embedding-001"
+    # Must match vector_size and registry capabilities["dimensions"]
     gemini_embedding_dimensions: int = 1536
 
-    # Costs (USD per 1,000,000 tokens)
-    embedding_cost_per_MM_tokens: float = 0.02
-
-    # Cost basis tokens
+    # Cost basis for per‑MM pricing
     cost_basis_tokens: int = 1_000_000
 
-    # Embedding batch sizes (number of texts sent in a single embeddings.create call).
-    # Provider-specific knobs with a sane default for future providers.
-    embedding_batch_size_default: int = 25
-    embedding_batch_size_openai: int = 25
-    embedding_batch_size_gemini: int = 25
+    # Embedding batch sizes (number of chunks sent in a single embeddings.create call)
+    embedding_batch_size_default: int = 30
+    embedding_batch_size_openai: int = 30
+    embedding_batch_size_gemini: int = 30
 
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)
@@ -195,11 +190,6 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     re_ranker_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
 
-    # Costs (USD per 1,000,000 tokens)
-    re_ranker_cost_per_MM_tokens_input: float = 0.15
-    re_ranker_cost_per_MM_tokens_output: float = 0.60
-    re_ranker_cost_per_MM_tokens_cached_input: float = 0.075
-
     re_ranker_max_output_tokens: int = 50
     re_ranker_input_rows: int = 5
     re_ranker_temperature: float = 0.3
@@ -216,13 +206,8 @@ class Settings(BaseSettings):
     # 5) Summarizer
     # -------------------------------------------------------------------------
     summarizer_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
-
-    # Costs (USD per 1,000,000 tokens)
     summarizer_max_input_tokens: int = 400  # set an int to limit input tokens
     summarizer_max_output_tokens: int = 200  # set an int to limit output tokens
-    summarizer_cost_per_MM_tokens_input: float = 0.15
-    summarizer_cost_per_MM_tokens_output: float = 0.60
-    summarizer_cost_per_MM_tokens_cached_input: float = 0.075
     summarizer_temperature: float = 0.3
 
     # -------------------------------------------------------------------------
@@ -236,11 +221,6 @@ class Settings(BaseSettings):
 
     # --- Inference context control --- Number of reranked rows (retrieved) to include in inference prompt as input context
     inference_context_rows: int = 4
-
-    # Costs (USD per 1,000,000 tokens)
-    inference_cost_per_MM_tokens_input: float = 0.15
-    inference_cost_per_MM_tokens_output: float = 0.60
-    inference_cost_per_MM_tokens_cached_input: float = 0.075
 
     max_inference_output_tokens: int = 500
     tools_synth_max_output_tokens: int = 600
@@ -275,25 +255,6 @@ class Settings(BaseSettings):
     # - raw_tail_turns: most-recent turns kept verbatim
     chat_history_window_turns: int = 2
     raw_tail_turns: int = 2
-
-    # -------------------------------------------------------------------------
-    # 8) Query rewrite (for retrieval)
-    # -------------------------------------------------------------------------
-    enable_query_rewrite: bool = True  # Enable rewrite stage (falls back to original query when disabled)
-
-    rewrite_model: str = "gpt-4o-mini"
-    rewrite_temperature: float = 0.3
-
-    # Costs (USD per 1,000,000 tokens)
-    rewrite_cost_per_MM_tokens_input: float = 0.15
-    rewrite_cost_per_MM_tokens_output: float = 0.60
-    rewrite_cost_per_MM_tokens_cached_input: float = 0.075
-
-    # Require sufficient confidence to accept a rewrite; otherwise fall back to original
-    rewrite_confidence_threshold: float = 0.65
-
-    # Keep rewrite outputs tiny and structured (JSON)
-    rewrite_max_output_tokens: int = 500
 
     # How many most‑recent turns the rewriter sees (can differ from raw_tail_turns if desired)
     rewrite_tail_turns: int = 2

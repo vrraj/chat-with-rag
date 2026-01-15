@@ -61,7 +61,6 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
 from backend.llm.llm_handler import llm_handler, LLMError
-from backend.llm import model_registry as _model_registry
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
@@ -972,11 +971,10 @@ def _compute_stage_cost(
     """
 
     # --- 1) Model-registry pricing (preferred) ---
-    mi = _model_registry.resolve_model(provider=provider, model=model, model_key=model_key)
+    pricing = llm_handler.get_pricing_for_model(provider=provider, model=model, model_key=model_key)
 
-    if mi is not None:
+    if pricing is not None:
         try:
-            pricing = getattr(mi, "pricing", None)
             in_rate = float(getattr(pricing, "input_per_mm", 0.0) or 0.0)
             out_rate = float(getattr(pricing, "output_per_mm", 0.0) or 0.0)
             cached_rate = float(getattr(pricing, "cached_input_per_mm", 0.0) or 0.0)

@@ -160,6 +160,22 @@ REGISTRY: Dict[str, ModelInfo] = {
         capabilities={"dimensions": 1536},
         max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
+    # Native Gemini SDK embedding profile. This is opt-in and used by the
+    # gemini_sdk embedding path in llm_handler for experiments.
+    # Tsk_type : use RETRIEVAL_DOCUMENT for indexing content and RETRIEVAL_QUERY for search
+    "gemini:native-embed": ModelInfo(
+        key="gemini:native-embed",
+        provider="gemini",
+        model="gemini-embedding-001",  # native embedding model id
+        endpoint="gemini_sdk",
+        pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),  # adjust to your real rates
+        capabilities={
+            "dimensions": 1536,
+            "task_type": "RETRIEVAL_DOCUMENT",
+            "output_dimensionality": 1536,
+        },
+        max_tokens_parameter="max_tokens",
+    ),
     "gemini:fast": ModelInfo(
         key="gemini:fast",
         provider="gemini",

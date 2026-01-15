@@ -31,7 +31,7 @@ def test_adapter_embedding() -> None:
     """Test Gemini embeddings via the OpenAI-compatible adapter (llm_handler)."""
 
     # Adjust these as needed for your environment / registry
-    model = "text-embedding-004"  # adapter model or registry key
+    model = "gemini-embedding-001"  # adapter model or registry key
     text = "Hello from Gemini embeddings"
     dimensions = 768  # must match what your adapter/backend expects
 
@@ -87,6 +87,72 @@ def test_adapter_embedding() -> None:
         print("Raw response:", resp)
 
 
+def test_native_via_llm_handler() -> None:
+    """Test native Gemini SDK embeddings via llm_handler (gemini_native provider).
+
+    This exercises the self-contained native embedding route in LLMHandler while
+    preserving the OpenAI-style embeddings response shape (data[].embedding, usage).
+    """
+
+    # Use the registry key for the native embedding profile so routing can
+    # consult endpoint and capabilities (task_type, output_dimensionality).
+    model = "gemini:native-embed"
+    text = "Hello from Gemini native embeddings via llm_handler"
+    # These match the defaults in model_registry for gemini:native-embed but
+    # are provided explicitly here to exercise call-time overrides.
+    task_type = "RETRIEVAL_DOCUMENT"
+    output_dimensionality = 1536
+
+    print(f"\nRequesting Gemini native embedding via llm_handler: model={model!r}, text={text!r}")
+
+    resp: Any = llm_handler.create_embedding(
+        provider="gemini",  # endpoint=="gemini_sdk" for this key routes to native SDK
+        model=model,
+        input=text,
+        task_type=task_type,
+        output_dimensionality=output_dimensionality,
+    )
+
+    print("Raw native-embedding response type:", type(resp))
+
+    try:
+        from pprint import pprint
+
+        print("\n=== Native via llm_handler: top-level attributes ===")
+        top_level = {
+            "has_data": hasattr(resp, "data"),
+            "has_usage": hasattr(resp, "usage"),
+            "dir": [n for n in dir(resp) if not n.startswith("__")],
+        }
+        pprint(top_level)
+
+        print("\n=== Native via llm_handler: usage field (if any) ===")
+        usage = getattr(resp, "usage", None)
+        pprint(usage)
+
+        print("\n=== Native via llm_handler: data[0] summary ===")
+        data = getattr(resp, "data", None)
+        if isinstance(data, list) and data:
+            item0 = data[0]
+            summary = {
+                "type": type(item0),
+                "has_embedding": hasattr(item0, "embedding"),
+                "dir": [n for n in dir(item0) if not n.startswith("__")],
+            }
+            pprint(summary)
+
+            embedding = getattr(item0, "embedding", None)
+            if embedding is not None:
+                print("First embedding length (native):", len(embedding))
+                print("First 8 embedding values (native):", embedding[:8])
+        else:
+            print("Native via llm_handler response has no 'data' list; raw response:")
+            pprint(resp)
+    except Exception as e:  # pragma: no cover - debug helper
+        print("Error while inspecting native llm_handler embedding response:", e)
+        print("Raw response:", resp)
+
+
 def test_native_count_tokens() -> None:
     """Test native Gemini SDK count_tokens for an embedding model."""
 
@@ -104,7 +170,7 @@ def test_native_count_tokens() -> None:
     client = genai.Client(api_key=api_key)
 
     # You can adjust the model to match your embedding model if desired.
-    model = "text-embedding-004"
+    model = "gemini-embedding-001"
     contents = "Hello from Gemini"
 
     print(f"\nRequesting native count_tokens: model={model!r}, contents={contents!r}")
@@ -139,7 +205,7 @@ def test_native_embedding() -> None:
 
     # NOTE: The exact embedding model and method may differ depending on SDK version.
     # You may need to adjust `model` or use `client.models.embed_content`/`embed_text`.
-    model = "text-embedding-004"  # native embedding model id; may need adjustment per SDK/docs
+    model = "gemini-embedding-001"  # native embedding model id; may need adjustment per SDK/docs
     contents = "Hello from Gemini native embedding"
 
     print(f"\nRequesting native embedding: model={model!r}, contents={contents!r}")
@@ -154,17 +220,6 @@ def test_native_embedding() -> None:
         return
 
     try:
-        from pprint import pprint
-
-        print("Native embedding response:", resp)
-
-        # Inspect common fields; actual structure depends on SDK version.
-        print("\n=== Native embedding attributes ===")
-        top_level = {
-            "dir": [n for n in dir(resp) if not n.startswith("__")],
-        }
-        pprint(top_level)
-
         # Try to locate embeddings/values
         emb = getattr(resp, "embeddings", None)
         if isinstance(emb, list) and emb:
@@ -183,6 +238,7 @@ def test_native_embedding() -> None:
 
 def main() -> None:
     test_adapter_embedding()
+    test_native_via_llm_handler()
     test_native_count_tokens()
     test_native_embedding()
 

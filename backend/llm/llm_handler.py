@@ -239,7 +239,50 @@ class LLMHandler:
         self.responses = _ResponsesFacade(self)
         # New additive facade for embeddings; does not affect existing behavior.
         self.embeddings = _EmbeddingsFacade(self)
+    # ------------------------------------------------------------------
+    # Pricing helpers (thin wrappers over model_registry)
+    # ------------------------------------------------------------------
 
+    def get_pricing_for_model_key(self, model_key: str | None):
+        """Return Pricing for a registry model key, or None on error.
+
+        This is a thin wrapper around model_registry.get_model_info and does
+        not change any existing behavior. Callers should handle a None
+        return value as "no pricing configured".
+        """
+        try:
+            mk = str(model_key or "").strip()
+            if not mk:
+                return None
+            info = _model_registry.get_model_info(mk)
+            return getattr(info, "pricing", None)
+        except Exception:
+            return None
+
+    def get_pricing_for_model(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        model_key: str | None = None,
+    ):
+        """Resolve a model via registry and return its Pricing (or None).
+
+        Delegates to model_registry.resolve_model with the same semantics as
+        other call sites. This helper is for cost accounting only and does
+        not affect LLM behavior.
+        """
+        try:
+            mi = _model_registry.resolve_model(
+                provider=provider,
+                model=model,
+                model_key=model_key,
+            )
+            if mi is None:
+                return None
+            return getattr(mi, "pricing", None)
+        except Exception:
+            return None
     def _get_reasoning_parameter(self, model: str) -> tuple[str, Any] | None:
         """Get reasoning parameter name and default from model registry."""
         if _model_registry is None:
@@ -1470,16 +1513,45 @@ class LLMHandler:
             merged.update({k: v for k, v in kwargs.items() if v is not None})
             kwargs = merged
         else:
-            provider = (provider or "").strip().lower()
-            if not provider:
-                provider = "openai"
+            # Defer defaulting provider until after we consult the registry so
+            # we can derive provider/endpoint from a model key when possible.
+            provider = (provider or "").strip().lower() or None
             if not model:
                 raise ValueError("model is required when spec is not provided")
 
+        # Look up model info so we can route based on endpoint when possible.
+        mi = None
+        endpoint = None
+        try:
+            if model:
+                mi = self._lookup_model_info_from_registry(model)
+                if mi is not None:
+                    endpoint = getattr(mi, "endpoint", None)
+                    # If provider was not specified explicitly, derive it from the registry.
+                    if provider is None and getattr(mi, "provider", None):
+                        provider = str(mi.provider)
+        except Exception:
+            mi = None
+            endpoint = None
+
+        # Default provider when still unset.
+        if not provider:
+            provider = "openai"
+
         if provider == "openai":
             return self._openai_embedding_call(model=model, input=input, **kwargs)
+
+        # Gemini embeddings: choose adapter vs native SDK based on endpoint when
+        # available. This keeps existing adapter behavior for endpoint=="embeddings"
+        # and only opts into the native path for endpoint=="gemini_sdk".
         if provider == "gemini":
+            if endpoint == "gemini_sdk":
+                return self._gemini_native_embedding_call(model=model, input=input, **kwargs)
             return self._gemini_embedding_call(model=model, input=input, **kwargs)
+
+        # Backwards-compatible explicit native provider for experiments.
+        if provider == "gemini_native":
+            return self._gemini_native_embedding_call(model=model, input=input, **kwargs)
 
         raise LLMError(
             provider=str(provider or "unknown"),
@@ -1488,6 +1560,124 @@ class LLMHandler:
             code="unsupported_provider_embeddings",
             message=f"Provider '{provider}' not supported for embeddings",
         )
+
+    def _gemini_native_embedding_call(self, *, model: str, input: Any, **kwargs: Any):
+        """Gemini embedding call via the native google-genai SDK.
+
+        Returns an OpenAI-style embeddings response object with:
+
+            resp.data[i].embedding -> List[float]
+            resp.usage             -> optional usage shim (prompt_tokens/total_tokens)
+
+        This is intended for experiments and is kept self-contained so that
+        existing adapter-based embedding flows are unaffected.
+        """
+        client = self._get_gemini_native()
+        resolved_model = self._resolve_model_name(model)
+
+        # NOTE: We currently treat input as either a single string or a list of strings.
+        contents = input if isinstance(input, list) else str(input)
+
+        # Derive default embedding config from model_registry capabilities, then
+        # allow call-time overrides via kwargs.
+        default_task_type = None
+        default_output_dim = None
+        try:
+            mi = self._lookup_model_info_from_registry(model)
+            caps = getattr(mi, "capabilities", {}) or {}
+            default_task_type = caps.get("task_type")
+            default_output_dim = caps.get("output_dimensionality") or caps.get("dimensions")
+        except Exception:
+            default_task_type = None
+            default_output_dim = None
+
+        task_type = kwargs.pop("task_type", default_task_type)
+        output_dim = kwargs.pop("output_dimensionality", default_output_dim)
+
+        cfg = None
+        if task_type is not None or output_dim is not None:
+            try:
+                from google.genai import types as _types  # type: ignore
+
+                cfg = _types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=output_dim,
+                )
+            except Exception:
+                cfg = None
+
+        # Print the payload shape and final config passed to the native
+        # embed_content call so we can confirm batch size and exact SDK config
+        # during manual tests.
+        try:
+            if isinstance(contents, list):
+                batch_size = len(contents)
+            else:
+                batch_size = 1
+            print(
+                "[GEMINI NATIVE EMBED] "
+                f"model={model!r} batch_size={batch_size} "
+                f"task_type={task_type!r} output_dim={output_dim!r} "
+                f"config={cfg!r}"
+            )
+        except Exception:
+            pass
+
+        try:
+            resp = client.models.embed_content(
+                model=resolved_model,
+                contents=contents,
+                config=cfg,
+            )
+        except Exception as e:
+            raise LLMError(
+                provider="gemini",
+                model=model,
+                kind="provider_error",
+                code="native_embed_failed",
+                message=str(e),
+            ) from e
+
+        # Extract vectors from resp.embeddings[*].values
+        vectors: list[list[float]] = []
+        try:
+            emb_list = getattr(resp, "embeddings", None)
+            if isinstance(emb_list, list):
+                for emb in emb_list:
+                    vals = getattr(emb, "values", None)
+                    if vals is not None:
+                        vectors.append(list(vals))
+        except Exception:
+            vectors = []
+
+        # Build a minimal usage shim from usage_metadata if available
+        usage = None
+        try:
+            um = getattr(resp, "usage_metadata", None)
+            if um is not None:
+                pt = getattr(um, "prompt_token_count", 0) or 0
+                tt = getattr(um, "total_token_count", 0) or 0
+
+                class _EmbeddingUsageShim:
+                    def __init__(self, prompt_tokens: int, total_tokens: int) -> None:
+                        self.prompt_tokens = prompt_tokens
+                        self.total_tokens = total_tokens
+
+                usage = _EmbeddingUsageShim(prompt_tokens=int(pt), total_tokens=int(tt or pt))
+        except Exception:
+            usage = None
+
+        # OpenAI-style embeddings wrapper
+        class _EmbeddingItem:
+            def __init__(self, embedding):
+                self.embedding = embedding
+
+        class _EmbeddingResponse:
+            def __init__(self, vectors, usage_obj):
+                self.data = [_EmbeddingItem(v) for v in vectors]
+                self.usage = usage_obj
+
+        return _EmbeddingResponse(vectors, usage)
 
     # ---- provider calls ----
     def _openai_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
