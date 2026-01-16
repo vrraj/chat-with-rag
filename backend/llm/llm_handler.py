@@ -1656,6 +1656,7 @@ class LLMHandler:
         # Optional L2 normalization for non-3072 dimensions when requested.
         # Google recommends normalizing 768/1536 embeddings so comparisons
         # rely on vector direction, not magnitude.
+        magnitudes = []  # Store magnitudes for metadata
         if normalize_embedding and vectors:
             try:
                 import numpy as _np  # type: ignore
@@ -1664,6 +1665,7 @@ class LLMHandler:
                 for v in vectors:
                     arr = _np.asarray(v, dtype="float32")
                     n = float(_np.linalg.norm(arr))
+                    magnitudes.append(n)  # Store original magnitude
                     if n > 0.0:
                         arr = arr / n
                     normalized.append(arr.tolist())
@@ -1671,7 +1673,15 @@ class LLMHandler:
             except Exception:
                 # If numpy isn't available or normalization fails, fall back
                 # to raw embeddings without raising.
+                magnitudes = [1.0] * len(vectors)  # Default magnitude
                 pass
+        else:
+            # No normalization, calculate magnitudes for consistency
+            try:
+                import numpy as _np  # type: ignore
+                magnitudes = [float(_np.linalg.norm(_np.asarray(v, dtype="float32"))) for v in vectors]
+            except Exception:
+                magnitudes = [1.0] * len(vectors)  # Default magnitude
 
         # Build a minimal usage shim from usage_metadata if available
         usage = None
@@ -1692,15 +1702,27 @@ class LLMHandler:
 
         # OpenAI-style embeddings wrapper
         class _EmbeddingItem:
-            def __init__(self, embedding):
+            def __init__(self, embedding, magnitude=None, normalized=False, provider="gemini_native"):
                 self.embedding = embedding
+                self.magnitude = magnitude
+                self.normalized = normalized
+                self.provider = provider
 
         class _EmbeddingResponse:
-            def __init__(self, vectors, usage_obj):
-                self.data = [_EmbeddingItem(v) for v in vectors]
+            def __init__(self, vectors, usage_obj, magnitudes, normalize_embedding):
+                # Create embedding items with magnitude metadata
+                self.data = [
+                    _EmbeddingItem(
+                        v, 
+                        magnitude=magnitudes[i] if i < len(magnitudes) else None,
+                        normalized=normalize_embedding,
+                        provider="gemini_native"
+                    ) 
+                    for i, v in enumerate(vectors)
+                ]
                 self.usage = usage_obj
 
-        return _EmbeddingResponse(vectors, usage)
+        return _EmbeddingResponse(vectors, usage, magnitudes, normalize_embedding)
 
     # ---- provider calls ----
     def _openai_call(self, *, model: str, input: Any, stream: bool, **kwargs: Any):
@@ -2440,6 +2462,10 @@ class LLMHandler:
                             n = _math.sqrt(s)
                             if n > 0.0:
                                 item.embedding = [float(x) / n for x in vec]
+                                # Add magnitude and normalization metadata
+                                setattr(item, 'magnitude', n)
+                                setattr(item, 'normalized', True)
+                                setattr(item, 'provider', 'gemini_adapter')
                     # Log a single example embedding slice after normalization
                     # for debugging (length and first 10 values).
                     try:

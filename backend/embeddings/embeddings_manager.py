@@ -122,6 +122,16 @@ class EmbeddingsManager:
                 response = llm_handler.embeddings.create(**kwargs)
                 # Normalize embeddings into a list for simpler handling.
                 embeddings_list = [d.embedding for d in response.data]
+                
+                # Capture magnitude metadata if available
+                magnitudes = []
+                normalized_flags = []
+                providers = []
+                for d in response.data:
+                    magnitudes.append(getattr(d, 'magnitude', None))
+                    normalized_flags.append(getattr(d, 'normalized', False))
+                    providers.append(getattr(d, 'provider', 'unknown'))
+                
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
                 total_tokens = response.usage.total_tokens if response.usage else 0
                 try:
@@ -129,12 +139,12 @@ class EmbeddingsManager:
                 except Exception:
                     pass
                 logger.debug("Tokens used - prompt: %s, total: %s", prompt_tokens, total_tokens)
+                
                 if is_batch:
-                    # Return list-of-embeddings aligned with the input list.
-                    return embeddings_list
-                #logger.debug("Received embedding vector of length: %d", len(embedding))
-                # Single-text path: return the first embedding.
-                return embeddings_list[0] if embeddings_list else []
+                    # Return list-of-embeddings with metadata
+                    return embeddings_list, magnitudes, normalized_flags, providers
+                # Single-text path: return embedding with metadata
+                return embeddings_list[0] if embeddings_list else [], (magnitudes[0] if magnitudes else None), (normalized_flags[0] if normalized_flags else False), (providers[0] if providers else 'unknown')
             except Exception as e:
                 last_err = e
                 attempt += 1
@@ -266,9 +276,30 @@ class EmbeddingsManager:
                 # token accounting. When passed a list, it should return a list
                 # of embeddings aligned with batch_texts.
                 if len(batch_texts) == 1:
-                    batch_embeddings = [self.generate_embeddings(batch_texts[0])]
+                    embedding_result = self.generate_embeddings(batch_texts[0])
+                    if isinstance(embedding_result, tuple):
+                        # Single embedding with metadata
+                        batch_embeddings = [embedding_result[0]]
+                        batch_magnitudes = [embedding_result[1]]
+                        batch_normalized = [embedding_result[2]]
+                        batch_providers = [embedding_result[3]]
+                    else:
+                        # Legacy format (backward compatibility)
+                        batch_embeddings = [embedding_result]
+                        batch_magnitudes = [None]
+                        batch_normalized = [False]
+                        batch_providers = ['unknown']
                 else:
-                    batch_embeddings = self.generate_embeddings(batch_texts)  # type: ignore[arg-type]
+                    embedding_result = self.generate_embeddings(batch_texts)  # type: ignore[arg-type]
+                    if isinstance(embedding_result, tuple) and len(embedding_result) == 4:
+                        # Batch embeddings with metadata
+                        batch_embeddings, batch_magnitudes, batch_normalized, batch_providers = embedding_result
+                    else:
+                        # Legacy format (backward compatibility)
+                        batch_embeddings = embedding_result
+                        batch_magnitudes = [None] * len(batch_embeddings)
+                        batch_normalized = [False] * len(batch_embeddings)
+                        batch_providers = ['unknown'] * len(batch_embeddings)
             except Exception as e:
                 failures += 1
                 logger.error("Error generating embeddings for batch starting at %s: %s", batch_start, e, exc_info=True)
@@ -289,9 +320,16 @@ class EmbeddingsManager:
                 # Align embedding with chunk in the current batch.
                 try:
                     embedding = batch_embeddings[offset]
+                    magnitude = batch_magnitudes[offset] if offset < len(batch_magnitudes) else None
+                    normalized = batch_normalized[offset] if offset < len(batch_normalized) else False
+                    provider = batch_providers[offset] if offset < len(batch_providers) else 'unknown'
                 except Exception:
                     # Fallback: regenerate singly if batch alignment fails for any reason.
-                    embedding = self.generate_embeddings(chunk_text)
+                    embedding_result = self.generate_embeddings(chunk_text)
+                    if isinstance(embedding_result, tuple):
+                        embedding, magnitude, normalized, provider = embedding_result
+                    else:
+                        embedding, magnitude, normalized, provider = embedding_result, None, False, 'unknown'
 
                 # Optional per-document token budget guard
                 try:
@@ -333,6 +371,12 @@ class EmbeddingsManager:
                 # Record the embedding model used for this vector (best-effort).
                 if _emb_model_name_doc:
                     payload["embedding_model"] = _emb_model_name_doc
+                
+                # Add magnitude and normalization metadata if available
+                if magnitude is not None:
+                    payload["embedding_magnitude"] = magnitude
+                payload["embedding_normalized"] = normalized
+                payload["embedding_provider"] = provider
 
                 # Prefer provided headings; default section to "Lead" if nothing present
                 section = document.get("section") or document.get("section_title") or None
@@ -441,7 +485,13 @@ class EmbeddingsManager:
                 logger.debug("Searching for query: %s", q_snip)
             else:
                 logger.debug("Searching for query (len=%d)", len(query or ""))
-            query_embedding = self.generate_embeddings(query)
+            query_embedding_result = self.generate_embeddings(query)
+            # Handle new return format (embedding, magnitude, normalized, provider)
+            if isinstance(query_embedding_result, tuple):
+                query_embedding = query_embedding_result[0]
+            else:
+                # Legacy format (backward compatibility)
+                query_embedding = query_embedding_result
             qdrant_filter = None
             if query_filter:
                 url = query_filter["url"]
@@ -584,9 +634,30 @@ class EmbeddingsManager:
 
             try:
                 if len(batch_texts) == 1:
-                    batch_embeddings = [self.generate_embeddings(batch_texts[0])]
+                    embedding_result = self.generate_embeddings(batch_texts[0])
+                    if isinstance(embedding_result, tuple):
+                        # Single embedding with metadata
+                        batch_embeddings = [embedding_result[0]]
+                        batch_magnitudes = [embedding_result[1]]
+                        batch_normalized = [embedding_result[2]]
+                        batch_providers = [embedding_result[3]]
+                    else:
+                        # Legacy format (backward compatibility)
+                        batch_embeddings = [embedding_result]
+                        batch_magnitudes = [None]
+                        batch_normalized = [False]
+                        batch_providers = ['unknown']
                 else:
-                    batch_embeddings = self.generate_embeddings(batch_texts)  # type: ignore[arg-type]
+                    embedding_result = self.generate_embeddings(batch_texts)  # type: ignore[arg-type]
+                    if isinstance(embedding_result, tuple) and len(embedding_result) == 4:
+                        # Batch embeddings with metadata
+                        batch_embeddings, batch_magnitudes, batch_normalized, batch_providers = embedding_result
+                    else:
+                        # Legacy format (backward compatibility)
+                        batch_embeddings = embedding_result
+                        batch_magnitudes = [None] * len(batch_embeddings)
+                        batch_normalized = [False] * len(batch_embeddings)
+                        batch_providers = ['unknown'] * len(batch_embeddings)
             except Exception as e:
                 failures += 1
                 logger.error("Failed to embed batch starting at %d: %s", batch_start, e, exc_info=True)
@@ -623,8 +694,21 @@ class EmbeddingsManager:
 
                     try:
                         embedding = batch_embeddings[offset]
+                        magnitude = batch_magnitudes[offset] if offset < len(batch_magnitudes) else None
+                        normalized = batch_normalized[offset] if offset < len(batch_normalized) else False
+                        provider = batch_providers[offset] if offset < len(batch_providers) else 'unknown'
                     except Exception:
-                        embedding = self.generate_embeddings(text)
+                        embedding_result = self.generate_embeddings(text)
+                        if isinstance(embedding_result, tuple):
+                            embedding, magnitude, normalized, provider = embedding_result
+                        else:
+                            embedding, magnitude, normalized, provider = embedding_result, None, False, 'unknown'
+
+                    # Add magnitude and normalization metadata if available
+                    if magnitude is not None:
+                        chunk["embedding_magnitude"] = magnitude
+                    chunk["embedding_normalized"] = normalized
+                    chunk["embedding_provider"] = provider
 
                     # Optional per-document token budget guard for pre-chunked inputs
                     try:

@@ -114,7 +114,7 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
 
 
-## 🚀 Getting Started
+##  Getting Started
 
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
 
@@ -565,6 +565,20 @@ Tools Used: get_weather
 ## 📦 Batch Ingestion
 
 > **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **TECHNICAL_OVERVIEW.md** for the recommended re-ingestion workflow.
+
+### 📊 Embedding Provider Limits
+
+When configuring chunk sizes and batch processing, be aware of provider-specific limits:
+
+| Feature | OpenAI (text-embedding-3-small/large) | Gemini (gemini-embedding-001) |
+|---------|----------------------------------------|-------------------------------|
+| **Max Inputs per Request** | 2,048 texts | 250 texts |
+| **Max Tokens per Request** | Variable (often restricted by Tier) | 20,000 tokens |
+| **Max Tokens per Text** | 8,191 tokens | 2,048 (or 8,000 on newer models) |
+| **Truncation Behavior** | Manual (must be handled by user) | Silent (automatic) by default |
+| **Batch API Support** | Yes (up to 50,000 requests/file) | No (synchronous only via API) |
+
+> **Note**: These limits affect how you should configure `chunk_size` and `embedding_batch_size` in `backend/core/config.py`. Always check current provider documentation for the latest limits.
 
 The system supports batch processing of multiple documents (PDFs, web pages, MediaWiki) with the following directory structure and requirements:
 

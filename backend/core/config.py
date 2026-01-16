@@ -294,6 +294,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 10) Chunking & ingestion (shared defaults + per-source toggles)
     # -------------------------------------------------------------------------
+    # NOTE: When setting chunk sizes, consider provider limits:
+    # - OpenAI: Max 8,191 tokens per text, variable tokens per request (check your tier)
+    # - Gemini: Max 2,048 tokens per text (8,000 on newer models), 20,000 tokens per request
+    # Refer to provider documentation for current limits and pricing tiers.
     max_urls: int = 10 # legacy - remove when refactoring
     default_chunk_size: int = 500
     default_chunk_overlap: int = 100
