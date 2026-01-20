@@ -151,7 +151,7 @@ class Settings(BaseSettings):
     # e.g. "openai:embed_small", "gemini:embed"
     # Model and dimensions should stay in sync with vector_size.
     # embedding_model_key: str = "openai:embed_small"
-    embedding_model_key: str = "gemini:embed"
+
 
     # Gemini embeddings
     gemini_embedding_model: str = "gemini-embedding-001"
@@ -160,6 +160,10 @@ class Settings(BaseSettings):
     # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
     # This should be applied consistently for both indexing and query embeddings.
     gemini_embedding_normalize: bool = True
+    
+    # Gemini embedding task types for different use cases
+    gemini_embed_type_documents: str = "RETRIEVAL_DOCUMENT"  # For indexing documents
+    gemini_embed_type_query: str = "RETRIEVAL_QUERY"  # For user search queries
 
     # Cost basis for per‑MM pricing
     cost_basis_tokens: int = 1_000_000

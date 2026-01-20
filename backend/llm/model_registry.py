@@ -159,13 +159,15 @@ REGISTRY: Dict[str, ModelInfo] = {
         pricing=Pricing(input_per_mm=0.10, output_per_mm=0.0),  # use your real rates
         capabilities={
             "dimensions": 1536,
-            "normalize_embedding": True,
+            "normalize_embedding": False,  # Let caller decide
         },
         max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
     # Native Gemini SDK embedding profile. This is opt-in and used by the
     # gemini_sdk embedding path in llm_handler for experiments.
-    # Tsk_type : use RETRIEVAL_DOCUMENT for indexing content and RETRIEVAL_QUERY for search
+    # Task_type defaults are handled in core/config.py:
+    # - gemini_embed_type_documents="RETRIEVAL_DOCUMENT" for indexing
+    # - gemini_embed_type_query="RETRIEVAL_QUERY" for search
     "gemini:native-embed": ModelInfo(
         key="gemini:native-embed",
         provider="gemini",
@@ -176,7 +178,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "dimensions": 1536,
             "task_type": "RETRIEVAL_DOCUMENT",
             "output_dimensionality": 1536,
-            "normalize_embedding": True,
+            "normalize_embedding": False,  # Let caller decide
         },
         max_tokens_parameter="max_tokens",
     ),

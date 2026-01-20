@@ -42,6 +42,7 @@ def test_adapter_embedding() -> None:
         model=model,
         input=text,
         dimensions=dimensions,
+        normalize_embedding=False,
     )
 
     print("Raw embedding response type (no_norm):", type(resp_no))
@@ -125,6 +126,7 @@ def test_native_via_llm_handler() -> None:
         input=text,
         task_type=task_type,
         output_dimensionality=output_dimensionality,
+        normalize_embedding=False,
     )
 
     print("Raw native-embedding response type (no_norm):", type(resp_no_norm))

@@ -335,6 +335,189 @@ With this structure:
 - `gemini_embedding_normalize` in config, together with `normalize_embedding` capabilities in the registry, control whether Gemini embeddings are L2-normalized.
 - `LLMHandler` centralizes the actual normalization logic for both adapter and native Gemini paths, while `EmbeddingsManager` and `QdrantDB` ensure the same flags are applied for indexing and query-time usage.
 
+## Embedding Magnitude Metadata
+
+The LLM Handler now provides **magnitude metadata** for embedding responses, offering transparency into the embedding normalization process and enabling quality control across different providers.
+
+### Overview
+
+Magnitude metadata captures the original L2 norm of embedding vectors before normalization, along with normalization status and provider information. This metadata is automatically attached to embedding response objects when available.
+
+### Available Metadata Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `magnitude` | `float` or `None` | Original L2 norm before normalization |
+| `normalized` | `bool` | Whether the embedding was normalized |
+| `provider` | `str` | Provider that generated the embedding |
+
+### Provider Support
+
+#### OpenAI Embeddings
+- **Magnitude**: Calculated from the normalized vector (should be ~1.0)
+- **Normalized**: Always `True` (OpenAI embeddings are pre-normalized)
+- **Provider**: Set to `"openai"`
+
+#### Gemini Embeddings
+- **Magnitude**: Original magnitude before L2 normalization (when `normalize_embedding=True`)
+- **Normalized**: `True` when normalization is applied, `False` otherwise
+- **Provider**: Set to `"gemini_adapter"` for OpenAI-compatible path
+
+### Usage Examples
+
+#### Basic Magnitude Access
+```python
+from backend.llm.llm_handler import llm_handler
+
+# Generate embeddings with magnitude metadata
+response = llm_handler.embeddings.create(
+    provider="gemini",
+    model="gemini-embedding-001",
+    input="Your text here",
+    normalize_embedding=True
+)
+
+# Access magnitude metadata safely
+for item in response.data:
+    magnitude = getattr(item, 'magnitude', None)
+    normalized = getattr(item, 'normalized', False)
+    provider = getattr(item, 'provider', 'unknown')
+    
+    print(f"Magnitude: {magnitude}")
+    print(f"Normalized: {normalized}")
+    print(f"Provider: {provider}")
+```
+
+#### Vector Database Integration
+```python
+# Store magnitude with vectors in your database
+for item in response.data:
+    vector_data = {
+        "vector": item.embedding,
+        "magnitude": getattr(item, 'magnitude', None),
+        "normalized": getattr(item, 'normalized', False),
+        "provider": getattr(item, 'provider', 'unknown')
+    }
+    # Store in Qdrant or other vector database...
+```
+
+#### Quality Monitoring
+```python
+# Monitor magnitude distributions across embeddings
+magnitudes = [getattr(item, 'magnitude', None) for item in response.data]
+valid_magnitudes = [m for m in magnitudes if m is not None]
+
+if valid_magnitudes:
+    avg_magnitude = sum(valid_magnitudes) / len(valid_magnitudes)
+    print(f"Average magnitude: {avg_magnitude:.6f}")
+    print(f"Magnitude range: {min(valid_magnitudes):.6f} - {max(valid_magnitudes):.6f}")
+```
+
+### Implementation Details
+
+#### Gemini Adapter Path
+The `_gemini_embedding_call` method adds magnitude metadata during normalization:
+
+```python
+# During normalization (when normalize_embedding=True)
+for item in resp.data:
+    vec = getattr(item, "embedding", None)
+    if isinstance(vec, list) and vec:
+        s = sum(x * x for x in vec)
+        n = math.sqrt(s)
+        if n > 0.0:
+            item.embedding = [float(x) / n for x in vec]
+            # Add magnitude metadata
+            setattr(item, 'magnitude', n)
+            setattr(item, 'normalized', True)
+            setattr(item, 'provider', 'gemini_adapter')
+```
+
+#### OpenAI Path
+The `_openai_embedding_call` method calculates magnitude for already-normalized embeddings:
+
+```python
+# For OpenAI embeddings (already normalized)
+for item in resp.data:
+    vec = getattr(item, "embedding", None)
+    if isinstance(vec, list) and vec:
+        s = sum(x * x for x in vec)
+        n = math.sqrt(s)
+        # Add magnitude metadata
+        setattr(item, 'magnitude', n)
+        setattr(item, 'normalized', True)
+        setattr(item, 'provider', 'openai')
+```
+
+### Benefits
+
+#### **Debugging & Quality Control**
+- Verify normalization worked correctly by checking `normalized` flag
+- Detect anomalies in embedding generation through magnitude analysis
+- Monitor consistency across different batches and providers
+
+#### **Provider Comparison**
+- Compare magnitude characteristics between OpenAI and Gemini
+- Track normalization behavior across different embedding models
+- Analyze provider-specific patterns for optimization
+
+#### **Future Compatibility**
+- Automatically captures metadata when providers add native magnitude support
+- Backward compatible with existing code (no breaking changes)
+- Safe access patterns using `getattr()` with defaults
+
+### Integration with Chat-with-RAG
+
+In the main chat-with-rag application, magnitude metadata is automatically stored in Qdrant payloads:
+
+```python
+# In EmbeddingsManager.process_document()
+payload = {
+    "text": chunk_text,
+    "embedding_magnitude": magnitude,  # Original magnitude
+    "embedding_normalized": normalized,  # Normalization status
+    "embedding_provider": provider,  # Provider information
+    # ... other metadata
+}
+```
+
+This enables:
+- **Post-hoc analysis** of embedding characteristics
+- **Debugging** of normalization issues
+- **Provider performance** comparison
+- **Quality assurance** across the embedding pipeline
+
+### Backward Compatibility
+
+The magnitude metadata implementation is fully backward compatible:
+
+- **Existing code continues to work** without any changes
+- **Metadata is optional** and accessed via safe `getattr()` calls
+- **No performance impact** when metadata is not used
+- **Graceful fallback** if magnitude calculation fails
+
+### Testing
+
+Use the provided test scripts to verify magnitude metadata functionality:
+
+```bash
+# Test magnitude metadata in main project
+python scripts/test_magnitude_metadata.py
+
+# Test magnitude metadata in standalone llm-handler
+cd /path/to/llm-handler
+python test_magnitude_metadata.py
+```
+
+### Future Enhancements
+
+The magnitude metadata system is designed to support future enhancements:
+
+- **Native provider support**: Automatically captures magnitude when providers add it
+- **Additional metrics**: Easy to extend with more metadata fields
+- **Analytics integration**: Ready for embedding quality monitoring systems
+- **Provider optimization**: Data-driven decisions based on magnitude analysis
+
 ## LLMResult Shape and Usage
 
 ### LLMResult Structure

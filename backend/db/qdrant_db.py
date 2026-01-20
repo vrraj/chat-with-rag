@@ -128,8 +128,9 @@ class QdrantDB:
             raise
 
     def generate_embeddings(self, text: str) -> List[float]:
-        """Generate embeddings for Qdrant queries.
+        """Generate embeddings for USER QUERIES (search/retrieval).
 
+        Uses gemini_embed_type_query config for optimal query performance.
         Backward-compatible behavior:
         - When `settings.embedding_model` is an OpenAI model id string
           (legacy), we route via llm_handler.
@@ -157,14 +158,33 @@ class QdrantDB:
             else:
                 if llm_handler is None:
                     raise ValueError("llm_handler is not available for provider-aware embeddings")
+                # For provider-aware embeddings, pass the registry model key so
+                # llm_handler can route based on endpoint (e.g., gemini_sdk vs
+                # embeddings). The configured embedding_model_key in Settings
+                # should match the desired registry profile (openai:embed_small,
+                # gemini:native-embed, etc.).
+                try:
+                    from backend.core.config import settings as _settings  # type: ignore
+                    model_key = getattr(_settings, "embedding_model_key", model)
+                except Exception:
+                    model_key = model
+
                 kwargs: Dict[str, Any] = {
                     "provider": provider,
-                    "model": model,
+                    "model": model_key,
                     "input": text,
                 }
                 dims = spec.get("dimensions")
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
+                    # Apply config-driven task type for user queries
+                    try:
+                        from backend.core.config import settings as _settings  # type: ignore
+                        task_type = getattr(_settings, "gemini_embed_type_query", "RETRIEVAL_QUERY")
+                        kwargs["task_type"] = task_type
+                        logger.debug(f"[GEMINI QUERY] Using task_type={task_type} for user query")
+                    except Exception:
+                        pass
                     # Apply the same config-driven normalization flag used for
                     # indexing so that Gemini query embeddings are treated
                     # consistently with content embeddings.

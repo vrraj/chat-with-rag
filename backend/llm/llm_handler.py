@@ -1621,6 +1621,7 @@ class LLMHandler:
                 "[GEMINI NATIVE EMBED] "
                 f"model={model!r} batch_size={batch_size} "
                 f"task_type={task_type!r} output_dim={output_dim!r} "
+                f"normalize_embedding={normalize_embedding!r} "
                 f"config={cfg!r}"
             )
         except Exception:
@@ -2396,24 +2397,39 @@ class LLMHandler:
         Assumes `_get_gemini()` returns an OpenAI-style client pointed at a
         Gemini adapter that exposes `client.embeddings.create(...)`.
 
-        The typical model is `gemini-embedding-001`. Dimensions are required
-        and must be explicitly provided by the caller.
+        The typical model is `gemini-embedding-001`. Dimensions are usually
+        required and should come either from the caller or from the model
+        registry capabilities, not from a hardcoded constant.
         """
-        if "dimensions" not in kwargs:
-            raise LLMError(
-                provider="gemini",
-                model=model,
-                kind="config",
-                code="missing_dimensions",
-                message="Gemini embeddings require explicit 'dimensions' parameter",
-            )
-        # Optional client-side L2 normalization of adapter embeddings. This is
-        # opt-in and controlled via the normalize_embedding kwarg so existing
-        # callers remain unchanged unless they explicitly request it.
-        normalize_embedding = bool(kwargs.pop("normalize_embedding", False))
+        # Resolve default settings from the registry when available.
+        default_dims = None
+        default_normalize = False
+        try:
+            mi = self._lookup_model_info_from_registry(model)
+            caps = getattr(mi, "capabilities", {}) or {}
+            default_dims = caps.get("dimensions")
+            default_normalize = bool(caps.get("normalize_embedding", False))
+        except Exception:
+            default_dims = None
+            default_normalize = False
+
+        # Only set dimensions if the caller did not provide one; prefer
+        # registry-provided dimensions over any hardcoded default.
+        if "dimensions" not in kwargs and default_dims is not None:
+            kwargs["dimensions"] = default_dims
+            
+        normalize_embedding = bool(kwargs.pop("normalize_embedding", default_normalize))
 
         client = self._get_gemini()
         resolved_model = self._resolve_model_name(model)
+
+        # The OpenAI-compatible Gemini adapter does not understand native-only
+        # parameters such as task_type or output_dimensionality; these are only
+        # valid for the native google-genai SDK path. Drop them here so that
+        # callers (e.g., QdrantDB) can safely pass task_type for native flows
+        # without breaking adapter-based embeddings.
+        kwargs.pop("task_type", None)
+        kwargs.pop("output_dimensionality", None)
         resp = client.embeddings.create(model=resolved_model, input=input, **kwargs)
 
         # Some Gemini adapter surfaces do not currently populate `usage` for

@@ -58,8 +58,9 @@ class EmbeddingsManager:
 
     def generate_embeddings(self, text: Any):
         """
-        Generate embeddings using the configured provider/model.
+        Generate embeddings for DOCUMENT INDEXING.
 
+        Uses gemini_embed_type_documents config for optimal indexing performance.
         Backward-compatible behavior:
         - All embeddings now route through `llm_handler.embeddings.create()` regardless of model type.
         - The handler automatically handles both legacy OpenAI model ids and provider keys.
@@ -100,6 +101,13 @@ class EmbeddingsManager:
                 }
                 if provider == "gemini" and isinstance(dims, int) and dims > 0:
                     kwargs["dimensions"] = dims
+                    # Apply config-driven task type for document indexing
+                    try:
+                        task_type = getattr(settings, "gemini_embed_type_documents", "RETRIEVAL_DOCUMENT")
+                        kwargs["task_type"] = task_type
+                        logger.debug(f"[GEMINI INDEXING] Using task_type={task_type} for document indexing")
+                    except Exception:
+                        pass
                     # Apply config-driven normalization flag so that Gemini
                     # embeddings are treated consistently for both indexing
                     # and query-time embeddings.
