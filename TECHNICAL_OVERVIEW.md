@@ -417,6 +417,17 @@ At a high level, the chat orchestration pipeline processes queries as follows:
 
 Context assembly builds the inference context using two inputs: **raw tail turns** (a configurable number of the most recent user/assistant turns) and **summarized history** (a condensed representation of earlier conversation state). These controls are configurable so deployments can tune for cost, context window pressure, and answer quality.
 
+#### Summarization and Token Budgeting
+
+When conversation history exceeds the configured window size, older turns are processed through a summarization stage to maintain context while staying within token limits:
+
+- **summarizer_max_input_tokens**: Controls how many tokens of conversation history are sent to the summarizer (default: 512 tokens)
+- **summarizer_max_output_tokens**: Limits the length of generated summaries (default: 128 tokens)
+- **Token counting**: Uses `_get_encoder_for_model()` to provide accurate token estimation for different models with fallback mechanisms
+- **Intelligent truncation**: When content exceeds budget, the system preserves the most recent messages and truncates older content using token-aware clipping
+
+The summarizer processes approximately 4-8 conversation turns (depending on message length) and generates condensed summaries that preserve key context while dramatically reducing token usage. This enables long-running conversations without exceeding model context windows or incurring excessive costs.
+
 ### 6. LLM Reasoning
 
 - Invokes the language model with assembled context

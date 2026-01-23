@@ -573,7 +573,7 @@ When configuring chunk sizes and batch processing, be aware of provider-specific
 | Feature | OpenAI (text-embedding-3-small/large) | Gemini (gemini-embedding-001) |
 |---------|----------------------------------------|-------------------------------|
 | **Max Inputs per Request** | 2,048 texts | 250 texts |
-| **Max Tokens per Request** | Variable (often restricted by Tier) | 20,000 tokens |
+| **Max Tokens per Request** | Variable (often restrict ed by Tier) | 20,000 tokens |
 | **Max Tokens per Text** | 8,191 tokens | 2,048 (or 8,000 on newer models) |
 | **Truncation Behavior** | Manual (must be handled by user) | Silent (automatic) by default |
 | **Batch API Support** | Yes (up to 50,000 requests/file) | No (synchronous only via API) |

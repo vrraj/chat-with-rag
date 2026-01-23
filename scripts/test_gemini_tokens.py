@@ -42,7 +42,7 @@ def test_gemini_token_parameters():
             result = handler.create(
                 provider="gemini",
                 model=model,
-                input="write me a funny 3 line joke with a punchline. Return exactly 3 lines. Each line must be at least 12 words. No bullets. The joke should be really finny and be related to mountains and hikimg but should only include mountan ranges in the apls and italy and andes. do not mention anything about people and cultures that might cause issues with diversity. joke should nbe a wionter time jokw and not a summer time joke . use words that are eacy to understand and not too complicated . no po in the  answer and please make a joke that should really tickle the funny bone in every individual across all continents in the works",
+                input="write me a funny 3 line joke with a punchline. Return exactly 3 lines. Each line must be at least 12 words. No bullets. The joke should be really funny and be related to mountains and hikimg but should only include mountan ranges in the apls and italy and andes. do not mention anything about people and cultures that might cause issues with diversity. Joke should nota winter time joke and not a summer time joke . Use words that are eacy to understand and not too complicated . In the  answer and please make a joke that should really tickle the funny bone in every individual across all continents in the world",
                 max_output_tokens=300,  # Test with max_output_tokens
                 reasoning_effort="medium",
                 debug_thoughts=True,

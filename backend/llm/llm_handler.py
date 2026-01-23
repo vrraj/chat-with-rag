@@ -1777,6 +1777,11 @@ class LLMHandler:
             except Exception:
                 pass
             try:
+                logger.debug("[OPENAI RESPONSES API] model=%s input=%s kwargs=%s", 
+                            resolved_model, 
+                            input,
+                            {k: v for k, v in mapped_kwargs.items() if k not in ['api_key', 'base_url']})
+                
                 response = client.responses.create(model=resolved_model, input=input, stream=stream, **mapped_kwargs)
                 return response
             except Exception:
@@ -1812,6 +1817,11 @@ class LLMHandler:
                 except Exception:
                     pass
                 try:
+                    logger.debug("[OPENAI CHAT COMPLETIONS] model=%s messages=%s kwargs=%s", 
+                                resolved_model, 
+                                messages,
+                                {k: v for k, v in mapped_kwargs.items() if k not in ['api_key', 'base_url']})
+                    
                     resp = client.chat.completions.create(
                         model=resolved_model,
                         messages=messages,
@@ -1836,10 +1846,17 @@ class LLMHandler:
                         logger.debug("[OPENAI CALL] Using Chat Completions (stream) for model=%s", resolved_model)
                     except Exception:
                         pass
+                    
+                    logger.debug("[OPENAI CHAT COMPLETIONS STREAM] model=%s messages=%s kwargs=%s", 
+                                resolved_model, 
+                                messages,
+                                {k: v for k, v in mapped_kwargs.items() if k not in ['api_key', 'base_url']})
+                    
                     stream_obj = client.chat.completions.create(
                         model=resolved_model,
                         messages=messages,
                         stream=True,
+                        timeout=60,  # Add a timeout of 60 seconds
                         **mapped_kwargs,
                     )
                 except Exception as e:
@@ -1976,34 +1993,6 @@ class LLMHandler:
                 except Exception:
                     return ""
 
-            contents = input
-            if isinstance(input, list):
-                def _messages_to_text(messages: Any) -> str:
-                    if not isinstance(messages, list):
-                        return str(messages)
-                    parts: list[str] = []
-                    for m in messages:
-                        if not isinstance(m, dict):
-                            continue
-                        role = str(m.get("role") or "")
-                        content = m.get("content")
-                        if isinstance(content, list):
-                            joined = []
-                            for c in content:
-                                if isinstance(c, dict) and "text" in c:
-                                    joined.append(str(c.get("text") or ""))
-                                else:
-                                    joined.append(str(c))
-                            content_s = "".join(joined)
-                        else:
-                            content_s = "" if content is None else str(content)
-                        if role:
-                            parts.append(f"{role}: {content_s}")
-                        else:
-                            parts.append(content_s)
-                    return "\n".join([p for p in parts if p is not None])
-                contents = _messages_to_text(input)
-
             sdk_kwargs: Dict[str, Any] = dict(kwargs or {}) if isinstance(kwargs, dict) else {}
             try:
                 sdk_kwargs = self._filter_kwargs_by_capabilities(model, sdk_kwargs)
@@ -2026,6 +2015,23 @@ class LLMHandler:
                 cfg["max_output_tokens"] = sdk_kwargs.get("max_tokens")
             elif sdk_kwargs.get("max_completion_tokens") is not None:
                 cfg["max_output_tokens"] = sdk_kwargs.get("max_completion_tokens")
+            
+            # Extract system instruction from messages list if present
+            if isinstance(input, list):
+                system_messages = [m for m in input if m.get("role") == "system"]
+                user_messages = [m for m in input if m.get("role") == "user"]
+                
+                if system_messages:
+                    system_instruction = "\n".join([m.get("content", "") for m in system_messages])
+                    cfg["system_instruction"] = system_instruction
+                
+                if user_messages:
+                    contents = "\n".join([m.get("content", "") for m in user_messages])
+                else:
+                    contents = ""
+            else:
+                # If input is not a list, use it as-is (backward compatibility)
+                contents = input
 
             # Map reasoning knobs into native Gemini thinking_config
             try:
@@ -2111,11 +2117,26 @@ class LLMHandler:
 
             # Non-streaming: call, extract text, usage, and wrap as AdapterResponse.
             if not stream:
+                # Convert cfg to proper GenerateContentConfig if system_instruction is present
+                config_obj = None
+                if cfg:
+                    try:
+                        from google.genai import types as _types  # local import
+                        config_obj = _types.GenerateContentConfig(**cfg)
+                    except Exception:
+                        # Fallback to dict if types import fails
+                        config_obj = cfg
+                
                 resp = native_client.models.generate_content(
                     model=resolved_model,
                     contents=contents,
-                    config=cfg or None,
+                    config=config_obj,
                 )
+
+                logger.debug("[GEMINI NATIVE SDK] model=%s contents=%s config=%s", 
+                           resolved_model, 
+                           contents[:500] + "..." if len(str(contents)) > 500 else contents,
+                           config_obj)
 
                 text = _extract_native_text(resp)
 
@@ -2228,6 +2249,51 @@ class LLMHandler:
                     finish_reason=None,
                 )
 
+            # Streaming: generate content and emit events
+            else:
+                # Convert cfg to proper GenerateContentConfig if system_instruction is present
+                config_obj = None
+                if cfg:
+                    try:
+                        from google.genai import types as _types  # local import
+                        config_obj = _types.GenerateContentConfig(**cfg)
+                    except Exception:
+                        # Fallback to dict if types import fails
+                        config_obj = cfg
+
+                def event_gen():
+                    try:
+                        logger.debug("[GEMINI NATIVE SDK STREAM] model=%s contents=%s config=%s", 
+                                   resolved_model, 
+                                   contents[:500] + "..." if len(str(contents)) > 500 else contents,
+                                   config_obj)
+                        
+                        resp_stream = native_client.models.generate_content_stream(
+                            model=resolved_model,
+                            contents=contents,
+                            config=config_obj,
+                        )
+                        for chunk in resp_stream:
+                            try:
+                                text = _extract_native_text(chunk)
+                                if text:
+                                    yield AdapterEvent("response.output_text.delta", delta=text)
+                            except Exception:
+                                continue
+                        yield AdapterEvent("response.output_text.done")
+                    except Exception as e:
+                        # Convert to LLMError for consistency
+                        raise LLMError(
+                            provider="gemini",
+                            model=model,
+                            kind="generation_error",
+                            code="stream_error",
+                            message=str(e),
+                            retry_after=None,
+                        ) from e
+
+                return event_gen()
+
         # --- OpenAI-adapter path (chat.completions) when endpoint is chat_completions ---
         if endpoint == "chat_completions" and hasattr(client, "chat") and hasattr(getattr(client.chat, "completions"), "create"):
             create_fn = getattr(getattr(client.chat, "completions"), "create", None)
@@ -2237,6 +2303,15 @@ class LLMHandler:
                 if not stream:
                     # Apply capability filtering, parameter mapping, and token limit conversion
                     call_kwargs = working_kwargs.copy()
+                    # DEBUG: Log the messages and kwargs sent to the Gemini OpenAI-compatible endpoint.
+                    try:
+                        logger.debug("[GEMINI CHAT COMPLETIONS] model=%s messages=%s kwargs=%s", 
+                                   resolved_model, 
+                                   messages,
+                                   {k: v for k, v in call_kwargs.items() if k not in ['api_key', 'base_url']})
+                    except Exception:
+                        pass
+                    
                     # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint.
                     try:
                         token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")
@@ -2335,6 +2410,15 @@ class LLMHandler:
                 def event_gen() -> Iterator[AdapterEvent]:
                     # Apply capability filtering, parameter mapping, and token limit conversion
                     call_kwargs = working_kwargs.copy()
+                    # DEBUG: Log the messages and kwargs sent to the Gemini OpenAI-compatible endpoint (streaming).
+                    try:
+                        logger.debug("[GEMINI CHAT COMPLETIONS STREAM] model=%s messages=%s kwargs=%s", 
+                                   resolved_model, 
+                                   messages,
+                                   {k: v for k, v in call_kwargs.items() if k not in ['api_key', 'base_url']})
+                    except Exception:
+                        pass
+                    
                     # DEBUG: Log the final kwargs sent to the Gemini OpenAI-compatible endpoint (streaming).
                     try:
                         token_keys = ("max_output_tokens", "max_tokens", "max_completion_tokens")

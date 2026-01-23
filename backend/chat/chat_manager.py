@@ -1,7 +1,7 @@
 """Chat Manager Module
 
 Entry Point:
-- handle_chat(payload: Dict) -> Dict: Main entry point for chat requests
+- handle_chat(payload: Dict) -> Dict: Main entry point for "statless" chat requests
 
 Pipeline Initialization:
 1. Initialize dependencies (DB, clients, tools)
@@ -9,21 +9,7 @@ Pipeline Initialization:
 3. Set up metrics and logging
 
 Chat Pipeline Stages (with History Integration):
-1. Query Rewrite (optional)
-
-2. Context (Document) Retrieval
-
-3. Reranking
-
-4. Context Summarization
-
-5. Prompt Construction
-
-6. LLM Inference
-
-7. Tool Execution (if needed)
-
-8. Final Response Generation
+1. Query Rewrite (optional) --> 2. Context (Document) Retrieval --> 3. Reranking --> 4. Context Summarization --> 5. Prompt Construction --> 6. LLM Inference --> 7. Tool Execution (if needed) --> 8. Final Response Generation
 
 
 Conversation State:
@@ -85,9 +71,9 @@ def _responses_create(provider: str | None = None, **kwargs: Any):
       - Route via `llm_handler.create(provider=..., model=..., input=..., stream=..., **kwargs)`
       - This enables stage-level provider selection later without changing call sites.
 
-    NOTE: In this step we do not change any callers; provider defaults to None.
     """
-    prov = (provider or "openai").strip().lower()
+
+    prov = (provider or "openai").strip().lower() # default llm provider to openai
 
     # Preserve existing Responses API path when provider is not explicitly set (or is openai).
     if provider is None or prov == "openai":
@@ -125,11 +111,10 @@ def resolve_stage_specs(
           "embedding": {"provider": "openai", "model": "...", "kwargs": {...}},
         }
 
-    NOTE: Provider selection is intentionally fixed to "openai" in this first step.
     """
     p = params or {}
 
-    # Optional per-request overrides (kept minimal for iterative rollout)
+    # Optional per-request overrides (from the frontend / API)
     rerank_provider_override = str(p.get("rerank_provider") or "").strip()
     rerank_model_override = str(p.get("rerank_model") or "").strip()
     rewrite_provider_override = str(p.get("rewrite_provider") or "").strip()
@@ -291,11 +276,7 @@ def resolve_stage_specs(
         },
         "inference": {
             "provider": effective_inference_provider,
-            # Prefer the effective_inference_model, which already folds in
-            # model_keys.inference (registry key) when provided. This remains
-            # backward-compatible because when model_keys is absent,
-            # effective_inference_model falls back to the legacy
-            # inference_model_override or settings.inference_model.
+            # Prefer the effective_inference_model, which already folds in model_keys.inference (registry key) when provided. 
             "model": effective_inference_model,
             "kwargs": {
                 "temperature": inference_temp,
@@ -414,7 +395,7 @@ def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
 def _extract_text_from_responses(resp: Any) -> str:
     """Return response text from a Responses-like object.
 
-    Delegates to llm_handler.build_llm_result_from_response so that
+    Delegates to llm_handler.build_llm_result_from_response so that 
     provider-specific parsing (Responses vs ChatCompletions vs adapters)
     is centralized in one place.
     """
@@ -2977,17 +2958,27 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         if web_context:
             web_text = "\n".join([f"{i+1}. {item.get('title','')}\n{item.get('snippet','')}\nURL: {item.get('url','')}" for i, item in enumerate(web_context, start=1)])
             messages.append({"role": "system", "content": f"Web search results:\n{web_text}"})
+        # Current user query
         messages.append({"role": "user", "content": message})
+        #logger.debug(f"[DEBUG] Before flattening Added user message: {message}")
+        #logger.debug(f"[DEBUG] Total messages count: {len(messages)}")
+        #logger.debug(f"[DEBUG] Final messages: {messages}")
 
         # Convert to a single prompt string unless tools are enabled
         try:
             from backend.utils.prompt_utils import convert_messages_to_prompt
-            prompt_str = convert_messages_to_prompt(messages)
+            prompt_str = convert_messages_to_prompt(messages) # flatten messages to a single string
         except Exception:
             # Fall back to naive join if util unavailable
             prompt_str = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-        _dbg(f"[FULL PROMPT] {log_origin}", prompt_str)
-        prompt_input = prompt_str if not enable_tools else messages
+        #_dbg(f"[FULL PROMPT] {log_origin}", prompt_str)
+        
+        prompt_input = messages
+        # Current user query
+        #logger.debug(f"[DEBUG] After flattening Added user message: {message}")
+        #logger.debug(f"[DEBUG] Total messages count: {len(messages)}")
+        #logger.debug(f"[DEBUG] Final messages: {messages}")
+
     else:
         # flat string (stateless path)
         summary_block = (f"Previous conversation summary: {summary_text}\n\n" if summary_text else "")
@@ -2999,7 +2990,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             + f"Question: {message}\n"
         )
         
-        _dbg(f"[FULL INFERENCE PROMPT] {log_origin}", prompt_str)
+        #_dbg(f"[FULL INFERENCE PROMPT] {log_origin}", prompt_str)
         prompt_input = [{"role": "user", "content": prompt_str}] if enable_tools else prompt_str
 
     # --- Inference decode params
@@ -3059,8 +3050,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
     
     # DEBUG: Add debug before _responses_create call
-    logger.debug(f"[INFERENCE] About to call _responses_create: provider={_inf_provider} model={_inf_model}")
-    logger.debug(f"[INFERENCE] _kwargs_inf keys: {list(_kwargs_inf.keys())}")
+    #logger.debug(f"[INFERENCE] About to call _responses_create: provider={_inf_provider} model={_inf_model}")
+    #logger.debug(f"[INFERENCE] _kwargs_inf keys: {list(_kwargs_inf.keys())}")
     
     try:
         resp_inf = _responses_create(
@@ -3266,35 +3257,27 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
 
-            synth_prompt = (
-                "You are a question-answering assistant for a retrieval-augmented system.\n"
-                "STRICT RULES:\n"
-                "1. Base your answer ONLY on information in the Context section and Tool results.\n"
-                "2. Do NOT use any outside knowledge.\n"
-                "3. If the context does not contain enough information to answer the question, USE THE AVAILABLE TOOLS to gather the information you need.\n"
-                "4. Only if tools cannot help and you still cannot answer, then reply with: "
-                "I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-                "5. Retain any numeric citations like [1], [2] from the Context.\n"
-                "6. Do not fabricate sources or facts.\n\n"
-                f"Question:\n{message}\n\n"
-                + (f"Previous conversation summary:\n{summary_text}\n\n" if summary_text else "")
-                + (f"{recent_block_str}\n" if recent_block_str else "")
-                + f"Context:\n{context_text}\n\n"
-                + f"Tool results:\n{tools_text}\n\n"
-                + "Task:\n"
-                "- Produce the final answer to the Question.\n"
-                "- Use citations like [1], [2] when using Context.\n"
-                "- Integrate Tool results where relevant (do not invent citations for tool facts).\n"
-                "- Be concise.\n"
-                "- Do not add any extra text beyond what is in the Context or Tool results.\n"
-            )
+            # Build messages for tool synthesis (consistent with main inference)
+            synth_messages = [
+                {"role": "system", "content": "You are a question-answering assistant for a retrieval-augmented system.\nSTRICT RULES:\n1. Base your answer ONLY on information in the provided Context and Tool results.\n2. Do NOT use any outside knowledge.\n3. If the context does not contain enough information to answer the question, USE THE AVAILABLE TOOLS to gather the information you need.\n4. Only if tools cannot help and you still cannot answer, then reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n5. Retain any numeric citations like [1], [2] from the Context.\n6. Do not fabricate sources of facts.\n7. Use citations like [1], [2] when using Context.\n8. Integrate Tool results where relevant (do not invent citations for tool facts).\n9. Be concise.\n10. Do not add any extra text beyond what is in the Context or Tool results."}
+            ]
+
+            if summary_text:
+                synth_messages.append({"role": "system", "content": f"Previous conversation summary:\n{summary_text}"})
+
+            if recent_block_str:
+                synth_messages.append({"role": "system", "content": recent_block_str.strip()})
+
+            synth_messages.append({"role": "system", "content": f"Context:\n{context_text}"})
+            synth_messages.append({"role": "system", "content": f"Tool results:\n{tools_text}"})
+            synth_messages.append({"role": "user", "content": f"Question: {message}\n\nTask: Produce the final answer to the Question using the Context and Tool results."})
 
             ts_spec = (stage_specs or {}).get("tools_synth") or {}
             _ts_provider = str(ts_spec.get("provider") or "openai")
             _ts_model = str(ts_spec.get("model"))
 
             _kwargs_synth: Dict[str, Any] = dict(ts_spec.get("kwargs") or {})
-            _kwargs_synth["input"] = synth_prompt
+            _kwargs_synth["input"] = synth_messages
             if "max_output_tokens" not in _kwargs_synth and max_out is not None:
                 _kwargs_synth["max_output_tokens"] = int(max_out)
             if "temperature" not in _kwargs_synth:
@@ -3303,7 +3286,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             try:
                 if show_processing_steps:
                     emit_stage(req_id, "Generating Responses with Tools")
-                _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
+                _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth messages : %s", str(synth_messages))
                 resp_synth = _responses_create(
                     provider=_ts_provider,
                     model=_ts_model,
@@ -3572,7 +3555,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         "list_tools": list_tools,
         "get_executor": get_executor,
         "get_web_context": (lambda q, existing: []),  # stateless: no auto web
-        "style": "flat",
+        "style": "messages", # flat or messages (use messages for clear systemvs user roles separation)
         "enable_tools": bool(enable_tools),
         "enable_query_rewrite": bool(rewrite_enabled),
         "use_web_search": False,
