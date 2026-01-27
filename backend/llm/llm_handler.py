@@ -2016,19 +2016,35 @@ class LLMHandler:
             elif sdk_kwargs.get("max_completion_tokens") is not None:
                 cfg["max_output_tokens"] = sdk_kwargs.get("max_completion_tokens")
             
-            # Extract system instruction from messages list if present
+            # Extract system instruction from messages list if present.
+            # Preserve user content structure using google-genai Content/Part when possible.
             if isinstance(input, list):
                 system_messages = [m for m in input if m.get("role") == "system"]
                 user_messages = [m for m in input if m.get("role") == "user"]
-                
+
                 if system_messages:
                     system_instruction = "\n".join([m.get("content", "") for m in system_messages])
                     cfg["system_instruction"] = system_instruction
-                
-                if user_messages:
-                    contents = "\n".join([m.get("content", "") for m in user_messages])
-                else:
-                    contents = ""
+
+                # Represent user messages as discrete parts to preserve boundaries.
+                try:
+                    from google.genai import types as _types  # local import
+
+                    parts: list[Any] = []
+                    for m in user_messages:
+                        parts.append(_types.Part.from_text(text=str(m.get("content", ""))))
+
+                    # If no user messages exist, still pass an empty string to satisfy SDK.
+                    if parts:
+                        contents = [_types.Content(role="user", parts=parts)]
+                    else:
+                        contents = ""
+                except Exception:
+                    # Fallback: join as plain string.
+                    if user_messages:
+                        contents = "\n".join([m.get("content", "") for m in user_messages])
+                    else:
+                        contents = ""
             else:
                 # If input is not a list, use it as-is (backward compatibility)
                 contents = input
@@ -2135,7 +2151,7 @@ class LLMHandler:
 
                 logger.debug("[GEMINI NATIVE SDK] model=%s contents=%s config=%s", 
                            resolved_model, 
-                           contents[:500] + "..." if len(str(contents)) > 500 else contents,
+                           (str(contents)[:500] + "..." if len(str(contents)) > 500 else str(contents)),
                            config_obj)
 
                 text = _extract_native_text(resp)

@@ -468,6 +468,68 @@ For each major step in the pipeline, the orchestrator emits a human-readable SSE
 
 The detailed wiring of SSE connections and reconnection behavior is described separately in the **SSE Streaming** section, but the orchestration logic here defines *what* gets emitted and *when*.
 
+### 9. Web Search Context (DuckDuckGo Instant Answer)
+
+The chat orchestration pipeline supports optional **web context augmentation** backed by the DuckDuckGo Instant Answer API (`https://api.duckduckgo.com`).
+
+#### 9.1 Two web-search paths
+
+There are two ways web search can affect the final answer:
+
+1. **Automatic Web Context (`web_context`)**
+   - Triggered when `use_web_search` is enabled for the request (request-level flag overrides `settings.use_web_search`).
+   - Executed during the pipeline stage **Establish Web Context**.
+   - Results are injected into the inference prompt as a dedicated user message block:
+     - `WEB SEARCH RESULTS:`
+
+2. **Tool-call Web Search (`web_search` tool)**
+   - Triggered when tools are enabled and the LLM calls the `web_search` tool.
+   - Tool results are injected into the synthesis step as a labeled user message:
+     - `[SOURCE: TOOL - web_search]`.
+
+Both paths currently share the same extraction logic via `backend/chat/web_search.py`.
+
+#### 9.2 What is extracted (normalized schema)
+
+DuckDuckGo returns a JSON object that may include an abstract (often from Wikipedia), plus optional result lists.
+`WebSearchClient.search()` normalizes the response into a list of items of the form:
+
+- `title`: derived from the returned snippet text
+- `snippet`: a text description
+- `url`: the corresponding URL
+
+Extraction order:
+
+1. **Abstract (preferred when present)**
+   - Requires both `AbstractURL` and `AbstractText` to be present.
+
+2. **Results list (often empty in Instant Answer responses)**
+   - Iterates `data["Results"]` entries and maps `Text` + `FirstURL`.
+
+3. **RelatedTopics (currently disabled)**
+   - The Instant Answer payload often returns many `RelatedTopics` entries which are typically DuckDuckGo topic/category links.
+   - This repository currently disables adding `RelatedTopics` into `web_context` to keep web augmentation focused and low-noise.
+
+#### 9.3 Deduplication and caps
+
+After extraction:
+
+- Items are deduplicated (preferring unique URLs).
+- Automatic `web_context` is capped to **3** items in `get_additional_context()`.
+- The `web_search` tool also caps results via its `num_results` argument.
+
+#### 9.4 Prompt injection and citations
+
+When `web_context` is enabled, the inference prompt includes a block labeled:
+
+- `WEB SEARCH RESULTS:`
+
+The model is instructed to cite web-derived facts as:
+
+- `[web-1]`, `[web-2]`, ...
+
+The final `Sources:` section can include corresponding web URLs, and (when "used sources" filtering is enabled) only cited web indices are displayed.
+
 ## 🔎 Retrieval and Ranking
 
 The retrieval and ranking subsystem identifies the most semantically relevant document chunks to support the LLM's answer generation. It operates in two phases: vector retrieval and optional LLM-based reranking.

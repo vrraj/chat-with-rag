@@ -289,6 +289,9 @@ def resolve_stage_specs(
         },
         "tools_synth": {
             # Tools synthesis uses the same provider as inference, but may have its own model.
+            # IMPORTANT: This is the final synthesis step. Do NOT add tool-calling params here
+            # (e.g., tools/tool_choice/parallel_tool_calls). Tool calls should only happen in
+            # the primary inference stage.
             "provider": effective_inference_provider,
             "model": tools_synth_model,
             "kwargs": {
@@ -420,7 +423,7 @@ def _extract_text_from_responses(resp: Any) -> str:
         text = ""
 
     try:
-        logger.debug("[RESP DEBUG] extracted text length=%d", len(text))
+        logger.debug("[RESP DEBUG] extracted text %s and length=%d", text  , len(text))
     except Exception:
         pass
 
@@ -1316,6 +1319,74 @@ def _summary_cache_key(msgs: List[Dict[str, str]] | None, tag: str = "") -> str:
         m.update(b"\x1e")
     return m.hexdigest()
 
+
+def _format_web_context_as_text(web_context: Any) -> str:
+    try:
+        return "\n".join(
+            [
+                f"{i+1}. {item.get('title','')}\n{item.get('snippet','')}\nURL: {item.get('url','')}"
+                for i, item in enumerate(web_context, start=1)
+            ]
+        )
+    except Exception:
+        return ""
+
+
+def _build_inference_messages(
+    *,
+    system_prompt: str,
+    summary_text: str,
+    recent_block_str: str,
+    context_text: str,
+    web_context: Any,
+    message: str,
+) -> List[Dict[str, str]]:
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if summary_text:
+        messages.append({"role": "user", "content": f"CONVERSATION SUMMARY: {summary_text}"})
+    if recent_block_str:
+        messages.append({"role": "user", "content": "RECENT CONVERSATION:\n" + recent_block_str.strip()})
+    messages.append({"role": "user", "content": f"CONTEXT:\n{context_text}"})
+    if web_context:
+        web_text = _format_web_context_as_text(web_context)
+        messages.append({"role": "user", "content": f"WEB SEARCH RESULTS:\n{web_text}"})
+    messages.append({"role": "user", "content": message})
+    return messages
+
+
+def _build_tools_synth_messages(
+    *,
+    system_prompt: str,
+    summary_text: str,
+    recent_block_str: str,
+    context_text: str,
+    tool_outputs_list: List[Dict[str, Any]],
+    used_tools: List[str],
+    tools_text: str,
+    message: str,
+) -> List[Dict[str, str]]:
+    synth_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if summary_text:
+        synth_messages.append({"role": "user", "content": f"CONVERSATION SUMMARY:\n{summary_text}"})
+    if recent_block_str:
+        synth_messages.append({"role": "user", "content": "RECENT CONVERSATION:\n" + recent_block_str.strip()})
+    synth_messages.append({"role": "user", "content": f"[SOURCE: KNOWLEDGE_BASE]\nCONTEXT:\n{context_text}"})
+    synth_messages.append({"role": "user", "content": f"TOOLS USED:\n{', '.join(used_tools) if used_tools else ''}"})
+    for t in tool_outputs_list:
+        synth_messages.append(
+            {
+                "role": "user",
+                "content": f"[SOURCE: TOOL - {t.get('name') or 'unknown'}]\n{str(t.get('output', ''))}",
+            }
+        )
+    synth_messages.append(
+        {
+            "role": "user",
+            "content": f"Question: {message}\n\nTask: Produce the final answer to the Question using the Context and Tool results.",
+        }
+    )
+    return synth_messages
+
 # --- Query rewrite helpers (not wired; no behavior change) ---
 _REWRITE_DEICTIC_RE = re.compile(r"\b(it|this|that|these|those|here|there|they|them|their|its|he|she|his|her|also|then)\b", re.I)
 _REWRITE_SHORT_Q_RE = re.compile(r"\b(where|when|how|why|which|what)\b", re.I)
@@ -1747,7 +1818,7 @@ class ChatManager:
         """Get additional context from web search"""
         return self.web_search.get_additional_context(query, existing_context)
 
-    def chat(self, message: str, context: List[Dict], use_web_search: bool = False, params: Dict[str, Any] | None = None) -> Dict:
+    def chat(self, message: str, context: List[Dict], use_web_search: bool | None = None, params: Dict[str, Any] | None = None) -> Dict:
         """
         Thin wrapper: delegate to run_pipeline (Option A).
         Maintains stateful history and returns answer + sources.
@@ -1757,6 +1828,13 @@ class ChatManager:
         _p = params or {}
         req_id = str(_p.get("query_id") or _p.get("request_id") or uuid.uuid4().hex[:8])
         logger.info("Starting chat in chat_manager.chat() [req_id=%s]", req_id, extra={"message": message})
+        if use_web_search is None:
+            use_web_search = bool(getattr(settings, "use_web_search", False))
+        try:
+            if isinstance(params, dict) and params.get("use_web_search") is not None:
+                use_web_search = bool(params.get("use_web_search"))
+        except Exception:
+            pass
         logger.debug("Context length=%d use_web_search=%s", len(context), use_web_search)
 
         # Always use orchestrator; legacy inlined flow removed (kept in git history).
@@ -2878,9 +2956,21 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     model_key=(_stage_model_keys or {}).get("summary"),
                     )
         if verbatim_tail:
+            _tail = list(verbatim_tail)
+            try:
+                if _tail and (_tail[-1].get("role") == "assistant") and (str(_tail[-1].get("content") or "").strip().lower() == "processing"):
+                    _tail.pop()
+            except Exception:
+                pass
+            try:
+                if _tail and (_tail[-1].get("role") == "user") and (str(_tail[-1].get("content") or "").strip() == str(message or "").strip()):
+                    _tail.pop()
+            except Exception:
+                pass
+
             tail_lines: List[str] = []
             trimmed = 0
-            for msg in verbatim_tail:
+            for msg in _tail:
                 role = msg.get("role", "user")
                 content = msg.get("content", "") or ""
                 if role == "assistant":
@@ -2889,7 +2979,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         trimmed += 1
                     content = cleaned
                 tail_lines.append(f"{role}: {content}")
-            recent_block_str = "Recent conversation:\n" + "\n".join(tail_lines) + "\n\n"
+            recent_block_str = "\n".join(tail_lines) + "\n\n"
             if trimmed:
                 logger.debug("[TAIL] (%s) stripped trailing Sources: blocks from %d assistant messages", log_origin, trimmed)
     except Exception as e:
@@ -2933,36 +3023,30 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # --- Prompt build
     if show_processing_steps:
         emit_stage(req_id, "Inference Prompt Build")
-    strict_rag_prompt = (
+    inference_rag_prompt = (
         "You are a question-answering assistant for a retrieval-augmented system.\n"
-        "STRICT RULES:\n"
-        "1. Base your answer ONLY on information in the Context section (and Web search results if present).\n"
-        "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond that context.\n"
-        "3. If the context does not contain enough information to answer the question, USE THE AVAILABLE TOOLS to gather the information you need.\n"
-        "4. Only if tools cannot help and you still cannot answer, then reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-        "5. If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
-        "6. Do not fabricate sources or facts.\n"
-        "7. If a source URL is available (shown in the final 'Sources' section), you may reference it by its tag like [1]."
+        "RULES (follow exactly):\n"
+        "1. Use ONLY the provided SOURCES below (e.g., [SOURCE: KNOWLEDGE_BASE], WEB SEARCH RESULTS). Do not use outside knowledge.\n"
+        "2. Every factual claim must be supported by the provided SOURCES. Do not guess or speculate.\n"
+        "3. Tool calls: Only call a tool if it is clearly relevant AND can directly retrieve the missing facts needed to answer.\n"
+        "4. If the provided SOURCES are insufficient and no available tool can directly help, reply EXACTLY with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+        "5. Preserve existing KNOWLEDGE_BASE citations like [1], [2] when you use the corresponding source text. Do not invent citations for tool facts.\n"
+        "6. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. When you use WEB SEARCH RESULTS, cite them using [web-1], [web-2], etc.\n"
+        "7. Be concise and answer only what was asked.\n"
     )
-    system_prompt = strict_rag_prompt
+    system_prompt = inference_rag_prompt
 
     
     prompt_input = None  # what we pass as `input` to Responses
     if style == "messages":
-        messages = [{"role": "system", "content": system_prompt}]
-        if summary_text:
-            messages.append({"role": "system", "content": f"Previous conversation summary: {summary_text}"})
-        if recent_block_str:
-            messages.append({"role": "system", "content": recent_block_str.strip()})
-        messages.append({"role": "system", "content": f"Context:\n{context_text}"})
-        if web_context:
-            web_text = "\n".join([f"{i+1}. {item.get('title','')}\n{item.get('snippet','')}\nURL: {item.get('url','')}" for i, item in enumerate(web_context, start=1)])
-            messages.append({"role": "system", "content": f"Web search results:\n{web_text}"})
-        # Current user query
-        messages.append({"role": "user", "content": message})
-        #logger.debug(f"[DEBUG] Before flattening Added user message: {message}")
-        #logger.debug(f"[DEBUG] Total messages count: {len(messages)}")
-        #logger.debug(f"[DEBUG] Final messages: {messages}")
+        messages = _build_inference_messages(
+            system_prompt=system_prompt,
+            summary_text=summary_text,
+            recent_block_str=recent_block_str,
+            context_text=context_text,
+            web_context=web_context,
+            message=message,
+        )
 
         # Convert to a single prompt string unless tools are enabled
         try:
@@ -2971,26 +3055,19 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         except Exception:
             # Fall back to naive join if util unavailable
             prompt_str = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-        #_dbg(f"[FULL PROMPT] {log_origin}", prompt_str)
         
         prompt_input = messages
-        # Current user query
-        #logger.debug(f"[DEBUG] After flattening Added user message: {message}")
-        #logger.debug(f"[DEBUG] Total messages count: {len(messages)}")
-        #logger.debug(f"[DEBUG] Final messages: {messages}")
-
     else:
         # flat string (stateless path)
         summary_block = (f"Previous conversation summary: {summary_text}\n\n" if summary_text else "")
         prompt_str = (
-            strict_rag_prompt + "\n\n"
+            inference_rag_prompt + "\n\n"
             + summary_block
             + recent_block_str
             + f"Context:\n{context_text}\n\n"
             + f"Question: {message}\n"
         )
         
-        #_dbg(f"[FULL INFERENCE PROMPT] {log_origin}", prompt_str)
         prompt_input = [{"role": "user", "content": prompt_str}] if enable_tools else prompt_str
 
     # --- Inference decode params
@@ -3156,14 +3233,11 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # NOTE: Single-pass tool execution.
-        # The previous bounded while-loop was ineffective because `resp_inf` is not updated in-loop,
-        # and we already synthesize once per turn. Keep behavior identical via a single pass.
         if show_processing_steps:
             emit_stage(req_id, "Tool Calls")
         try:
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
-            logger.debug("[TOOLS] Found %d tool calls", len(tool_calls))
             
             if not tool_calls:
                 raise StopIteration  # handled by outer try/except; leaves answer_override=None
@@ -3183,23 +3257,20 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 return "--- External Tool Results ---\n" + _tools
 
             # DEBUG: Print extracted tool calls before execution
-            logger.debug(f"[DEBUG] Extracted tool calls ({len(tool_calls)}):")
+
             for i, call in enumerate(tool_calls):
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = call.get("args", {})
-                logger.debug(f"[DEBUG]   Tool {i+1}: name='{name}', id='{call_id}', args={args}")
 
             for call in tool_calls:
                 name = call.get("name") or ""
                 call_id = call.get("id") or call.get("tool_call_id")
                 args = parse_tool_args(call.get("args"))
-                logger.debug("[TOOLS] Tool call: name=%s id=%s args=%s", name, call_id, args)
 
                 if show_processing_steps:
                     emit_stage(req_id, f"Calling Tool: {name}")
                 executor = get_executor_fn(name)
-                logger.debug("[TOOLS] Found executor for %s: %s", name, "Yes" if executor else "No")
 
                 if not executor:
                     result_text: Any = f"Tool '{name}' is not available."
@@ -3221,7 +3292,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             ]
 
                         result_text = executor(args, chat_context, existing_context=exec_combined_context)
-                        logger.debug("[TOOLS] Executed tool %s returned: %r", name, result_text)
                     except Exception as ex:
                         result_text = f"Tool '{name}' failed: {ex}"
 
@@ -3237,10 +3307,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if name:
                     used_tools.append(name)
 
-                tool_outputs_list.append({"tool_call_id": call_id or "", "output": str(result_text)})
-                logger.debug("[TOOLS] Tool output added - ID: %s, Output: %r", call_id or "N/A", result_text)
-                logger.debug("[TOOLS] Current tool_outputs_list: %s", tool_outputs_list)
-
+                tool_outputs_list.append({"tool_call_id": call_id or "", "name": name, "output": str(result_text)})
+                
                 # Preserve first non-empty tool message for final fallback rendering
                 try:
                     txt = (result_text.strip() if isinstance(result_text, str) else str(result_text).strip())
@@ -3252,30 +3320,47 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not tool_outputs_list:
                 raise StopIteration
 
-            tools_text = "\n\n".join([str(t.get("output", "")) for t in tool_outputs_list]).strip()
-            logger.debug("[TOOLS] tools_text before synthesis: %r", tools_text)
+            tools_text = "\n\n".join(
+                [
+                    f"[SOURCE: TOOL - {t.get('name') or 'unknown'}]\n{str(t.get('output', ''))}"
+                    for t in tool_outputs_list
+                ]
+            ).strip()
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
 
-            # Build messages for tool synthesis (consistent with main inference)
-            synth_messages = [
-                {"role": "system", "content": "You are a question-answering assistant for a retrieval-augmented system.\nSTRICT RULES:\n1. Base your answer ONLY on information in the provided Context and Tool results.\n2. Do NOT use any outside knowledge.\n3. If the context does not contain enough information to answer the question, USE THE AVAILABLE TOOLS to gather the information you need.\n4. Only if tools cannot help and you still cannot answer, then reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n5. Retain any numeric citations like [1], [2] from the Context.\n6. Do not fabricate sources of facts.\n7. Use citations like [1], [2] when using Context.\n8. Integrate Tool results where relevant (do not invent citations for tool facts).\n9. Be concise.\n10. Do not add any extra text beyond what is in the Context or Tool results."}
-            ]
+            tools_synth_system_prompt = (
+                "You are a question-answering assistant for a retrieval-augmented system.\n"
+                "STRICT RULES:\n"
+                "1. Base your answer ONLY on information in the provided SOURCES (e.g., [SOURCE: KNOWLEDGE_BASE], [SOURCE: TOOL - ...]).\n"
+                "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond those SOURCES.\n"
+                "3. If the SOURCES still do not contain enough information to answer the question, reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+                "4. If any Context chunk has a citation like [1], [2], etc., retain it in your response when you use that Context.\n"
+                "5. Do not fabricate sources or facts.\n"
+                "6. Integrate Tool results only when relevant, and do not invent citations for tool facts.\n"
+                "7. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. Do not invent citations for tool facts.\n"
+                "8. Be concise and answer the user’s question directly.\n"
+                "9. Do not add any extra text beyond what is in the Context or Tool results."
+            )
 
-            if summary_text:
-                synth_messages.append({"role": "system", "content": f"Previous conversation summary:\n{summary_text}"})
-
-            if recent_block_str:
-                synth_messages.append({"role": "system", "content": recent_block_str.strip()})
-
-            synth_messages.append({"role": "system", "content": f"Context:\n{context_text}"})
-            synth_messages.append({"role": "system", "content": f"Tool results:\n{tools_text}"})
-            synth_messages.append({"role": "user", "content": f"Question: {message}\n\nTask: Produce the final answer to the Question using the Context and Tool results."})
+            synth_messages = _build_tools_synth_messages(
+                system_prompt=tools_synth_system_prompt,
+                summary_text=summary_text,
+                recent_block_str=recent_block_str,
+                context_text=context_text,
+                tool_outputs_list=tool_outputs_list,
+                used_tools=used_tools,
+                tools_text=tools_text,
+                message=message,
+            )
 
             ts_spec = (stage_specs or {}).get("tools_synth") or {}
             _ts_provider = str(ts_spec.get("provider") or "openai")
             _ts_model = str(ts_spec.get("model"))
 
+            # NOTE: tools_synth is the *final synthesis* step. Ensure stage_specs['tools_synth']['kwargs']
+            # does NOT include tool-calling params (e.g., tools/tool_choice), otherwise the model may
+            # attempt additional tool calls during synthesis.
             _kwargs_synth: Dict[str, Any] = dict(ts_spec.get("kwargs") or {})
             _kwargs_synth["input"] = synth_messages
             if "max_output_tokens" not in _kwargs_synth and max_out is not None:
@@ -3286,13 +3371,11 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             try:
                 if show_processing_steps:
                     emit_stage(req_id, "Generating Responses with Tools")
-                _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth messages : %s", str(synth_messages))
                 resp_synth = _responses_create(
                     provider=_ts_provider,
                     model=_ts_model,
                     **_kwargs_synth,
                 )
-                _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
                 combined = _extract_text_from_responses(resp_synth).strip()
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
 
@@ -3422,7 +3505,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
         # If the model indicates no supported sources AND we did not use tools, suppress sources.
         if _ans_norm_end.endswith("NO_SUPPORTED_SOURCES"):
-            # Remove sentinel from final answer text
+            # Remove sentinel "NO_SUPPORTED_SOURCES" from final answer text. This is only used to remove sources from the final answer text.
             if "\n" in _ans_raw:
                 _ans_raw = _ans_raw.rsplit("\n", 1)[0].rstrip()
             else:
@@ -3442,6 +3525,49 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             answer = _ans_raw
             sources = []
             sources_section = ""
+
+    # Filter Sources to ONLY those cited in the final answer.
+    # Supported citation formats:
+    # - Knowledge base chunks: [1], [2], ...
+    # - Web results: [web-1], [web-2], ...
+    try:
+        _ans_for_citations = str(answer or "")
+        cited_doc_idxs = set(int(x) for x in re.findall(r"\[(\d+)\]", _ans_for_citations))
+        cited_web_idxs = set(int(x) for x in re.findall(r"\[web-(\d+)\]", _ans_for_citations, flags=re.I))
+
+        if not cited_doc_idxs and not cited_web_idxs:
+            sources = []
+            sources_section = ""
+        else:
+            # KB sources: keep only cited indices from the prompt-provided context_items
+            if cited_doc_idxs:
+                filtered_indexed = [d for d in indexed_for_collapse if int(d.get("index") or 0) in cited_doc_idxs]
+                sources_section = "\nSources:\n" + _collapse_sources(filtered_indexed) if filtered_indexed else ""
+                try:
+                    # Return only the cited reranked items (in original order)
+                    sources = [it for i, it in enumerate(context_items, start=1) if i in cited_doc_idxs]
+                except Exception:
+                    sources = []
+            else:
+                sources_section = ""
+                sources = []
+
+            # Web sources: include only cited web indices
+            if cited_web_idxs and web_context:
+                web_notes = "\n" + "\n".join(
+                    [
+                        f"[web-{i}] {web_context[i-1].get('url', 'Web result')}"
+                        for i in sorted(cited_web_idxs)
+                        if 1 <= i <= len(web_context)
+                    ]
+                )
+                sources_section = (sources_section or "\nSources:\n") + web_notes
+                try:
+                    sources.extend([web_context[i-1] for i in sorted(cited_web_idxs) if 1 <= i <= len(web_context)])
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # Final per-UI toggle: hide sources for this response if configured.
     # This runs after tool/sentinel logic so it can override visibility per mode.
@@ -3522,6 +3648,16 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         enable_tools = bool(getattr(settings, "enable_tools", False))
 
+    # Determine web search toggle (request overrides settings)
+    try:
+        _req_web = (payload or {}).get("use_web_search")
+    except Exception:
+        _req_web = None
+    if _req_web is None:
+        use_web_search = bool((params or {}).get("use_web_search", getattr(settings, "use_web_search", False)))
+    else:
+        use_web_search = bool(_req_web)
+
     # --- Derive a namespace for cache keying (non-breaking) ---
     try:
         _uid = str((params or {}).get("user_id") or "").strip()
@@ -3554,11 +3690,11 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         "settings": settings,
         "list_tools": list_tools,
         "get_executor": get_executor,
-        "get_web_context": (lambda q, existing: []),  # stateless: no auto web
+        "get_web_context": (lambda q, existing: WebSearchClient().get_additional_context(q, existing)) if use_web_search else (lambda q, existing: []),
         "style": "messages", # flat or messages (use messages for clear systemvs user roles separation)
         "enable_tools": bool(enable_tools),
         "enable_query_rewrite": bool(rewrite_enabled),
-        "use_web_search": False,
+        "use_web_search": bool(use_web_search),
         "log_origin": "handle_chat",
         "request_id": req_id,
         "namespace": _ns,

@@ -263,6 +263,12 @@ class Settings(BaseSettings):
     chat_history_window_turns: int = 2
     raw_tail_turns: int = 2
 
+    enable_query_rewrite: bool = True
+
+    # Default toggle for automatic web search to populate WEB SEARCH RESULTS / web_context.
+    # Request-level flags can override this per turn.
+    use_web_search: bool = False
+
     # How many most‑recent turns the rewriter sees (can differ from raw_tail_turns if desired)
     rewrite_tail_turns: int = 2
 

@@ -113,6 +113,8 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Granular Cost Tracking**: Instant transparency with per-stage token usage and dollar-cost metrics for every request.
 * **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
 
+Web search is supported via an optional automatic web context stage and via an LLM tool call. See the Web Search section below for details.
+
 
 ##  Getting Started
 
@@ -426,6 +428,29 @@ For additional Make targets (logs, reset, reseed, maintenance utilities), refer 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter contract, see:
 
 👉 **[README_CHAT_API.md](README_CHAT_API.md)**
+
+---
+
+## 🌐 Web Search (Two Paths)
+
+The system supports web search (DuckDuckGo Instant Answer API) in two distinct ways:
+
+1. **Automatic Web Context (`web_context`)**
+   - Enabled by:
+     - `backend/core/config.py`: `use_web_search` (default toggle; default is `False`)
+     - Request override: `POST /chat` payload field `use_web_search` (when provided)
+   - Behavior:
+     - Runs as part of the chat pipeline stage **Establish Web Context**.
+     - Adds a `WEB SEARCH RESULTS:` block to the inference prompt.
+     - Web results are cited as `[web-1]`, `[web-2]`, ... and can appear in the final `Sources:` block.
+
+2. **LLM Tool Call (`web_search` tool)**
+   - Enabled when tools are enabled and the model chooses to call the tool.
+   - Behavior:
+     - Returns a formatted text block of results.
+     - Tool outputs are provided to the synthesis stage as `[SOURCE: TOOL - web_search] ...`.
+
+Both paths use the same underlying DuckDuckGo Instant Answer extraction logic (see `backend/chat/web_search.py`), but they are injected into the LLM context differently.
 
 ### 🧪 2.4 Developer Mode (Optional)
 

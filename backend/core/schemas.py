@@ -27,7 +27,7 @@ class SearchResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     context: List[Dict] = []
-    use_web_search: bool = False
+    use_web_search: Optional[bool] = None
     # Pass-through of UI parameters and chat bubbles history (stateless UI)
     params: Optional[Dict[str, Any]] = Field(default_factory=dict)
     history: Optional[List[Dict[str, str]]] = Field(default_factory=list)
