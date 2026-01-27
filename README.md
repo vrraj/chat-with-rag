@@ -101,6 +101,7 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 
 ### 🧠 Advanced Chat Orchestration
 * **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
+* **Dynamic Model Selection (UI)**: Click "Configure Models" in the chat interface to open the model selection modal. Choose different models for each pipeline stage, mix and match providers (OpenAI + Gemini) within the same conversation, and apply changes to subsequent chat turns.
 * **Dynamic Context Control**: Fine-tune conversation history using a hybrid approach of **raw tail-turns** and **summary turns** to perfectly balance memory depth and token efficiency.
 * **Retrieval Optimization**:
     * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.

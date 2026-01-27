@@ -190,8 +190,13 @@
     // Get the model keys for this stage
     const modelKeys = MODELS_BY_STAGE[stage] || [];
     
-    // Add options for each model key
+    // Add options for each model key, excluding embedding models
     modelKeys.forEach(key => {
+      // Skip models with "embed" in the key (e.g., embedding models)
+      if (key.toLowerCase().includes('embed')) {
+        return;
+      }
+      
       const modelInfo = getModelInfo(key);
       const opt = document.createElement('option');
       opt.value = key;
