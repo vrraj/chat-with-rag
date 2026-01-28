@@ -71,6 +71,33 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
     try:
         soup = BeautifulSoup(clean_html, "html.parser")
 
+        def _split_sources_entries(s: str) -> list[str]:
+            """Split a Sources block tail into per-source entries.
+
+            Handles indices like "[1] ..." and collapsed indices like "[3, 4] ...".
+            """
+            try:
+                txt = (s or "").replace("\n", " ").strip()
+                if not txt:
+                    return []
+
+                # Match bracketed index groups: [1], [12], [3, 4], [3,4,5]
+                pat = re.compile(r"\[\s*\d+(?:\s*,\s*\d+)*\s*\]")
+                matches = list(pat.finditer(txt))
+                if not matches:
+                    return [txt]
+
+                out: list[str] = []
+                for i, m in enumerate(matches):
+                    start = m.start()
+                    end = matches[i + 1].start() if i + 1 < len(matches) else len(txt)
+                    seg = txt[start:end].strip()
+                    if seg:
+                        out.append(seg)
+                return out
+            except Exception:
+                return [s.strip()] if (s or "").strip() else []
+
         # 1. Wrap tables in scrollable containers and harden links
         for table in soup.find_all("table"):
             wrapper = soup.new_tag("div", **{"class": "md-table-wrap"})
@@ -108,22 +135,13 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
                 sources_lines: list[str] = []
                 if txt.startswith("Sources:"):
                     # Existing behavior: Sources block starts the paragraph.
-                    sources_lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+                    raw_lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+                    if raw_lines:
+                        tail = " ".join(raw_lines[1:]).strip()
+                        sources_lines = [raw_lines[0]] + _split_sources_entries(tail)
                 else:
                     # Split sources like: "[2] https://... [3] https://..." into per-source lines.
-                    after_txt = after_txt.replace("\n", " ")
-                    idx_matches = list(re.finditer(r"\[\d+\]", after_txt))
-                    if idx_matches:
-                        for i, m in enumerate(idx_matches):
-                            start = m.start()
-                            end = idx_matches[i + 1].start() if i + 1 < len(idx_matches) else len(after_txt)
-                            seg = after_txt[start:end].strip()
-                            if seg:
-                                sources_lines.append(seg)
-                    else:
-                        if after_txt.strip():
-                            sources_lines.append(after_txt.strip())
-                    sources_lines = ["Sources:"] + sources_lines
+                    sources_lines = ["Sources:"] + _split_sources_entries(after_txt)
 
                 if not sources_lines:
                     continue

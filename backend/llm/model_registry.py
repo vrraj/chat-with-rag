@@ -47,6 +47,15 @@ REGISTRY: Dict[str, ModelInfo] = {
         capabilities={"dimensions": 1536},
         max_tokens_parameter="max_output_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
+    "openai:embed_large": ModelInfo(
+        key="openai:embed_large",
+        provider="openai",
+        model="text-embedding-3-large",
+        endpoint="embeddings",
+        pricing=Pricing(input_per_mm=0.13, output_per_mm=0.0),
+        capabilities={"dimensions": 3072},
+        max_tokens_parameter="max_output_tokens",  # Embeddings don't use max_tokens but set for consistency
+    ),
     "openai:fast": ModelInfo(
         key="openai:fast",
         provider="openai",
@@ -182,8 +191,8 @@ REGISTRY: Dict[str, ModelInfo] = {
         },
         max_tokens_parameter="max_tokens",
     ),
-    "gemini:fast": ModelInfo(
-        key="gemini:fast",
+    "gemini:openai-fast": ModelInfo(
+        key="gemini:openai-fast",
         provider="gemini",
         model="models/gemini-2.5-flash-lite",
         endpoint="chat_completions",
@@ -206,34 +215,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "budget",
         },
     ),
-    # TEST MODEL: Budget-based thinking with reasoning support
-    "gemini:fast-test": ModelInfo(
-        key="gemini:fast-test",
-        provider="gemini",
-        model="models/gemini-2.5-flash-lite",  # Same model but WITH reasoning support
-        endpoint="chat_completions",
-        pricing=Pricing(input_per_mm=0.20, output_per_mm=0.80),
-        capabilities={
-            "tools": True, 
-            "stream": True,
-            "temperature": True,
-            "reasoning_effort": True,  # ← IMPORTANT: Enable reasoning
-            "top_p": True,
-        },
-        max_tokens_parameter="max_completion_tokens",
-        reasoning_parameter=("thinking_budget", 2000),  # ← Uses numeric thinking_budget
-        thinking_tax={
-            "effort_map": {
-                "none": {"reserve_ratio": 0.0},
-                "low": {"reserve_ratio": 0.25},
-                "medium": {"reserve_ratio": 0.50},
-                "high": {"reserve_ratio": 0.80},
-            },
-            "kind": "budget",  # ← Uses thinking_budget parameter
-        },
-    ),
-    "gemini:fast-3-flash": ModelInfo(
-        key="gemini:fast-3-flash",
+    "gemini:openai-3-flash": ModelInfo(
+        key="gemini:openai-3-flash",
         provider="gemini",
         model="models/gemini-3-flash-preview",
         endpoint="chat_completions",
@@ -265,11 +248,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "level",
         },
     ),
-    # Native Gemini SDK variant of gemini:fast-3-flash (same underlying model and config)
-    # This is opt-in and uses endpoint="gemini_sdk" so that llm_handler routes
-    # through the google-genai client instead of the OpenAI-compatible adapter.
-    "gemini:native-sdk-fast-3-flash": ModelInfo(
-        key="gemini:native-sdk-fast-3-flash",
+    "gemini:native-sdk-3-flash": ModelInfo(
+        key="gemini:native-sdk-3-flash",
         provider="gemini",
         model="models/gemini-3-flash-preview",
         endpoint="gemini_sdk",
@@ -301,8 +281,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "level",
         },
     ),
-    "gemini:best": ModelInfo(
-        key="gemini:best",
+    "gemini:openai-best": ModelInfo(
+        key="gemini:openai-best",
         provider="gemini",
         model="models/gemini-2.5-flash",
         endpoint="chat_completions",
