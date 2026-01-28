@@ -422,6 +422,48 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
 .msg.user .bubble { background: #eff6ff; border-color: #bfdbfe; }
 .msg.assistant .bubble { background: none; border: none; padding: 10px 0; }
 
+/* Tighter spacing for backend-rendered HTML/Markdown inside assistant bubbles */
+ .msg.assistant .bubble.markdown {
+   white-space: normal;
+ }
+ .msg.assistant .bubble.markdown p,
+ .msg.assistant .bubble.markdown ul,
+ .msg.assistant .bubble.markdown ol,
+ .msg.assistant .bubble.markdown pre,
+ .msg.assistant .bubble.markdown blockquote {
+   margin: 0 0 8px;
+ }
+ .msg.assistant .bubble.markdown p:last-child,
+ .msg.assistant .bubble.markdown ul:last-child,
+ .msg.assistant .bubble.markdown ol:last-child,
+ .msg.assistant .bubble.markdown pre:last-child,
+ .msg.assistant .bubble.markdown blockquote:last-child {
+   margin-bottom: 0;
+ }
+ .msg.assistant .bubble.markdown li {
+   margin: 2px 0;
+ }
+ .msg.assistant .bubble.markdown h1,
+ .msg.assistant .bubble.markdown h2,
+ .msg.assistant .bubble.markdown h3,
+ .msg.assistant .bubble.markdown h4,
+ .msg.assistant .bubble.markdown h5,
+ .msg.assistant .bubble.markdown h6 {
+   margin: 10px 0 6px;
+ }
+ .msg.assistant .bubble.markdown h1:first-child,
+ .msg.assistant .bubble.markdown h2:first-child,
+ .msg.assistant .bubble.markdown h3:first-child,
+ .msg.assistant .bubble.markdown h4:first-child,
+ .msg.assistant .bubble.markdown h5:first-child,
+ .msg.assistant .bubble.markdown h6:first-child {
+   margin-top: 0;
+ }
+
+ .msg.assistant .bubble.markdown .sources {
+   margin: 0 0 8px;
+ }
+
 /* Dimmed tools-used indicator under assistant messages */
 .tools-used {
   margin-top: 6px;

@@ -661,7 +661,7 @@
   // Append a message bubble with role badge.
   function appendMessage(role, text) {
     const wrapper = document.createElement('div');
-    wrapper.className = `msg ${role}`;
+    wrapper.className = 'msg ' + role;
 
     const badge = document.createElement('span');
     badge.className = 'badge';
@@ -678,6 +678,21 @@
 
     // Ensure the latest message is visible.
     chatHistory.scrollTop = chatHistory.scrollHeight;
+  }
+
+  function setAssistantBubbleHtml(bubble, html) {
+    try {
+      if (!bubble) return;
+      bubble.classList.add('markdown');
+      bubble.innerHTML = (html == null ? '' : String(html));
+      if (window.MarkdownRenderer && typeof window.MarkdownRenderer.decorateRenderedMessage === 'function') {
+        window.MarkdownRenderer.decorateRenderedMessage(bubble);
+      }
+    } catch (e) {
+      try {
+        if (bubble) bubble.textContent = (html == null ? '' : String(html));
+      } catch (_) {}
+    }
   }
 
   // Collect sidebar params as numbers.
@@ -706,6 +721,9 @@
       rewrite_tail_turns: getNum('rewrite_tail_turns'),
       use_tools,
     };
+
+    // Feature flag (Option A): request backend-rendered HTML (additive).
+    base.render_html = true;
 
     try {
       const showProcEl = qs('#show_processing_steps');
@@ -962,7 +980,13 @@
       }
 
       // Clear bubble and render main answer text
-      bubble.textContent = displayText;
+      try {
+        const answerHtml = data && (data.answer_html ?? data.answerHtml ?? data.response_html ?? data.responseHtml);
+        if (answerHtml) setAssistantBubbleHtml(bubble, answerHtml);
+        else bubble.textContent = displayText;
+      } catch (e) {
+        bubble.textContent = displayText;
+      }
 
       // Optional: collapsible reasoning panel when backend provides it.
       if (data && data.reasoning) {
@@ -1368,7 +1392,13 @@ function setupStageStreaming(queryId, bubbleEl) {
           bubble = resolveBubble();
           if (bubble) {
             const finalContent = payload.text || payload.finalContent || payload.response || payload.answer || '';
-            if (finalContent) bubble.textContent = finalContent;
+            try {
+              const finalHtml = payload.finalHtml || payload.final_html || payload.html || '';
+              if (finalHtml) setAssistantBubbleHtml(bubble, finalHtml);
+              else if (finalContent) bubble.textContent = finalContent;
+            } catch (e) {
+              if (finalContent) bubble.textContent = finalContent;
+            }
           }
           closeAndForget();
           return;

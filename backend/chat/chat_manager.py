@@ -55,6 +55,8 @@ from backend.chat.prompt_registry import (
     render_full_payload,
 )
 
+from backend.markdown_render import render_markdown_to_html
+
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
 _SUMMARY_NS_INDEX: Dict[str, Set[str]] = defaultdict(set)
@@ -3696,6 +3698,12 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     history: List[Dict[str, str]] = (payload or {}).get("history") or []
     params: Dict[str, Any] = (payload or {}).get("params") or {}
 
+    # Optional server-side Markdown -> sanitized HTML rendering (feature-flagged)
+    try:
+        _render_html = bool((params or {}).get("render_html", False))
+    except Exception:
+        _render_html = False
+
     if not message:
         return {"answer": "", "metrics": {"vectors_retrieved": 0}}
     logger.info("Before generating req_id display query_id: %s", params.get("query_id"))
@@ -3816,21 +3824,36 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         logger.info("[PIPELINE] handle_chat returning orchestrator output: %s", out.get("answer", ""))
+
+        _answer_text = out.get("answer", "")
+        _answer_html = ""
+        if _render_html:
+            try:
+                _answer_html = render_markdown_to_html(_answer_text)
+            except Exception:
+                _answer_html = ""
+
         # Ensure the final message is properly formatted for the frontend
-        emit_stage(req_id, "Final Answer", final=True, finalContent=out.get("answer", ""))
+        if _render_html and _answer_html:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=_answer_text, finalHtml=_answer_html)
+        else:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=_answer_text)
         # Send an explicit close message
         emit_stage(req_id, "Done", final=True)
 
         # Base response: preserve existing shape/keys for compatibility.
         resp: Dict[str, Any] = {
-            "answer": out.get("answer", ""),
-            "response": out.get("answer", ""),  # legacy compatibility for frontend expecting 'response'
+            "answer": _answer_text,
+            "response": _answer_text,  # legacy compatibility for frontend expecting 'response'
             "metrics": out.get("metrics", {"vectors_retrieved": 0}),
             "turn_metrics": out.get("turn_metrics", {}),
             "conversation_totals": out.get("conversation_totals", {}),
             "tools_used": out.get("tools_used", []),
             "rewrite_display": out.get("rewrite_display", {}),
         }
+
+        if _render_html and _answer_html:
+            resp["answer_html"] = _answer_html
 
         # Non-breaking: only surface reasoning when present and non-empty.
         try:
