@@ -595,6 +595,41 @@ The model is instructed to cite web-derived facts as:
 
 The final `Sources:` section can include corresponding web URLs, and (when "used sources" filtering is enabled) only cited web indices are displayed.
 
+### 10. Postprocessing (Markdown → HTML)
+
+After inference, the system optionally postprocesses the assistant’s text to render rich Markdown content in the chat UI. This stage is additive and controlled by a feature flag.
+
+#### 10.1 Backend rendering (`backend/markdown_render.py`)
+
+- **Markdown → HTML**: Uses `markdown-it-py` or Python-Markdown with the `tables` extension to convert Markdown to HTML.
+- **Sanitization**: Cleans the HTML with `bleach` using an allowlist of tags (`p`, `br`, `strong`, `em`, `code`, `pre`, `blockquote`, `ul`, `ol`, `li`, `hr`, `a`, `table`, `thead`, `tbody`, `tr`, `th`, `td`, `div`) and attributes.
+- **Post-processing**:
+  - Wraps tables in `<div class="md-table-wrap">` for scrollable styling.
+  - Hardens all links: sets `target="_blank"` and `rel="noopener noreferrer"`.
+  - Detects and splits any `Sources:` block so it starts on a new line, with each source on its own line, and makes the heading bold (`<strong>Sources:</strong>`).
+- **Feature flag**: Enabled when `params.render_html=true` (sent by the frontend).
+- **Outputs**: Returns sanitized HTML as `answer_html` in the `/chat` response and `finalHtml` in the SSE final stage.
+
+#### 10.2 Frontend rendering (`frontend/static/chat.js`)
+
+- **Conditional rendering**: If `answer_html`/`finalHtml` is present, the frontend uses `innerHTML` to display rendered content; otherwise it falls back to `textContent`.
+- **Helper**: `setAssistantBubbleHtml(bubble, html)` safely sets `innerHTML` and adds the `markdown` class for scoped styling.
+- **Scoped CSS**: `frontend/static/chat.css` includes tight spacing rules for `.msg.assistant .bubble.markdown` (paragraphs, lists, tables, headings) and for `.sources` blocks.
+- **Graceful fallback**: If HTML rendering fails or is disabled, the UI degrades gracefully to plain text without breaking.
+
+#### 10.3 Integration points
+
+- **Chat Manager**: `backend/chat/chat_manager.py` checks `params.render_html` and calls `render_markdown_to_html()` after inference. It includes `answer_html` in the response payload and emits `finalHtml` in the SSE final stage.
+- **Frontend request**: `frontend/static/chat.js` adds `render_html: true` to `collectParams()` when the feature is enabled.
+- **No breaking changes**: All existing behavior remains unchanged when the feature flag is off.
+
+#### 10.4 Benefits
+
+- **Rich tables**: Markdown tables render as true `<table>` elements with proper column alignment and scrolling.
+- **Readability**: Tighter, scoped spacing for rendered content versus plain text.
+- **Safety**: Server-side sanitization prevents malformed or malicious HTML from reaching the browser.
+- **Consistency**: Sources formatting is enforced on the backend, ensuring a uniform layout across clients.
+
 ## 🔎 Retrieval and Ranking
 
 The retrieval and ranking subsystem identifies the most semantically relevant document chunks to support the LLM's answer generation. It operates in two phases: vector retrieval and optional LLM-based reranking.

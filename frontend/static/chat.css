@@ -420,7 +420,7 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
   white-space: pre-wrap; /* keep user newlines */
 }
 .msg.user .bubble { background: #eff6ff; border-color: #bfdbfe; }
-.msg.assistant .bubble { background: none; border: none; padding: 10px 0; }
+.msg.assistant .bubble { background: none; border: none; padding: 5px 7px; }
 
 /* Tighter spacing for backend-rendered HTML/Markdown inside assistant bubbles */
  .msg.assistant .bubble.markdown {
@@ -462,6 +462,24 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
 
  .msg.assistant .bubble.markdown .sources {
    margin: 0 0 8px;
+ }
+
+/* Table alignment and spacing fixes */
+ .msg.assistant .bubble.markdown table {
+   margin: 1em 0;
+   background-color: rgb(240, 244, 249);
+ }
+ .msg.assistant .bubble.markdown .md-table-wrap {
+   padding-left: 8px;
+ }
+ .msg.assistant .bubble.markdown table th,
+ .msg.assistant .bubble.markdown table td {
+   text-align: left;
+   vertical-align: top;
+   padding-left: 8px;
+   padding-right: 5px;
+   padding-top: 5px;
+   padding-bottom: 4px;
  }
 
 /* Dimmed tools-used indicator under assistant messages */

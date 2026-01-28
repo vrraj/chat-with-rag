@@ -28,8 +28,8 @@ mwparserfromhell==0.6.5  # for parsing Wikipedia/MediaWiki markup with section s
 brotli==1.1.0
 sse-starlette
 aiohttp==3.9.1
-concurrent-log-handler>=0.9.24
-Markdown>=3.6
-markdown-it-py>=3.0.0
-mdit-py-plugins>=0.4.0
-bleach>=6.1.0
+concurrent-log-handler==0.9.24
+Markdown==3.6
+markdown-it-py==3.0.0
+mdit-py-plugins==0.4.0
+bleach==6.1.0

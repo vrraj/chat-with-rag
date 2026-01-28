@@ -57,7 +57,8 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 | 5. **Embedding Generation** (OpenAI) | 5. **Context Construction** (History + reranked chunks) |
 | 6. **Vector Storage** (Qdrant) | 6. **LLM Inference** (GPT-4o-mini) |
 | | 7. **Tool Execution** (e.g., Weather, Maps) |
-| | 8. **Final Response** (with Citations) |
+| | 8. **Postprocessing** (Markdown → HTML, Sources formatting) |
+| | 9. **Final Response** (with Citations) |
 
 The screenshot below illustrates how these **pipeline stages** surface in the multi-turn live chat interface.
 
@@ -114,6 +115,13 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Real-Time Observability**: Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens.
 * **Granular Cost Tracking**: Instant transparency with per-stage token usage and dollar-cost metrics for every request.
 * **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
+
+#### 🧪 Postprocessing (Markdown → HTML)
+After inference, the system optionally postprocesses the assistant’s text to render rich Markdown content in the chat UI:
+- **Backend rendering** (`backend/markdown_render.py`): Converts Markdown to sanitized HTML using `markdown-it-py`/`Markdown` with `bleach`. Wraps tables in scrollable containers and hardens links.
+- **Sources formatting**: Detects and splits any `Sources:` block so it starts on a new line, with each source on its own line, and makes the heading bold.
+- **Frontend rendering**: When `params.render_html=true`, the backend returns `answer_html` (and `finalHtml` via SSE). The frontend uses `innerHTML` to display rendered content, with scoped CSS for tighter spacing and table styling.
+- **Fallback**: If HTML rendering is disabled or fails, the frontend gracefully falls back to plain text (`textContent`).
 
 Web search is supported via an optional automatic web context stage and via an LLM tool call. See the Web Search section below for details.
 

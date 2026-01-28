@@ -71,24 +71,24 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
     try:
         soup = BeautifulSoup(clean_html, "html.parser")
 
-        for a in soup.find_all("a"):
-            try:
+        # 1. Wrap tables in scrollable containers and harden links
+        for table in soup.find_all("table"):
+            wrapper = soup.new_tag("div", **{"class": "md-table-wrap"})
+            table.wrap(wrapper)
+            for a in table.find_all("a", href=True):
                 a["target"] = "_blank"
                 a["rel"] = "noopener noreferrer"
-            except Exception:
-                pass
 
-        for tbl in soup.find_all("table"):
-            try:
-                parent = tbl.parent
-                if parent and getattr(parent, "name", "") == "div" and "md-table-wrap" in (parent.get("class") or []):
-                    continue
-                wrap = soup.new_tag("div")
-                wrap["class"] = "md-table-wrap"
-                tbl.wrap(wrap)
-            except Exception:
-                continue
+        # 2. Fix Sources that got incorrectly wrapped in table rows by the Markdown parser
+        for tr in soup.find_all("tr"):
+            txt = tr.get_text().strip()
+            if txt.startswith("Sources:"):
+                # Replace the <tr> with a plain <p> containing the text
+                p = soup.new_tag("p")
+                p.string = txt
+                tr.replace_with(p)
 
+        # 3. Ensure Sources: starts on a new line and each source is on its own line
         for p in list(soup.find_all("p")):
             try:
                 txt = p.get_text("\n").strip()

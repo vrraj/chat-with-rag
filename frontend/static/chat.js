@@ -685,9 +685,6 @@
       if (!bubble) return;
       bubble.classList.add('markdown');
       bubble.innerHTML = (html == null ? '' : String(html));
-      if (window.MarkdownRenderer && typeof window.MarkdownRenderer.decorateRenderedMessage === 'function') {
-        window.MarkdownRenderer.decorateRenderedMessage(bubble);
-      }
     } catch (e) {
       try {
         if (bubble) bubble.textContent = (html == null ? '' : String(html));
