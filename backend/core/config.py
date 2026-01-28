@@ -223,6 +223,14 @@ class Settings(BaseSettings):
     inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
     inference_tools_synthesis_model: str = "gpt-4o-mini" # Deprecated: Inference with Tool Synthsis will always use inference model to maintain consistency at inference stages 
 
+    # -------------------------------------------------------------------------
+    # 6B) Prompt Registry (YAML)
+    # -------------------------------------------------------------------------
+    # Required: path to the prompt registry YAML for inference stage-1 prompt construction.
+    inference_prompt_registry_path: str = "prompts/prompt_registry.yaml"
+    # Optional per-request override: params["prompt_domain"]. When unset, fall back to this default.
+    prompt_domain_default: str = ""
+
     inference_temperature: float = 0.4  # Decoding temperature
     inference_top_p: float = 0.7  # Nucleus sampling top-p
 

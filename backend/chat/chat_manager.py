@@ -47,6 +47,7 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
 from backend.llm.llm_handler import llm_handler, LLMError
+from backend.chat.prompt_registry import resolve_inference_prompt, render_full_payload
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
@@ -1346,7 +1347,8 @@ def _build_inference_messages(
         messages.append({"role": "user", "content": f"CONVERSATION SUMMARY: {summary_text}"})
     if recent_block_str:
         messages.append({"role": "user", "content": "RECENT CONVERSATION:\n" + recent_block_str.strip()})
-    messages.append({"role": "user", "content": f"CONTEXT:\n{context_text}"})
+    if context_text:
+        messages.append({"role": "user", "content": f"CONTEXT:\n{context_text}"})
     if web_context:
         web_text = _format_web_context_as_text(web_context)
         messages.append({"role": "user", "content": f"WEB SEARCH RESULTS:\n{web_text}"})
@@ -3023,51 +3025,49 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # --- Prompt build
     if show_processing_steps:
         emit_stage(req_id, "Inference Prompt Build")
-    inference_rag_prompt = (
-        "You are a question-answering assistant for a retrieval-augmented system.\n"
-        "RULES (follow exactly):\n"
-        "1. Use ONLY the provided SOURCES below (e.g., [SOURCE: KNOWLEDGE_BASE], WEB SEARCH RESULTS). Do not use outside knowledge.\n"
-        "2. Every factual claim must be supported by the provided SOURCES. Do not guess or speculate.\n"
-        "3. Tool calls: Only call a tool if it is clearly relevant AND can directly retrieve the missing facts needed to answer.\n"
-        "4. If the provided SOURCES are insufficient and no available tool can directly help, reply EXACTLY with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-        "5. Preserve existing KNOWLEDGE_BASE citations like [1], [2] when you use the corresponding source text. Do not invent citations for tool facts.\n"
-        "6. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. When you use WEB SEARCH RESULTS, cite them using [web-1], [web-2], etc.\n"
-        "7. Be concise and answer only what was asked.\n"
-    )
-    system_prompt = inference_rag_prompt
+    # Inference Prompt built from the Prompt Registry YAML file
+    # Resolve prompt domain for this turn. Infer
+    try:
+        prompt_domain = str((params or {}).get("prompt_domain") or "").strip()
+    except Exception:
+        prompt_domain = ""
+    if not prompt_domain:
+        try:
+            prompt_domain = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+        except Exception:
+            prompt_domain = ""
 
-    
+    # Require YAML registry to exist to prevent prompt drift across code paths.
+    registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+    spec = resolve_inference_prompt(registry_path=registry_path, domain=prompt_domain)
+
+    # Build the full inference prompt payload from YAML.
+    web_text = ""
+    try:
+        if web_context:
+            web_text = _format_web_context_as_text(web_context)
+    except Exception:
+        web_text = ""
+
+    payload = render_full_payload(
+        spec.full_payload_template,
+        variables={
+            "summary_text": summary_text or "",
+            "recent_block_str": (recent_block_str or "").strip(),
+            "context_text": context_text or "",
+            "web_context": web_text or "",
+            "message": message or "",
+        },
+    )
+
     prompt_input = None  # what we pass as `input` to Responses
     if style == "messages":
-        messages = _build_inference_messages(
-            system_prompt=system_prompt,
-            summary_text=summary_text,
-            recent_block_str=recent_block_str,
-            context_text=context_text,
-            web_context=web_context,
-            message=message,
-        )
-
-        # Convert to a single prompt string unless tools are enabled
-        try:
-            from backend.utils.prompt_utils import convert_messages_to_prompt
-            prompt_str = convert_messages_to_prompt(messages) # flatten messages to a single string
-        except Exception:
-            # Fall back to naive join if util unavailable
-            prompt_str = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-        
-        prompt_input = messages
+        prompt_input = [
+            {"role": "system", "content": spec.system_instruction},
+            {"role": "user", "content": payload},
+        ]
     else:
-        # flat string (stateless path)
-        summary_block = (f"Previous conversation summary: {summary_text}\n\n" if summary_text else "")
-        prompt_str = (
-            inference_rag_prompt + "\n\n"
-            + summary_block
-            + recent_block_str
-            + f"Context:\n{context_text}\n\n"
-            + f"Question: {message}\n"
-        )
-        
+        prompt_str = spec.system_instruction + "\n\n" + payload
         prompt_input = [{"role": "user", "content": prompt_str}] if enable_tools else prompt_str
 
     # --- Inference decode params

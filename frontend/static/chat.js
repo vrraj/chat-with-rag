@@ -695,6 +695,7 @@
       score_threshold: getNum('score_threshold'),
       summarizer_max_input_tokens: getNum('summarizer_max_input_tokens'),
       summarizer_max_output_tokens: getNum('summarizer_max_output_tokens'),
+      prompt_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
       temperature: getNum('temperature'),
       max_output_tokens: getNum('max_output_tokens'),
       top_p: getNum('top_p'),
