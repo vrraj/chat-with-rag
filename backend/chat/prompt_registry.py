@@ -33,6 +33,17 @@ class RewritePromptSpec:
     full_payload_template: str
 
 
+@dataclass(frozen=True)
+class RerankPromptSpec:
+    system_instruction: str
+    full_payload_template: str
+
+
+@dataclass(frozen=True)
+class SummaryPromptSpec:
+    system_instruction: str
+
+
 _CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
@@ -277,6 +288,157 @@ def resolve_rewrite_prompt(*, registry_path: str, domain: Optional[str]) -> Rewr
         system_instruction=system_instruction,
         full_payload_template=full_payload_template,
     )
+
+
+def resolve_rerank_prompt(*, registry_path: str, domain: Optional[str]) -> RerankPromptSpec:
+    """Resolve rerank prompt spec.
+
+    Rules:
+    - Base prompt is global_defaults.rerank
+    - If domain is provided and domains.<domain>.rerank.system_instruction exists, append it to the base system_instruction.
+    - The full user payload template is taken from global_defaults.rerank.user_messages[name=full_payload].template
+    """
+
+    reg = _get_cached_yaml(registry_path)
+
+    try:
+        base_rr = (reg.get("global_defaults") or {}).get("rerank") or {}
+    except Exception:
+        base_rr = {}
+
+    base_sys = str(base_rr.get("system_instruction") or "").strip()
+    if not base_sys:
+        raise LLMError(
+            provider="internal",
+            kind="config",
+            message="Prompt registry missing required global_defaults.rerank.system_instruction",
+        )
+
+    user_messages = base_rr.get("user_messages") or []
+    full_payload_template = ""
+    try:
+        for item in user_messages:
+            if isinstance(item, dict) and str(item.get("name") or "") == "full_payload":
+                full_payload_template = str(item.get("template") or "")
+                break
+    except Exception:
+        full_payload_template = ""
+
+    if not full_payload_template.strip():
+        raise LLMError(
+            provider="internal",
+            kind="config",
+            message="Prompt registry missing required global_defaults.rerank.user_messages[name=full_payload].template",
+        )
+
+    dom = (domain or "").strip()
+    dom_sys = ""
+    if dom:
+        try:
+            dom_rr = ((reg.get("domains") or {}).get(dom) or {}).get("rerank") or {}
+            dom_sys = str(dom_rr.get("system_instruction") or "").strip()
+        except Exception:
+            dom_sys = ""
+
+    if dom_sys:
+        system_instruction = base_sys + "\n\n" + dom_sys
+    else:
+        system_instruction = base_sys
+
+    try:
+        _tail = (system_instruction or "")[-100:]
+        logger.debug(
+            "[PROMPT_REGISTRY] rerank resolved domain='%s' overlay=%s sys_tail=%r",
+            (dom or "<global_defaults>"),
+            bool(dom_sys),
+            _tail,
+        )
+    except Exception:
+        pass
+
+    if _log_full_enabled():
+        try:
+            logger.debug(
+                "[PROMPT_REGISTRY] rerank system_instruction (FULL) domain='%s':\n%s",
+                (dom or "<global_defaults>"),
+                system_instruction,
+            )
+        except Exception:
+            pass
+        try:
+            logger.debug(
+                "[PROMPT_REGISTRY] rerank full_payload_template (FULL) domain='%s':\n%s",
+                (dom or "<global_defaults>"),
+                full_payload_template,
+            )
+        except Exception:
+            pass
+
+    return RerankPromptSpec(
+        system_instruction=system_instruction,
+        full_payload_template=full_payload_template,
+    )
+
+
+def resolve_summary_prompt(*, registry_path: str, domain: Optional[str]) -> SummaryPromptSpec:
+    """Resolve summarizer prompt spec.
+
+    Rules:
+    - Base prompt is global_defaults.summary
+    - If domain is provided and domains.<domain>.summary.system_instruction exists, append it to the base system_instruction.
+    """
+
+    reg = _get_cached_yaml(registry_path)
+
+    try:
+        base_sum = (reg.get("global_defaults") or {}).get("summary") or {}
+    except Exception:
+        base_sum = {}
+
+    base_sys = str(base_sum.get("system_instruction") or "").strip()
+    if not base_sys:
+        raise LLMError(
+            provider="internal",
+            kind="config",
+            message="Prompt registry missing required global_defaults.summary.system_instruction",
+        )
+
+    dom = (domain or "").strip()
+    dom_sys = ""
+    if dom:
+        try:
+            dom_sum = ((reg.get("domains") or {}).get(dom) or {}).get("summary") or {}
+            dom_sys = str(dom_sum.get("system_instruction") or "").strip()
+        except Exception:
+            dom_sys = ""
+
+    if dom_sys:
+        system_instruction = base_sys + "\n\n" + dom_sys
+    else:
+        system_instruction = base_sys
+
+    try:
+        _tail = (system_instruction or "")[-100:]
+        logger.debug(
+            "[PROMPT_REGISTRY] summary resolved domain='%s' overlay=%s sys_tail=%r",
+            (dom or "<global_defaults>"),
+            bool(dom_sys),
+            _tail,
+        )
+    except Exception:
+        pass
+
+    if _log_full_enabled():
+        try:
+            logger.debug(
+                "[PROMPT_REGISTRY] summary system_instruction (FULL) domain='%s':\n%s",
+                (dom or "<global_defaults>"),
+                system_instruction,
+            )
+        except Exception:
+            pass
+
+    return SummaryPromptSpec(system_instruction=system_instruction)
 
 
 def render_full_payload(template_str: str, *, variables: Dict[str, Any]) -> str:

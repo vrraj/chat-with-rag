@@ -47,7 +47,13 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
 from backend.llm.llm_handler import llm_handler, LLMError
-from backend.chat.prompt_registry import resolve_inference_prompt, resolve_rewrite_prompt, render_full_payload
+from backend.chat.prompt_registry import (
+    resolve_inference_prompt,
+    resolve_rewrite_prompt,
+    resolve_rerank_prompt,
+    resolve_summary_prompt,
+    render_full_payload,
+)
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
@@ -641,12 +647,12 @@ def _get_encoder_for_model(model_name: str):
                 def encode(self, s): return list(s or "")
             return _Shim()
 
-def _build_summary_prompt_with_budget(messages: List[Dict[str, str]], max_input_tokens: int | None, model_name: str) -> str:
+def _build_summary_prompt_with_budget(messages: List[Dict[str, str]], max_input_tokens: int | None, model_name: str, header: str | None = None) -> str:
     """
     Build a summary prompt that fits within `max_input_tokens` by trimming older lines first.
     Guarantees the most recent line is always included (clipped if necessary).
     """
-    header = "Summarize the following conversation in a few sentences:\n\n"
+    header = (header if isinstance(header, str) and header else "Summarize the following conversation in a few sentences:\n\n")
     if not messages:
         return header
 
@@ -724,6 +730,7 @@ def _summarize_messages_with_cache(
     temperature: float,
     max_output_tokens: int | None = None,
     max_input_tokens: int | None = None,
+    prompt_domain: str = "",
     log_prefix: str = "[SUMMARY]",
     stage_spec: Dict[str, Any] | None = None,
 ) -> tuple[str, bool, Dict[str, int] | None]:
@@ -777,8 +784,13 @@ def _summarize_messages_with_cache(
         _provider = str(_ss.get("provider") or "openai")
         _model = str(_ss.get("model") or model)
 
+        registry_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip()
+        sum_spec = resolve_summary_prompt(registry_path=registry_path, domain=(prompt_domain or "").strip())
+        header = (sum_spec.system_instruction or "").strip()
+        if header:
+            header = header + "\n\n"
         # Build the prompt using the effective model so token budgeting matches the selected provider/model.
-        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, _model)
+        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, _model, header=header)
         logger.debug(f"{log_prefix} applied local input budget; prompt_len_chars=%d", len(sum_prompt))
 
         _call_kwargs: Dict[str, Any] = dict(_ss.get("kwargs") or {})
@@ -2790,11 +2802,29 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[RERANK] (%s) Pool size=%d of %d", log_origin, pool_n, n)
         try:
             cand_text = _candidate_texts(pool)
-            prompt_text = _make_rerank_prompt(
-                effective_query,
-                cand_text,
-                int(getattr(settings_obj, "reranker_chunk_size", 600)),
+            try:
+                _pd_rr = str((params or {}).get("prompt_domain") or "").strip()
+            except Exception:
+                _pd_rr = ""
+            if not _pd_rr:
+                try:
+                    _pd_rr = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+                except Exception:
+                    _pd_rr = ""
+
+            chunk_size = int(getattr(settings_obj, "reranker_chunk_size", 600))
+            candidates_block = "\n".join([f"[{i}] {t[:chunk_size]}" for i, t in enumerate(cand_text or [])])
+
+            registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+            rr_spec = resolve_rerank_prompt(registry_path=registry_path, domain=_pd_rr)
+            rr_payload = render_full_payload(
+                rr_spec.full_payload_template,
+                variables={
+                    "query": effective_query,
+                    "candidates_block": candidates_block,
+                },
             )
+            prompt_text = rr_spec.system_instruction + "\n\n" + rr_payload
             _dbg(f"[RERANK] {log_origin} prompt:", prompt_text)
 
             # Provider-aware rerank call via stage_specs (behavior-identical defaults).
@@ -2921,6 +2951,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             _tag_inf = (f"{namespace}|inference" if namespace else "inference")
             sum_spec = (stage_specs or {}).get("summary") or {}
             try:
+                _pd_sum = str((params or {}).get("prompt_domain") or "").strip()
+            except Exception:
+                _pd_sum = ""
+            if not _pd_sum:
+                try:
+                    _pd_sum = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+                except Exception:
+                    _pd_sum = ""
+            try:
                 summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
                     to_summarize,
                     cache,
@@ -2929,6 +2968,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
                     max_input_tokens=sum_in,
                     max_output_tokens=sum_out,
+                    prompt_domain=_pd_sum,
                     log_prefix=f"[SUMMARY] {log_origin}",
                     stage_spec=sum_spec,
                 )

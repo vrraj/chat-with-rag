@@ -88,6 +88,25 @@ global_defaults:
 
           </context>
 
+  rerank:
+    system_instruction: |
+      You are a reranker. Given a user query and N candidate snippets, return the indices of the snippets in strictly decreasing relevance order.
+      Crucially, ensure the top results cover distinct facets of the topic and minimize redundancy.
+      Return ONLY a JSON array of integers. No prose, no code fences, no extra text. Example: [3,0,1].
+
+    user_messages:
+      - name: full_payload
+        enabled_if: true
+        template: |
+          Query: {{ query }}
+
+          Candidates (index: text excerpt):
+          {{ candidates_block }}
+
+  summary:
+    system_instruction: |
+      Summarize the following conversation in a few sentences:
+
 domains:
   mountains:
     inference:

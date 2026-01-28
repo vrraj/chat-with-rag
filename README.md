@@ -441,7 +441,7 @@ This repo uses a YAML-based prompt registry to keep prompts centralized and avoi
 
 - **Path:** `prompts/prompt_registry.yaml`
 - **Role:** Source of truth for stage prompt text and templates.
-- **Current coverage:** Stage 1 (inference) uses the registry.
+- **Current coverage:** Inference and query rewrite are registry-driven; rerank and summarization use the registry for their fixed instructions/templates.
 
 ### Prompt domains (`params.prompt_domain`)
 

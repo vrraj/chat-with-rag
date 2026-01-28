@@ -428,6 +428,71 @@ When conversation history exceeds the configured window size, older turns are pr
 
 The summarizer processes approximately 4-8 conversation turns (depending on message length) and generates condensed summaries that preserve key context while dramatically reducing token usage. This enables long-running conversations without exceeding model context windows or incurring excessive costs.
 
+### 5.1 Prompt Registry (YAML)
+
+The chat pipeline uses a YAML-based prompt registry to centralize prompt text and templates.
+
+- **Registry file:** `prompts/prompt_registry.yaml`
+- **Resolver module:** `backend/chat/prompt_registry.py`
+- **Orchestrator usage:** `backend/chat/chat_manager.py`
+
+#### 5.1.1 Registry schema
+
+The registry is structured as:
+
+- `global_defaults.<stage>`: required base prompt definitions
+- `domains.<domain>.<stage>`: optional domain overlays
+
+For each stage, the resolver starts with `global_defaults.<stage>` and then appends a domain overlay only if it exists at `domains.<domain>.<stage>`. If a domain is selected but a stage does not define that domain overlay, the stage falls back to the `global_defaults` behavior.
+
+#### 5.1.2 Prompt domains (`params.prompt_domain`)
+
+Each chat request can include `params.prompt_domain` (set by the frontend UI). The backend resolves the domain for the turn using:
+
+1. `params.prompt_domain` (if provided)
+2. `settings.prompt_domain_default` (fallback)
+
+This same domain value is applied consistently across stages that consult the registry.
+
+#### 5.1.3 Stage coverage
+
+Prompt registry coverage is stage-specific:
+
+- **Inference**: registry-driven system instruction + templated user payload.
+- **Rewrite**: registry-driven system instruction + templated user payload.
+- **Rerank**: registry-driven fixed rerank instruction + templated payload; candidate snippet formatting remains in code.
+- **Summary**: registry-driven fixed instruction/header; token-budget trimming and message cleanup remain in code.
+
+#### 5.1.4 Template variables by stage
+
+The registry uses Jinja templates. The orchestrator supplies variables per stage:
+
+- **Inference** (`global_defaults.inference.user_messages[name=full_payload]`)
+  - `message`
+  - `summary_text`
+  - `recent_block_str`
+  - `context_text`
+  - `web_context`
+
+- **Rewrite** (`global_defaults.rewrite.user_messages[name=full_payload]`)
+  - `message`
+  - `summary_text`
+  - `recent_block_str`
+
+- **Rerank** (`global_defaults.rerank.user_messages[name=full_payload]`)
+  - `query`
+  - `candidates_block`
+
+Summary does not currently use a templated payload; its registry entry provides the fixed instruction string.
+
+#### 5.1.5 Debug logging
+
+By default, the registry logs which domain was resolved and a short tail snippet of the resolved `system_instruction`. To log the full resolved prompt text and templates, set:
+
+- `PROMPT_REGISTRY_LOG_FULL=1`
+
+This is intentionally opt-in because it can log sensitive prompt content and can produce large logs.
+
 ### 6. LLM Reasoning
 
 - Invokes the language model with assembled context
