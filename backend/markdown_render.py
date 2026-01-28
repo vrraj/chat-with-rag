@@ -15,6 +15,8 @@ _ALLOWED_TAGS = [
     "em",
     "code",
     "pre",
+    "details",
+    "summary",
     "blockquote",
     "ul",
     "ol",
@@ -35,11 +37,20 @@ _ALLOWED_ATTRS = {
     "th": ["colspan", "rowspan"],
     "td": ["colspan", "rowspan"],
     "div": ["class"],
+    "details": ["class"],
 }
 
 
 def render_markdown_to_html(markdown_text: Optional[str]) -> str:
     src = "" if markdown_text is None else str(markdown_text)
+
+    thought_blocks: list[str] = []
+    try:
+        thought_blocks = [m.group(1).strip() for m in re.finditer(r"<thought>([\s\S]*?)</thought>", src, flags=re.IGNORECASE) if m.group(1).strip()]
+        if thought_blocks:
+            src = re.sub(r"<thought>[\s\S]*?</thought>", "", src, flags=re.IGNORECASE).strip()
+    except Exception:
+        thought_blocks = []
 
     raw_html = ""
     try:
@@ -114,6 +125,20 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
                 p = soup.new_tag("p")
                 p.string = txt
                 tr.replace_with(p)
+
+        if thought_blocks:
+            details = soup.new_tag("details")
+            details["class"] = "thoughts"
+            summary = soup.new_tag("summary")
+            summary.append(NavigableString("Reasoning"))
+            details.append(summary)
+            pre = soup.new_tag("pre")
+            pre.append(NavigableString("\n\n".join(thought_blocks)))
+            details.append(pre)
+            if soup.contents:
+                soup.insert(0, details)
+            else:
+                soup.append(details)
 
         # 3. Ensure Sources: starts on a new line and each source is on its own line
         for p in list(soup.find_all("p")):

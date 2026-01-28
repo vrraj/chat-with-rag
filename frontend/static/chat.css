@@ -464,6 +464,25 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
    margin: 0 0 8px;
  }
 
+ /* Thoughts dropdown (backend reasoning) */
+ .msg.assistant .bubble.markdown details.thoughts {
+   margin: 0 0 10px;
+ }
+
+ .msg.assistant .bubble.markdown details.thoughts > summary {
+   cursor: pointer;
+   user-select: none;
+ }
+
+ .msg.assistant .bubble.markdown details.thoughts > pre {
+   max-height: 180px;
+   overflow: auto;
+   white-space: pre-wrap;
+   margin: 8px 0 0;
+   padding-bottom: 10px;
+   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+ }
+
 /* Table alignment and spacing fixes */
  .msg.assistant .bubble.markdown table {
    margin: 1em 0;

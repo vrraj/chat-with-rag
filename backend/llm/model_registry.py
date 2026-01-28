@@ -306,6 +306,31 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "budget",
         },
     ),
+     "gemini:native-sdk-best": ModelInfo(
+        key="gemini:native-sdk-best",
+        provider="gemini",
+        model="models/gemini-2.5-flash",
+        endpoint="gemini_sdk",
+        pricing=Pricing(input_per_mm=0.30, output_per_mm=2.50),  # use your real rates
+        capabilities={
+            "tools": True, 
+            "stream": True,
+            "temperature": True,
+            "reasoning_effort": True,  
+            "top_p": True,
+        },
+        max_tokens_parameter="max_completion_tokens",  
+        reasoning_parameter=("thinking_budget", 1000),  
+        thinking_tax={
+            "effort_map": {
+                "none": {"reserve_ratio": 0.0},
+                "low": {"reserve_ratio": 0.25},
+                "medium": {"reserve_ratio": 0.50},
+                "high": {"reserve_ratio": 0.80},
+            },
+            "kind": "budget",
+        },
+    ),
 }
 
 def get_model_info(key: str) -> ModelInfo:
