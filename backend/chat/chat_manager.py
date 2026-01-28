@@ -47,7 +47,7 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
 from backend.llm.llm_handler import llm_handler, LLMError
-from backend.chat.prompt_registry import resolve_inference_prompt, render_full_payload
+from backend.chat.prompt_registry import resolve_inference_prompt, resolve_rewrite_prompt, render_full_payload
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 # Option A support: index of namespace -> set of cache keys for precise clearing
@@ -1586,6 +1586,7 @@ def rewrite_query(
     tail_messages: List[Dict[str, str]] | None,
     summary_text: str,
     message: str,
+    prompt_domain: str = "",
     log_prefix: str = "[REWRITE]",
     stage_spec: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -1594,7 +1595,34 @@ def rewrite_query(
     On any failure, returns the original unmodified with changed=False.
     """
     try:
-        prompt = build_rewrite_prompt(tail_messages, summary_text, message)
+        registry_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip()
+        rw_spec = resolve_rewrite_prompt(registry_path=registry_path, domain=(prompt_domain or "").strip())
+
+        tail_lines: List[str] = []
+        try:
+            for m in (tail_messages or []):
+                role = str(m.get("role") or "user")
+                content = str(m.get("content") or "")
+                if role == "assistant":
+                    try:
+                        content = _strip_trailing_sources_block(content)
+                    except Exception:
+                        pass
+                tail_lines.append(f"{role}: {content}")
+        except Exception:
+            tail_lines = []
+        recent_block_str = "\n".join(tail_lines)
+
+        payload = render_full_payload(
+            rw_spec.full_payload_template,
+            variables={
+                "summary_text": summary_text or "",
+                "recent_block_str": (recent_block_str or "").strip(),
+                "message": message or "",
+            },
+        )
+
+        prompt = rw_spec.system_instruction + "\n\n" + payload
         # Log an estimated prompt token count for rewrite
         try:
             _rw = stage_spec or {}
@@ -2306,7 +2334,23 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         )
                 if tail_rw or summary_rw:
                     rw_spec = (stage_specs or {}).get("rewrite") or {}
-                    rw = rewrite_query(tail_rw, summary_rw, message, log_prefix=f"[REWRITE] {log_origin}", stage_spec=rw_spec)
+                    try:
+                        _pd = str((params or {}).get("prompt_domain") or "").strip()
+                    except Exception:
+                        _pd = ""
+                    if not _pd:
+                        try:
+                            _pd = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+                        except Exception:
+                            _pd = ""
+                    rw = rewrite_query(
+                        tail_rw,
+                        summary_rw,
+                        message,
+                        prompt_domain=_pd,
+                        log_prefix=f"[REWRITE] {log_origin}",
+                        stage_spec=rw_spec,
+                    )
                     threshold = float(thr)
                     usage_rw = rw.get("_usage") if isinstance(rw, dict) else None
 

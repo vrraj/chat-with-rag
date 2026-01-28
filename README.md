@@ -102,6 +102,7 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 ### 🧠 Advanced Chat Orchestration
 * **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
 * **Dynamic Model Selection (UI)**: Click "Configure Models" in the chat interface to open the model selection modal. Choose different models for each pipeline stage, mix and match providers (OpenAI + Gemini) within the same conversation, and apply changes to subsequent chat turns.
+* **Prompt Registry (YAML)**: Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain` (UI dropdown).
 * **Dynamic Context Control**: Fine-tune conversation history using a hybrid approach of **raw tail-turns** and **summary turns** to perfectly balance memory depth and token efficiency.
 * **Retrieval Optimization**:
     * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.
@@ -429,6 +430,40 @@ For additional Make targets (logs, reset, reseed, maintenance utilities), refer 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter contract, see:
 
 👉 **[README_CHAT_API.md](README_CHAT_API.md)**
+
+---
+
+## 🧩 Prompt Registry (YAML)
+
+This repo uses a YAML-based prompt registry to keep prompts centralized and avoid drift between code paths.
+
+### Registry file
+
+- **Path:** `prompts/prompt_registry.yaml`
+- **Role:** Source of truth for stage prompt text and templates.
+- **Current coverage:** Stage 1 (inference) uses the registry.
+
+### Prompt domains (`params.prompt_domain`)
+
+You can select a prompt domain per request using `params.prompt_domain`.
+
+- If `prompt_domain` is empty or omitted, the system uses `global_defaults`.
+- If `prompt_domain` is set (example: `mountains`), the system applies domain-specific overrides (currently by appending additional domain system instructions).
+
+In the UI (`frontend/chat.html`), the **Prompt Domain** dropdown under **Inference** controls the value sent on every chat request.
+
+### Debug logging (safe by default)
+
+The backend logs:
+
+- Which domain was resolved for inference.
+- A short tail snippet of the resolved system instruction.
+
+To log the full resolved prompt/template for debugging, set:
+
+- `PROMPT_REGISTRY_LOG_FULL=1`
+
+---
 
 ---
 
