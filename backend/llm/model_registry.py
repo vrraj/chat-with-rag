@@ -33,6 +33,7 @@ class ModelInfo:
     # Optional reasoning parameter mapping: (parameter_name, default_value)
     reasoning_parameter: Optional[Tuple[str, Any]] = None
 
+
 # ---- Registry ----
 REGISTRY: Dict[str, ModelInfo] = {
     # -----------------------
@@ -177,6 +178,8 @@ REGISTRY: Dict[str, ModelInfo] = {
     # Task_type defaults are handled in core/config.py:
     # - gemini_embed_type_documents="RETRIEVAL_DOCUMENT" for indexing
     # - gemini_embed_type_query="RETRIEVAL_QUERY" for search
+    # Gemini thinking documentation: https://ai.google.dev/gemini-api/docs/thinking 
+    
     "gemini:native-embed": ModelInfo(
         key="gemini:native-embed",
         provider="gemini",
@@ -191,8 +194,8 @@ REGISTRY: Dict[str, ModelInfo] = {
         },
         max_tokens_parameter="max_tokens",
     ),
-    "gemini:openai-fast": ModelInfo(
-        key="gemini:openai-fast",
+    "gemini:openai-2.5-flash-lite": ModelInfo(
+        key="gemini:openai-2.5-flash-lite",
         provider="gemini",
         model="models/gemini-2.5-flash-lite",
         endpoint="chat_completions",
@@ -215,8 +218,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "budget",
         },
     ),
-    "gemini:openai-3-flash": ModelInfo(
-        key="gemini:openai-3-flash",
+    "gemini:openai-3-flash-preview": ModelInfo(
+        key="gemini:openai-3-flash-preview",
         provider="gemini",
         model="models/gemini-3-flash-preview",
         endpoint="chat_completions",
@@ -248,8 +251,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "level",
         },
     ),
-    "gemini:native-sdk-3-flash": ModelInfo(
-        key="gemini:native-sdk-3-flash",
+    "gemini:native-sdk-3-flash-preview": ModelInfo(
+        key="gemini:native-sdk-3-flash-preview",
         provider="gemini",
         model="models/gemini-3-flash-preview",
         endpoint="gemini_sdk",
@@ -262,7 +265,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "top_p": True,
         },
         max_tokens_parameter="max_completion_tokens",
-        reasoning_parameter=("thinking_level", "minimal"),
+        reasoning_parameter=("thinking_level", "low"),
         thinking_tax={
             "effort_map": {
                 "none": {"reserve_ratio": 0.0},
@@ -281,8 +284,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "level",
         },
     ),
-    "gemini:openai-best": ModelInfo(
-        key="gemini:openai-best",
+    "gemini:openai-reasoning-2.5-flash": ModelInfo(
+        key="gemini:openai-reasoning-2.5-flash",
         provider="gemini",
         model="models/gemini-2.5-flash",
         endpoint="chat_completions",
@@ -306,8 +309,8 @@ REGISTRY: Dict[str, ModelInfo] = {
             "kind": "budget",
         },
     ),
-     "gemini:native-sdk-best": ModelInfo(
-        key="gemini:native-sdk-best",
+    "gemini:native-sdk-reasoning-2.5-flash": ModelInfo(
+        key="gemini:native-sdk-reasoning-2.5-flash",
         provider="gemini",
         model="models/gemini-2.5-flash",
         endpoint="gemini_sdk",

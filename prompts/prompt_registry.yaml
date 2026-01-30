@@ -15,6 +15,7 @@ global_defaults:
         - If retrieved KB context includes citations like [1], [2], keep them when you use that text.
         - If you use web results, cite them as [web-1], [web-2], etc.
       - Be concise and answer only what was asked.
+      - Use Markdown formatting when it improves clarity (lists, headings, tables).
 
     user_messages:
       - name: full_payload

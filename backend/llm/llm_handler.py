@@ -1993,16 +1993,150 @@ class LLMHandler:
                 except Exception:
                     return ""
 
+            def _extract_native_text_with_collapsed_thoughts(resp):
+                """Extract text from google-genai response.
+
+                If any candidate part is marked with `thought == True`, wrap those
+                parts into a <thought>...</thought> block so the existing markdown
+                renderer can collapse them into the Reasoning UI.
+                """
+                try:
+                    candidates = getattr(resp, "candidates", None)
+                    if not isinstance(candidates, list) or not candidates:
+                        return _extract_native_text(resp)
+                    cand = candidates[0]
+                    content = getattr(cand, "content", None)
+                    parts = getattr(content, "parts", None) if content is not None else None
+                    if not isinstance(parts, list) or not parts:
+                        return _extract_native_text(resp)
+
+                    thought_texts: list[str] = []
+                    answer_texts: list[str] = []
+
+                    for p in parts:
+                        if isinstance(p, str):
+                            # Conservative: treat raw strings as answer text.
+                            if p.strip():
+                                answer_texts.append(p)
+                            continue
+
+                        txt = getattr(p, "text", None)
+                        if not isinstance(txt, str) or not txt.strip():
+                            continue
+
+                        is_thought = False
+                        try:
+                            is_thought = (getattr(p, "thought", None) is True)
+                        except Exception:
+                            is_thought = False
+
+                        if is_thought:
+                            thought_texts.append(txt)
+                        else:
+                            answer_texts.append(txt)
+
+                    if thought_texts:
+                        thought_block = "\n\n".join([t.strip() for t in thought_texts if t.strip()])
+                        answer_block = "\n\n".join([t.strip() for t in answer_texts if t.strip()])
+                        if answer_block:
+                            return f"<thought>\n{thought_block}\n</thought>\n\n{answer_block}".strip()
+                        return f"<thought>\n{thought_block}\n</thought>".strip()
+
+                    if answer_texts:
+                        return "\n\n".join([t.strip() for t in answer_texts if t.strip()]).strip()
+
+                    return _extract_native_text(resp)
+                except Exception:
+                    return _extract_native_text(resp)
+
             sdk_kwargs: Dict[str, Any] = dict(kwargs or {}) if isinstance(kwargs, dict) else {}
+            raw_call_kwargs: Dict[str, Any] = dict(sdk_kwargs)
+            debug_native_gemini = bool(
+                sdk_kwargs.pop("debug_native_gemini", False) or sdk_kwargs.pop("debug_thoughts", False)
+            )
+            debug_native_gemini_raw_chars = None
+            try:
+                debug_native_gemini_raw_chars = sdk_kwargs.pop("debug_native_gemini_raw_chars", None)
+            except Exception:
+                debug_native_gemini_raw_chars = None
+            try:
+                if debug_native_gemini_raw_chars is None:
+                    debug_native_gemini_raw_chars = 1000
+                debug_native_gemini_raw_chars = int(debug_native_gemini_raw_chars)
+                if debug_native_gemini_raw_chars < 0:
+                    debug_native_gemini_raw_chars = 0
+            except Exception:
+                debug_native_gemini_raw_chars = 1000
+
+            # Preserve whether the caller explicitly provided reasoning_effort.
+            # If it is absent, we may still apply the registry default (model-agnostic callers).
+            has_reasoning_effort = False
+            try:
+                has_reasoning_effort = ("reasoning_effort" in sdk_kwargs and sdk_kwargs.get("reasoning_effort") is not None)
+            except Exception:
+                has_reasoning_effort = False
+
+            # Determine if this model supports reasoning controls per the registry.
+            supports_reasoning = False
+            try:
+                _mi = self._lookup_model_info_from_registry(model)
+                _caps = getattr(_mi, "capabilities", None) if _mi is not None else None
+                supports_reasoning = bool(isinstance(_caps, dict) and _caps.get("reasoning_effort"))
+            except Exception:
+                supports_reasoning = False
             try:
                 sdk_kwargs = self._filter_kwargs_by_capabilities(model, sdk_kwargs)
-                sdk_kwargs = self._map_reasoning_parameter_with_default(model, sdk_kwargs)
+                # Map reasoning_effort -> thinking_* using registry `reasoning_parameter`.
+                # - If reasoning_effort is explicitly provided, map it.
+                # - If reasoning_effort is absent but the model supports reasoning, apply the
+                #   registry default so callers can remain model-agnostic.
+                if has_reasoning_effort or supports_reasoning:
+                    sdk_kwargs = self._map_reasoning_parameter_with_default(model, sdk_kwargs)
             except Exception:
                 pass
             try:
                 sdk_kwargs = self._apply_gemini_thinking_tax(model, sdk_kwargs)
             except Exception:
                 pass
+
+            # Enable thought return when reasoning is enabled (explicitly or via registry default)
+            # so the SDK can return thought-marked parts for the UI to collapse.
+            if has_reasoning_effort or supports_reasoning:
+                try:
+                    if sdk_kwargs.get("include_thoughts") is None:
+                        sdk_kwargs["include_thoughts"] = True
+                except Exception:
+                    pass
+
+            if debug_native_gemini:
+                try:
+                    safe_in = {
+                        "temperature": raw_call_kwargs.get("temperature"),
+                        "top_p": raw_call_kwargs.get("top_p"),
+                        "max_output_tokens": raw_call_kwargs.get("max_output_tokens"),
+                        "max_tokens": raw_call_kwargs.get("max_tokens"),
+                        "max_completion_tokens": raw_call_kwargs.get("max_completion_tokens"),
+                        "reasoning_effort": raw_call_kwargs.get("reasoning_effort"),
+                        "include_thoughts": raw_call_kwargs.get("include_thoughts"),
+                        "thinking_budget": raw_call_kwargs.get("thinking_budget"),
+                        "thinking_level": raw_call_kwargs.get("thinking_level"),
+                        "tools_count": (len(raw_call_kwargs.get("tools") or []) if isinstance(raw_call_kwargs.get("tools"), list) else None),
+                    }
+                    safe_final = {
+                        "has_reasoning_effort": has_reasoning_effort,
+                        "supports_reasoning": supports_reasoning,
+                        "include_thoughts": sdk_kwargs.get("include_thoughts"),
+                        "thinking_budget": sdk_kwargs.get("thinking_budget"),
+                        "thinking_level": sdk_kwargs.get("thinking_level"),
+                    }
+                    logger.debug(
+                        "[GEMINI SDK DEBUG] model=%s call_kwargs=%s derived=%s",
+                        str(model_key_dbg or model),
+                        safe_in,
+                        safe_final,
+                    )
+                except Exception:
+                    pass
 
             cfg: Dict[str, Any] = {}
             if sdk_kwargs.get("temperature") is not None:
@@ -2064,8 +2198,32 @@ class LLMHandler:
                     tc_kwargs.pop("thinking_budget", None)
 
                 if tc_kwargs:
-                    from google.genai import types as _types  # local import
-                    cfg["thinking_config"] = _types.ThinkingConfig(**tc_kwargs)
+                    try:
+                        from google.genai import types as _types  # local import
+                        cfg["thinking_config"] = _types.ThinkingConfig(**tc_kwargs)
+                    except Exception as e:
+                        # Option B: log and continue without thoughts instead of silently dropping.
+                        if debug_native_gemini:
+                            try:
+                                logger.debug(
+                                    "[GEMINI SDK DEBUG] model=%s ThinkingConfig failed tc_kwargs=%s err=%s",
+                                    str(model_key_dbg or model),
+                                    tc_kwargs,
+                                    str(e)[:300],
+                                )
+                            except Exception:
+                                pass
+                        cfg.pop("thinking_config", None)
+
+                if debug_native_gemini:
+                    try:
+                        logger.debug(
+                            "[GEMINI SDK DEBUG] model=%s thinking_config_kwargs=%s",
+                            str(model_key_dbg or model),
+                            tc_kwargs,
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -2149,12 +2307,76 @@ class LLMHandler:
                     config=config_obj,
                 )
 
-                logger.debug("[GEMINI NATIVE SDK] model=%s contents=%s config=%s", 
-                           resolved_model, 
-                           (str(contents)[:500] + "..." if len(str(contents)) > 500 else str(contents)),
-                           config_obj)
+                if debug_native_gemini:
+                    try:
+                        has_tc = False
+                        try:
+                            has_tc = bool(getattr(config_obj, "thinking_config", None) is not None)
+                        except Exception:
+                            has_tc = False
+                        logger.debug(
+                            "[GEMINI SDK DEBUG] model=%s outgoing model_name=%s has_thinking_config=%s config_type=%s",
+                            str(model_key_dbg or model),
+                            str(resolved_model),
+                            has_tc,
+                            str(type(config_obj)),
+                        )
+                    except Exception:
+                        pass
 
-                text = _extract_native_text(resp)
+                text = _extract_native_text_with_collapsed_thoughts(resp)
+
+                if debug_native_gemini:
+                    try:
+                        raw_repr = None
+                        try:
+                            raw_repr = repr(resp)
+                        except Exception:
+                            raw_repr = str(resp)
+                        if isinstance(raw_repr, str):
+                            if debug_native_gemini_raw_chars == 0:
+                                snippet = raw_repr
+                            else:
+                                snippet = raw_repr[: debug_native_gemini_raw_chars]
+                                if len(raw_repr) > debug_native_gemini_raw_chars:
+                                    snippet += "...<truncated>"
+                            logger.debug(
+                                "[GEMINI SDK DEBUG] model=%s raw_response_repr=%s",
+                                str(model_key_dbg or model),
+                                snippet,
+                            )
+                    except Exception:
+                        pass
+
+                if debug_native_gemini:
+                    try:
+                        candidates = getattr(resp, "candidates", None)
+                        parts = None
+                        thought_true = 0
+                        thought_other = 0
+                        if isinstance(candidates, list) and candidates:
+                            c0 = candidates[0]
+                            c0_content = getattr(c0, "content", None)
+                            parts = getattr(c0_content, "parts", None) if c0_content is not None else None
+                        if isinstance(parts, list):
+                            for p in parts:
+                                try:
+                                    if getattr(p, "thought", None) is True:
+                                        thought_true += 1
+                                    else:
+                                        thought_other += 1
+                                except Exception:
+                                    thought_other += 1
+                        logger.debug(
+                            "[GEMINI SDK DEBUG] model=%s parts_total=%s thought_true=%s thought_other=%s extracted_len=%s",
+                            str(model_key_dbg or model),
+                            (len(parts) if isinstance(parts, list) else None),
+                            thought_true,
+                            thought_other,
+                            (len(text) if isinstance(text, str) else None),
+                        )
+                    except Exception:
+                        pass
 
                 # Usage: google-genai surfaces token counts via `usage_metadata`.
                 usage_like: Optional[Dict[str, int]] = None
@@ -2179,9 +2401,23 @@ class LLMHandler:
                             "completion_tokens": int(ct or 0),
                             "total_tokens": int(tt or (int(pt or 0) + int(ct or 0))),
                         }
-                        # Keep thoughts tokens for debugging/telemetry when available.
+                        # Map Gemini thinking tokens into our standard reasoning token bucket.
                         if th is not None:
+                            usage_like["reasoning_tokens"] = int(th or 0)
                             usage_like["thoughts_tokens"] = int(th or 0)
+
+                        if debug_native_gemini:
+                            try:
+                                logger.debug(
+                                    "[GEMINI SDK DEBUG] model=%s tokens prompt=%s completion=%s reasoning=%s total=%s",
+                                    str(model_key_dbg or model),
+                                    usage_like.get("prompt_tokens"),
+                                    usage_like.get("completion_tokens"),
+                                    usage_like.get("reasoning_tokens"),
+                                    usage_like.get("total_tokens"),
+                                )
+                            except Exception:
+                                pass
                 except Exception:
                     usage_like = None
 

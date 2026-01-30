@@ -141,9 +141,10 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
                 soup.append(details)
 
         # 3. Ensure Sources: starts on a new line and each source is on its own line
-        for p in list(soup.find_all("p")):
+        # Handle both paragraphs and list items; list items must remain valid HTML.
+        for node in list(soup.find_all(["p", "li"])):
             try:
-                txt = p.get_text("\n").strip()
+                txt = node.get_text("\n").strip()
                 if "Sources:" not in txt:
                     continue
 
@@ -171,31 +172,53 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
                 if not sources_lines:
                     continue
 
-                insert_after_node = p
+                insert_after_node = node
 
                 if before_txt:
-                    main_p = soup.new_tag("p")
-                    main_p.append(NavigableString(before_txt))
-                    p.replace_with(main_p)
-                    insert_after_node = main_p
+                    if getattr(node, "name", None) == "li":
+                        # Keep list structure valid: rewrite the LI in-place.
+                        node.clear()
+                        node.append(NavigableString(before_txt))
+                        insert_after_node = node
+                    else:
+                        main_p = soup.new_tag("p")
+                        main_p.append(NavigableString(before_txt))
+                        node.replace_with(main_p)
+                        insert_after_node = main_p
                 else:
                     # If the paragraph was only sources, remove it and insert sources in its place.
-                    p.extract()
+                    node.extract()
 
-                sources_p = soup.new_tag("p")
-                sources_label = soup.new_tag("strong")
-                sources_label.append(NavigableString(sources_lines[0]))
-                sources_p.append(sources_label)
-                sources_div = soup.new_tag("div")
-                sources_div["class"] = "sources"
-                for i, ln in enumerate(sources_lines[1:]):
-                    if i > 0:
-                        sources_div.append(soup.new_tag("br"))
-                    sources_div.append(NavigableString(ln))
+                if getattr(insert_after_node, "name", None) == "li":
+                    # Render sources inside the list item to keep valid HTML.
+                    insert_after_node.append(soup.new_tag("br"))
+                    sources_label = soup.new_tag("strong")
+                    sources_label.append(NavigableString(sources_lines[0]))
+                    insert_after_node.append(sources_label)
+                    if sources_lines[1:]:
+                        sources_div = soup.new_tag("div")
+                        sources_div["class"] = "sources"
+                        for i, ln in enumerate(sources_lines[1:]):
+                            if i > 0:
+                                sources_div.append(soup.new_tag("br"))
+                            sources_div.append(NavigableString(ln))
+                        insert_after_node.append(soup.new_tag("br"))
+                        insert_after_node.append(sources_div)
+                else:
+                    sources_p = soup.new_tag("p")
+                    sources_label = soup.new_tag("strong")
+                    sources_label.append(NavigableString(sources_lines[0]))
+                    sources_p.append(sources_label)
+                    sources_div = soup.new_tag("div")
+                    sources_div["class"] = "sources"
+                    for i, ln in enumerate(sources_lines[1:]):
+                        if i > 0:
+                            sources_div.append(soup.new_tag("br"))
+                        sources_div.append(NavigableString(ln))
 
-                insert_after_node.insert_after(sources_p)
-                if sources_lines[1:]:
-                    sources_p.insert_after(sources_div)
+                    insert_after_node.insert_after(sources_p)
+                    if sources_lines[1:]:
+                        sources_p.insert_after(sources_div)
             except Exception:
                 continue
 

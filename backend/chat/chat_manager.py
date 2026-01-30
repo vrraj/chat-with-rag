@@ -292,7 +292,7 @@ def resolve_stage_specs(
                 "top_p": inference_top_p,
                 "max_output_tokens": inference_max_out,
                 "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
-                "debug_thoughts": getattr(settings, "debug_thoughts", False),
+                "debug_thoughts": getattr(settings, "debug_thoughts", True),
                 **tools_kwargs,
             },
         },
