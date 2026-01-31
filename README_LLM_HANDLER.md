@@ -2,7 +2,7 @@
 
 ## Overview
 
-The LLM Handler system provides a unified interface for multiple LLM providers (OpenAI, Anthropic, Gemini) with automatic parameter mapping, capability filtering, and model-specific optimizations. The design is completely model-agnostic through a centralized registry system.
+The LLM Handler system provides a unified interface for multiple LLM providers (OpenAI, Gemini) with automatic parameter mapping, capability filtering, and model-specific optimizations. The design is completely model-agnostic through a centralized registry system.
 
 ## Architecture
 
@@ -120,7 +120,7 @@ Embedding profiles are defined in `backend/llm/model_registry.py`:
           "dimensions": 1536,
           "task_type": "RETRIEVAL_DOCUMENT",
           "output_dimensionality": 1536,
-          "normalize_embedding": True,
+          "normalize_embedding": False,
       },
       max_tokens_parameter="max_tokens",
   )
@@ -239,7 +239,7 @@ Two layers control normalization behavior for Gemini:
       ...,
       capabilities={
           "dimensions": 1536,
-          "normalize_embedding": True,
+          "normalize_embedding": False,
       },
   )
 
@@ -249,13 +249,13 @@ Two layers control normalization behavior for Gemini:
           "dimensions": 1536,
           "task_type": "RETRIEVAL_DOCUMENT",
           "output_dimensionality": 1536,
-          "normalize_embedding": True,
+          "normalize_embedding": False,
       },
   )
   ```
 
-  - For the native SDK path, `capabilities["normalize_embedding"]` is used as the default when `normalize_embedding` is not passed explicitly.
-  - For the adapter path, `normalize_embedding` is currently configured via settings (see below); the registry flag documents the intended default behavior.
+  - For both adapter and native SDK paths, `capabilities["normalize_embedding"]` is the default when `normalize_embedding` is not passed explicitly.
+  - In the current registry, the default is `False`; production behavior typically enables normalization via the global config flag (below).
 
 - **Global config flag** (`backend/core/config.py`):
 
@@ -3027,21 +3027,6 @@ pydantic >= 2.0.0         # For data validation
 
 ## Conclusion
 
-#### Anthropic Provider
-```python
-# Limited support - placeholder for future implementation
-provider = "anthropic"  # Currently minimal implementation
-
-# Supported endpoints:
-- "responses"        # Via messages API (not fully implemented)
-
-# Supported models:
-- claude-3-5-sonnet-20241022  # Example model
-
-# Client libraries:
-import anthropic  # Official Anthropic client (limited usage)
-```
-
 ### Adding New Providers
 
 #### Step 1: Define Provider Type
@@ -3049,7 +3034,7 @@ import anthropic  # Official Anthropic client (limited usage)
 # In backend/llm/model_registry.py
 from typing import Literal
 
-Provider = Literal["openai", "gemini", "anthropic", "new_provider"]  # Add new provider
+Provider = Literal["openai", "gemini", "new_provider"]  # Add new provider
 ```
 
 #### Step 2: Update ModelInfo Constructor
