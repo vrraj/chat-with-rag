@@ -1,6 +1,6 @@
 """Configuration settings for the application."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings
@@ -127,10 +127,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    #collection_name: str = "document_index_gemini"  # gemini collection name
-    collection_name: str = "document_index"  # openai collection name
     # Vector/search shape & retrieval knobs
-    # vector_size is now computed dynamically based on embedding_model_key
+    # collection_name and embedding_model_key are computed dynamically based on active_domain
     top_k: int = 8  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
@@ -139,11 +137,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3) Embeddings
     # -------------------------------------------------------------------------
-    # Embedding profile key (must match model_registry)
-    # e.g. "openai:embed_small", "gemini:embed"
-    # Model and dimensions come from model_registry capabilities
-    embedding_model_key: str = "openai:embed_small"
-    #embedding_model_key: str = "gemini:native-embed"
+    # Domain-based embedding configuration
+    # collection_name and embedding_model_key are computed dynamically based on active_domain
     # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
     # This should be applied consistently for both indexing and query embeddings.
     gemini_embedding_normalize: bool = True
@@ -159,6 +154,29 @@ class Settings(BaseSettings):
     embedding_batch_size_default: int = 30
     embedding_batch_size_openai: int = 30
     embedding_batch_size_gemini: int = 30
+
+    # -------------------------------------------------------------------------
+    # 3A) Domain-based embedding configuration
+    # -------------------------------------------------------------------------
+    # Domain → (collection_name, embedding_model_key) mapping
+    # Each domain has its own collection and embedding model
+    DOMAIN_EMBEDDING_CONFIG: ClassVar[Dict[str, Dict[str, str]]] = {
+        "default": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small"
+        },
+        "mountains": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small"
+        },
+        "oceans": {
+            "collection_name": "document_index_gemini",
+            "embedding_model_key": "gemini:native-embed"
+        }
+    }
+    
+    # Active domain selection. Sets the collection_name and embedding_model_key
+    active_domain: str = "oceans"
 
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)
@@ -373,6 +391,16 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 12) Computed Properties
     # -------------------------------------------------------------------------
+    @property
+    def collection_name(self) -> str:
+        """Collection name from active domain configuration"""
+        return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["collection_name"]
+
+    @property
+    def embedding_model_key(self) -> str:
+        """Embedding model key from active domain configuration"""
+        return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["embedding_model_key"]
+
     @property
     def vector_size(self) -> int:
         """Vector size from embedding_model_key registry capabilities"""

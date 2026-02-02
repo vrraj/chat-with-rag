@@ -256,33 +256,96 @@ As a result, table-aware ingestion is additive and can be enabled without changi
 
 #### 🧰 Collection Management
 
-The system uses a single active Qdrant collection at any given time, with the
-name controlled by the `collection_name` setting in:
+The system uses **domain-based collection management** where each domain is automatically linked to a specific collection and embedding model configuration. This ensures that collections are always paired with the correct embedding model and vector dimensions.
 
-```
-backend/core/config.py
+##### **Domain-Based Configuration**
+
+The collection name and embedding model are now computed dynamically based on the active domain:
+
+```python
+# In backend/core/config.py
+DOMAIN_EMBEDDING_CONFIG = {
+    "default": {
+        "collection_name": "document_index",
+        "embedding_model_key": "openai:embed_small"
+    },
+    "mountains": {
+        "collection_name": "document_index", 
+        "embedding_model_key": "openai:embed_small"
+    },
+    "oceans": {
+        "collection_name": "document_index_gemini",
+        "embedding_model_key": "gemini:native-embed"
+    }
+}
+
+# Single change point for domain selection
+active_domain: str = "oceans"
 ```
 
-The default is:
+##### **Computed Properties**
 
-```
-collection_name = "document_index"
+The system uses computed properties to automatically resolve collection and model configuration:
+
+```python
+@property
+def collection_name(self) -> str:
+    """Collection name from active domain configuration"""
+    return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["collection_name"]
+
+@property  
+def embedding_model_key(self) -> str:
+    """Embedding model key from active domain configuration"""
+    return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["embedding_model_key"]
+
+@property
+def vector_size(self) -> int:
+    """Vector size from embedding_model_key registry capabilities"""
+    from backend.llm.model_registry import get_model_info
+    model_info = get_model_info(self.embedding_model_key)
+    return int(model_info.capabilities["dimensions"])
 ```
 
-Changing this value points the ingestion and retrieval layers to a different
-logical dataset. When a new collection name is provided, Qdrant will
-automatically create the collection on first write, using the configured
-embedding dimensionality and payload schema.
+##### **Benefits**
+
+- **🎯 Single Change Point**: Only change `active_domain` to switch both collection and model
+- **🔗 Automatic Linking**: Collection and embedding model are always correctly paired
+- **📏 Dynamic Vector Size**: Automatically computed from the embedding model's dimensions
+- **🌐 Provider Flexibility**: Each domain can use different providers (OpenAI, Gemini)
+- **🔄 Zero Breaking Changes**: All existing code continues to work unchanged
+
+##### **Usage Examples**
+
+```python
+# Switch to oceans domain (Gemini embeddings)
+settings.active_domain = "oceans"
+# → collection_name = "document_index_gemini"
+# → embedding_model_key = "gemini:native-embed" 
+# → vector_size = 1536
+
+# Switch to mountains domain (OpenAI embeddings)  
+settings.active_domain = "mountains"
+# → collection_name = "document_index"
+# → embedding_model_key = "openai:embed_small"
+# → vector_size = 1536
+```
+
+##### **Collection Creation and Management**
+
+When a new domain is used for the first time:
+
+1. **Automatic Creation**: Qdrant automatically creates the collection on first write
+2. **Correct Dimensions**: Uses the vector dimensions from the domain's embedding model
+3. **Consistent Schema**: Maintains the same payload schema across all collections
+4. **Provider Compatibility**: Ensures embedding model and collection dimensions match
 
 This mechanism enables:
+- **Multi-tenant setups**: Different domains for different departments or use cases
+- **A/B testing**: Compare different embedding models on separate collections
+- **Provider switching**: Seamlessly switch between OpenAI and Gemini embeddings
+- **Dimension management**: Automatically handle 1536 vs 3072 dimension models
 
-- isolating seed/demo data from user‑specific datasets  
-- maintaining multiple datasets side‑by‑side in the same Qdrant instance  
-- switching datasets by configuration instead of manual DB operations  
-
-
-All ingestion pipelines (HTML, MediaWiki, PDF, batch) and all retrieval flows
-always operate against the currently configured collection.
+All ingestion pipelines (HTML, MediaWiki, PDF, batch) and all retrieval flows always operate against the currently configured domain's collection.
 
 ### 🌱 Seed Data and Demo Collection
 

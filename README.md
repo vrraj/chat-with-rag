@@ -538,39 +538,96 @@ python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
 
 ### 🔄 Managing Your Collections
 
-The default collection is named `document_index` (defined in `backend/core/config.py`). If you want to move beyond the sample data, choose one of the following paths:
+The system supports **domain-based collection management** where each domain can have its own collection and embedding model configuration. This approach links collection names to specific embedding models automatically.
 
-#### Option A: Create a Fresh Collection (Recommended)
-This is the cleanest way to experiment with your own data (PDFs, URLs, etc.) without losing the original seed data.
+#### **Domain-Based Configuration (Recommended)**
+
+The new approach uses a single `active_domain` setting that automatically configures both the collection name and embedding model:
+
+```python
+# In backend/core/config.py
+DOMAIN_EMBEDDING_CONFIG = {
+    "default": {
+        "collection_name": "document_index",
+        "embedding_model_key": "openai:embed_small"
+    },
+    "mountains": {
+        "collection_name": "document_index", 
+        "embedding_model_key": "openai:embed_small"
+    },
+    "oceans": {
+        "collection_name": "document_index_gemini",
+        "embedding_model_key": "gemini:native-embed"
+    }
+}
+
+# Active domain selection (single change point)
+active_domain: str = "oceans"
+```
+
+**Benefits:**
+- 🎯 **Single Change Point**: Only change `active_domain` to switch both collection and model
+- 🔗 **Automatic Linking**: Collection and embedding model are always correctly paired
+- 📏 **Dynamic Vector Size**: Automatically computed from the embedding model's dimensions
+- 🌐 **Domain-Specific**: Each domain can use different providers (OpenAI, Gemini)
+
+**Usage Examples:**
+```python
+# Switch to oceans domain (Gemini embeddings)
+active_domain: str = "oceans"
+# → collection_name = "document_index_gemini"
+# → embedding_model_key = "gemini:native-embed" 
+# → vector_size = 1536
+
+# Switch to mountains domain (OpenAI embeddings)
+active_domain: str = "mountains"
+# → collection_name = "document_index"
+# → embedding_model_key = "openai:embed_small"
+# → vector_size = 1536
+```
+
+#### **Legacy Manual Configuration**
+
+If you prefer manual configuration, you can still manage collections directly:
 
 1.  **Open `backend/core/config.py`**.
-2.  **Update the `collection_name` variable**:
+2.  **Create a new domain entry** in `DOMAIN_EMBEDDING_CONFIG`:
     ```python
-    collection_name = "my_custom_knowledge_base"
+    "my_domain": {
+        "collection_name": "my_custom_knowledge_base",
+        "embedding_model_key": "openai:embed_small"
+    }
     ```
-3.  **Restart the app**. The system will automatically detect the missing collection and create a fresh, empty one in Qdrant.
+3.  **Set the active domain**:
+    ```python
+    active_domain: str = "my_domain"
+    ```
+4.  **Restart the app**. The system will automatically detect the missing collection and create a fresh one in Qdrant.
 
 > [!TIP]
-> This approach allows you to maintain multiple "knowledge bases" on the same server. You can swap back to the seed data at any time just by changing this variable back to `document_index`.
+> This approach allows you to maintain multiple "knowledge bases" on the same server. You can swap between domains at any time just by changing the `active_domain` variable.
 
-#### Option B: Delete and Purge (Destructive)
-Use this if you want to completely clear the sample data but keep using the `document_index` name for your own knowledge base.
+#### **Collection Management Options**
+
+**Option A: Create Fresh Collections (Recommended)**
+Each domain automatically gets its own collection when first used. No manual setup required.
+
+**Option B: Clear Existing Collection**
+Use this if you want to completely clear a collection but keep using the same name.
 
 > [!WARNING]
 > This action will permanently delete the collection and all vectors within it. This cannot be undone.
 
-1.  **Activate your environment**:
-    ```bash
-    source venv/bin/activate
-    
-    ```
-2.  **Run the deletion script**:
-    ```bash
-    python qdrant_scripts/qdrant_ops.py --delete-collection document_index
+```bash
+# Activate your environment
+source .venv/bin/activate
 
-    ```
-3.  **Verify or Re-seed**: 
-    If you visit the UI now, the collection will be gone. You can either start fresh by uploading your own files via the interface or run `make seed` to repopulate it from scratch.
+# Delete specific collection
+python qdrant_scripts/qdrant_ops.py --delete-collection document_index_gemini
+
+# Or delete the current active collection
+python qdrant_scripts/qdrant_ops.py --delete-collection $(python -c "from backend.core.config import settings; print(settings.collection_name)")
+```
 
 
 ### 💬 Example Queries
