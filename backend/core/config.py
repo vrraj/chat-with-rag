@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     #collection_name: str = "document_index"  # collection name
-    collection_name: str = "document_index_gemini"  # collection name
+    collection_name: str = "document_index"  # collection name
 
     # Vector/search shape & retrieval knobs
     # Qdrant vector size (must match embedding dimension)
@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     # 3) Embeddings
     # -------------------------------------------------------------------------
     # Embedding provider: "openai" or "gemini" (used for docs + queries)
-    embedding_model: str = "gemini"
+    embedding_model: str = "openai"
 
     # Default OpenAI embedding model
     openai_embedding_model: str = "text-embedding-3-small"
@@ -181,7 +181,7 @@ class Settings(BaseSettings):
 
     # Embeddings profile key (should align with `embedding_model` provider selector).
     #embedding_model_key: str = "openai:embed_small"
-    embedding_model_key: str = "gemini:embed"
+    embedding_model_key: str = "openai:embed_small"
     # Stage model profile keys
     rewrite_model_key: str = "openai:fast"
     rerank_model_key: str = "openai:fast"
@@ -247,7 +247,7 @@ class Settings(BaseSettings):
     inference_reasoning_effort: str = "low"
     inference_reasoning_model: bool = False
 
-    debug_thoughts: bool = True # Gemini specific flag to display reasoning - the llm_handler will ignore this for other models
+    debug_thoughts: bool = False # Gemini specific flag to display reasoning - the llm_handler will ignore this for other models
 
     enable_tools: bool = True  # Enable agent-style tool calls (UI can override per-turn)
     max_tool_passes: int = 2  # Maximum number of tool loops to be called from LLM generated output for a single turn. This it to prevent runaway tool calls

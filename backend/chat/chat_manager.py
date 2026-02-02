@@ -1957,11 +1957,6 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_handler)
     # so we always inspect the provider-native object for tool_calls.
     base = getattr(resp, "adapter_response", resp)
-    try:
-        logger.debug("[TOOLS] extract_tool_calls: base type=%s repr=%r", type(base), base)
-    except Exception:
-        # Never let logging break tool-call extraction
-        pass
 
     def _dedup(_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Best-effort deduplication across providers/wrappers.
@@ -2002,15 +1997,8 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
         calls = []
 
     calls = [c for c in calls if c.get("name")]
-    try:
-        logger.debug("[TOOLS] extract_tool_calls: raw calls from LLMResult before dedup: %r", calls)
-    except Exception:
-        pass
+    # Deduplicate calls
     deduped = _dedup(calls)
-    try:
-        logger.debug("[TOOLS] extract_tool_calls: deduped calls from LLMResult: %r", deduped)
-    except Exception:
-        pass
 
     return deduped
 
@@ -2170,6 +2158,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             display_sources = bool(getattr(settings_obj, "display_sources_for_chat", True))
     except Exception:
         display_sources = True
+
+    # Optional per-request override
+    try:
+        if isinstance(params, dict) and "show_sources" in params:
+            _v = params.get("show_sources")
+            if _v is not None:
+                display_sources = bool(_v)
+    except Exception:
+        pass
 
     # Per-turn control for emitting intermediate processing stages to SSE.
     # Precedence: params.show_processing_steps (per turn) overrides settings_obj.show_processing_steps (global default).
@@ -3107,8 +3104,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         web_notes = "\n" + "\n".join([f"[web-{i+1}] {item.get('url', 'Web result')}" for i, item in enumerate(web_context)])
         sources_section += web_notes
 
-    # Stage: Inference Prompt Build
-    # --- Prompt build
+    # Stage: Inference Pass 1: Inference Prompt Build + Tools Output (if enabled and needed)
     if show_processing_steps:
         emit_stage(req_id, "Inference Prompt Build")
     # Inference Prompt built from the Prompt Registry YAML file
@@ -3138,8 +3134,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     payload = render_full_payload(
         spec.full_payload_template,
         variables={
-            "summary_text": summary_text or "",
             "recent_block_str": (recent_block_str or "").strip(),
+            "summary_text": summary_text or "",
             "context_text": context_text or "",
             "web_context": web_text or "",
             "message": message or "",
@@ -3191,6 +3187,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if top_p is not None:
         _kwargs_inf["top_p"] = float(top_p)
    
+   # Tools evaluation
     if enable_tools and isinstance(prompt_input, list):
         try:
             logger.debug("[PIPELINE] Before Tools list function")
@@ -3210,19 +3207,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             _kwargs_inf["tools"] = []
 
     logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
-    #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
-    
-    # DEBUG: Add debug before _responses_create call
-    #logger.debug(f"[INFERENCE] About to call _responses_create: provider={_inf_provider} model={_inf_model}")
-    #logger.debug(f"[INFERENCE] _kwargs_inf keys: {list(_kwargs_inf.keys())}")
-    
     try:
         resp_inf = _responses_create(
             provider=_inf_provider,
             model=_inf_model,
             **_kwargs_inf,
         )
-        logger.debug(f"[INFERENCE] _responses_create succeeded: type={type(resp_inf)}")
+        logger.debug(f"[INFERENCE] Response from _responses_create: type={type(resp_inf)}")
     except Exception as e:
         logger.error(f"[INFERENCE] _responses_create failed with {type(e).__name__}: {str(e)[:200]}...")
         logger.debug(f"[INFERENCE] Exception details: type={type(e)} args={getattr(e, 'args', None)}")
@@ -3298,7 +3289,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[INFERENCE] (%s) raw response: %r", log_origin, _raw)
     except Exception:
         pass
-    _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
     usage_inf = _extract_usage_from_responses(resp_inf, provider=_inf_provider)
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
@@ -3311,7 +3301,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     # Stage: Tool Calls
     # --- Tool Calls - Single pass thru all tools required
-    # Optional tool loop (bounded for safety)
 
     answer_override: str | None = None
     tool_answer_text: str = ""
@@ -3319,14 +3308,16 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # NOTE: Single-pass tool execution.
-        if show_processing_steps:
-            emit_stage(req_id, "Tool Calls")
         try:
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
             
             if not tool_calls:
                 raise StopIteration  # handled by outer try/except; leaves answer_override=None
+
+            # Only show "Tool Calls" stage when actually executing tools
+            if show_processing_steps:
+                emit_stage(req_id, "Tool Calls")
 
             tool_outputs_list: List[Dict[str, Any]] = []
             chat_context = list(history or []) + [{"role": "user", "content": message}]
@@ -3827,10 +3818,15 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         _answer_text = out.get("answer", "")
         _answer_html = ""
+        logger.debug("RENDER HTML: %s", _render_html)
         if _render_html:
             try:
                 _answer_html = render_markdown_to_html(_answer_text)
-            except Exception:
+                logger.debug("RENDER HTML: %s", _answer_html)
+                logger.debug("RENDER SUCCESS: %s", "SUCCESS")
+            except Exception as e:
+                logger.debug("Exception in render_markdown_to_html: %s", str(e))
+                logger.debug("RENDER FAILED: %s", "FAILED")
                 _answer_html = ""
 
         # Ensure the final message is properly formatted for the frontend

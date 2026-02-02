@@ -76,7 +76,7 @@ body {
   transform: rotate(180deg);
 }
 .subsection-title {
-  margin: 0 0 8px;
+  margin: 0 0 1px;
   font-weight: 600;
   font-size: 12px; /* smaller than main Parameters title */
   color: var(--muted);
@@ -442,6 +442,26 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
  }
  .msg.assistant .bubble.markdown li {
    margin: 2px 0;
+ }
+
+ /* Tighten markdown list layout: Python-Markdown often renders li>p which adds extra vertical gaps */
+ .msg.assistant .bubble.markdown li > p {
+   margin: 0;
+ }
+
+ .msg.assistant .bubble.markdown li > ul,
+ .msg.assistant .bubble.markdown li > ol {
+   margin-top: 4px;
+   margin-bottom: 4px;
+ }
+
+ .msg.assistant .bubble.markdown ul,
+ .msg.assistant .bubble.markdown ol {
+   padding-left: 18px;
+ }
+
+ .msg.assistant .bubble.markdown li:empty {
+   display: none;
  }
  .msg.assistant .bubble.markdown h1,
  .msg.assistant .bubble.markdown h2,

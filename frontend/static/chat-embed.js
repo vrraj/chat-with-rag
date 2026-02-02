@@ -85,6 +85,11 @@
     // Show processing steps: default true for embed, can be overridden
     out.show_processing_steps = asBool(c.show_processing_steps, true);
 
+    // Show sources: optional; if provided, it will override backend defaults per request.
+    if (c.show_sources != null) {
+      out.show_sources = asBool(c.show_sources, null);
+    }
+
     // Explicit conversation id / namespace
     out.conversation_id = c.conversation_id || c.namespace || null;
 
@@ -193,6 +198,18 @@
     return bubble;
   }
 
+  function setAssistantBubbleHtml(bubble, html) {
+    try {
+      if (!bubble) return;
+      bubble.classList.add('markdown');
+      bubble.innerHTML = (html == null ? '' : String(html));
+    } catch (e) {
+      try {
+        if (bubble) bubble.textContent = (html == null ? '' : String(html));
+      } catch (_) {}
+    }
+  }
+
   function collectHistory() {
     const out = [];
     historyEl.querySelectorAll('.msg').forEach((node) => {
@@ -218,6 +235,9 @@
 
     p.query_id = queryId;
     p.conversation_id = conversationId;
+
+    // Request backend-rendered HTML (sanitized) so embed can display Markdown nicely.
+    p.render_html = true;
 
     return p;
   }
@@ -268,7 +288,13 @@
             bubble = resolveBubble();
             if (bubble) {
               const finalContent = payload.text || payload.finalContent || payload.response || payload.answer || '';
-              if (finalContent) bubble.textContent = finalContent;
+              try {
+                const finalHtml = payload.finalHtml || payload.final_html || payload.html || '';
+                if (finalHtml) setAssistantBubbleHtml(bubble, finalHtml);
+                else if (finalContent) renderAnswerWithSmallSources(bubble, finalContent);
+              } catch (e) {
+                if (finalContent) renderAnswerWithSmallSources(bubble, finalContent);
+              }
             }
             closeAndForget();
             return;
@@ -349,7 +375,13 @@
 
       const data = await resp.json();
       const answer = data.answer || data.response || '[No answer field in response]';
-      renderAnswerWithSmallSources(placeholderBubble, answer);
+      try {
+        const answerHtml = data && (data.answer_html ?? data.answerHtml ?? data.response_html ?? data.responseHtml);
+        if (answerHtml) setAssistantBubbleHtml(placeholderBubble, answerHtml);
+        else renderAnswerWithSmallSources(placeholderBubble, answer);
+      } catch (e) {
+        renderAnswerWithSmallSources(placeholderBubble, answer);
+      }
       scrollHistoryToBottom();
     } catch (err) {
       console.error('Embedded chat: request failed', err);

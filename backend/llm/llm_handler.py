@@ -1926,6 +1926,8 @@ class LLMHandler:
         """
         client = None
         resolved_model = self._resolve_model_name(model)
+        # Extract debug_thoughts from kwargs
+        debug_thoughts = bool(kwargs.get("debug_thoughts", False))
         # Prepare kwargs for the Gemini OpenAI-compatible adapter in one place.
         working_kwargs = self._prepare_gemini_adapter_kwargs(model, kwargs)
 
@@ -2061,12 +2063,12 @@ class LLMHandler:
                 debug_native_gemini_raw_chars = None
             try:
                 if debug_native_gemini_raw_chars is None:
-                    debug_native_gemini_raw_chars = 1000
+                    debug_native_gemini_raw_chars = 1500
                 debug_native_gemini_raw_chars = int(debug_native_gemini_raw_chars)
                 if debug_native_gemini_raw_chars < 0:
                     debug_native_gemini_raw_chars = 0
             except Exception:
-                debug_native_gemini_raw_chars = 1000
+                debug_native_gemini_raw_chars = 1500
 
             # Preserve whether the caller explicitly provided reasoning_effort.
             # If it is absent, we may still apply the registry default (model-agnostic callers).
@@ -2552,6 +2554,25 @@ class LLMHandler:
             if callable(create_fn):
                 messages = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
 
+                def _truncate_debug(val: Any, max_chars: int = 1500) -> str:
+                    try:
+                        s = repr(val)
+                    except Exception:
+                        try:
+                            s = str(val)
+                        except Exception:
+                            s = ""
+                    if not isinstance(s, str):
+                        try:
+                            s = str(s)
+                        except Exception:
+                            s = ""
+                    if max_chars == 0:
+                        return s
+                    if len(s) <= max_chars:
+                        return s
+                    return s[:max_chars] + "...<truncated>"
+
                 if not stream:
                     # Apply capability filtering, parameter mapping, and token limit conversion
                     call_kwargs = working_kwargs.copy()
@@ -2586,6 +2607,21 @@ class LLMHandler:
                         pass
                     # (Token parameter mapping now handled centrally in create())
                     try:
+                        # Targeted debug: log the exact payload sent to the Gemini OpenAI-compatible API
+                        if debug_thoughts:
+                            try:
+                                import json
+                                payload_snapshot = {
+                                    "model": resolved_model,
+                                    "messages": messages,
+                                    **call_kwargs,
+                                }
+                                logger.debug(
+                                    "[GEMINI ADAPTER DEBUG] request_payload=%s",
+                                    json.dumps(payload_snapshot, ensure_ascii=False, indent=2),
+                                )
+                            except Exception:
+                                pass
                         resp = create_fn(model=resolved_model, messages=messages, **call_kwargs)
                     except openai.RateLimitError as e:  # type: ignore[attr-defined]
                         # Map Gemini adapter rate limits into a structured LLMError
@@ -2620,6 +2656,20 @@ class LLMHandler:
                             message=str(e),
                             retry_after=None,
                         ) from e
+
+                    # Targeted debug: log raw response and key fields when debug_thoughts=true
+                    if debug_thoughts:
+                        try:
+                            fr = self._extract_finish_reason(resp)
+                            us = getattr(resp, "usage", None)
+                            logger.debug(
+                                "[GEMINI ADAPTER DEBUG] raw_response_repr=%s finish_reason=%s usage=%s",
+                                _truncate_debug(resp, 2000),  # Truncate to 2000 chars
+                                fr,
+                                us,
+                            )
+                        except Exception:
+                            pass
 
                     text = ""
                     try:
@@ -2712,8 +2762,20 @@ class LLMHandler:
                             message=str(e),
                             retry_after=None,
                         ) from e
+                    logged_first = False
                     for chunk in stream_obj:
                         try:
+                            if debug_thoughts and not logged_first:
+                                logged_first = True
+                                try:
+                                    logger.debug(
+                                        "[GEMINI ADAPTER DEBUG] first_chunk_repr=%s finish_reason=%s usage=%s",
+                                        _truncate_debug(chunk, 2000),  # Truncate to 2000 chars
+                                        self._extract_finish_reason(chunk),
+                                        getattr(chunk, "usage", None),
+                                    )
+                                except Exception:
+                                    pass
                             if not getattr(chunk, "choices", None):
                                 continue
                             delta_obj = getattr(chunk.choices[0], "delta", None)
