@@ -127,12 +127,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    #collection_name: str = "document_index"  # collection name
-    collection_name: str = "document_index"  # collection name
-
+    collection_name: str = "document_index_gemini"  # gemini collection name
+    #collection_name: str = "document_index"  # openai collection name
     # Vector/search shape & retrieval knobs
-    # Qdrant vector size (must match embedding dimension)
-    vector_size: int = 1536
+    vector_size: int = 1536 # Qdrant vector size (must match embedding dimension of the collection)
     top_k: int = 8  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
@@ -141,22 +139,11 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3) Embeddings
     # -------------------------------------------------------------------------
-    # Embedding provider: "openai" or "gemini" (used for docs + queries)
-    embedding_model: str = "openai"
-
-    # Default OpenAI embedding model
-    openai_embedding_model: str = "text-embedding-3-small"
-
     # Embedding profile key (must match model_registry)
     # e.g. "openai:embed_small", "gemini:embed"
-    # Model and dimensions should stay in sync with vector_size.
-    # embedding_model_key: str = "openai:embed_small"
-
-
-    # Gemini embeddings
-    gemini_embedding_model: str = "gemini-embedding-001"
-    # Must match vector_size and registry capabilities["dimensions"]
-    gemini_embedding_dimensions: int = 1536
+    # Model and dimensions come from model_registry capabilities
+    #embedding_model_key: str = "openai:embed_small"
+    embedding_model_key: str = "gemini:native-embed"
     # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
     # This should be applied consistently for both indexing and query embeddings.
     gemini_embedding_normalize: bool = True
@@ -176,12 +163,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)
     # -------------------------------------------------------------------------
-    # Model keys are stable aliases that map to provider/model/pricing in model_registry.py.
+    # Embeddings profile key (must match model_registry)
     # Examples: "openai:fast", "openai:best", "gemini:fast", "openai:embed_small".
-
-    # Embeddings profile key (should align with `embedding_model` provider selector).
-    #embedding_model_key: str = "openai:embed_small"
-    embedding_model_key: str = "openai:embed_small"
     # Stage model profile keys
     rewrite_model_key: str = "openai:fast"
     rerank_model_key: str = "openai:fast"

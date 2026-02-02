@@ -131,70 +131,54 @@ class QdrantDB:
         """Generate embeddings for USER QUERIES (search/retrieval).
 
         Uses gemini_embed_type_query config for optimal query performance.
-        Backward-compatible behavior:
-        - When `settings.embedding_model` is an OpenAI model id string
-          (legacy), we route via llm_handler.
-        - Newer configs may set `embedding_model` to a provider key
-          ("openai" or "gemini"); in that case we route via llm_handler.
+        Uses embedding_model_key to resolve model via model registry.
         """
         try:
             spec = resolve_embedding_spec(settings)
             provider = spec.get("provider", "openai")
             model = spec.get("model")
 
-            # Legacy / default path: OpenAI via local OpenAI client.
-            use_legacy_openai = (
-                provider == "openai"
-                and isinstance(getattr(settings, "embedding_model", None), str)
-                and getattr(settings, "embedding_model", None) not in ("openai", "gemini")
-            )
+            # Route via llm_handler for all embedding providers
+            if llm_handler is None:
+                raise ValueError("llm_handler is not available for embeddings")
+            
+            # For provider-aware embeddings, pass the registry model key so
+            # llm_handler can route based on endpoint (e.g., gemini_sdk vs
+            # embeddings). The configured embedding_model_key in Settings
+            # should match the desired registry profile (openai:embed_small,
+            # gemini:native-embed, etc.).
+            try:
+                from backend.core.config import settings as _settings  # type: ignore
+                model_key = getattr(_settings, "embedding_model_key", model)
+            except Exception:
+                model_key = model
 
-            if use_legacy_openai:
-                response = llm_handler.embeddings.create(
-                    input=text,
-                    model=model,
-                    provider="openai",
-                )
-            else:
-                if llm_handler is None:
-                    raise ValueError("llm_handler is not available for provider-aware embeddings")
-                # For provider-aware embeddings, pass the registry model key so
-                # llm_handler can route based on endpoint (e.g., gemini_sdk vs
-                # embeddings). The configured embedding_model_key in Settings
-                # should match the desired registry profile (openai:embed_small,
-                # gemini:native-embed, etc.).
+            kwargs: Dict[str, Any] = {
+                "provider": provider,
+                "model": model_key,
+                "input": text,
+            }
+            dims = spec.get("dimensions")
+            if provider == "gemini" and isinstance(dims, int) and dims > 0:
+                kwargs["dimensions"] = dims
+                # Apply config-driven task type for user queries
                 try:
                     from backend.core.config import settings as _settings  # type: ignore
-                    model_key = getattr(_settings, "embedding_model_key", model)
+                    task_type = getattr(_settings, "gemini_embed_type_query", "RETRIEVAL_QUERY")
+                    kwargs["task_type"] = task_type
+                    logger.debug(f"[GEMINI QUERY] Using task_type={task_type} for user query")
                 except Exception:
-                    model_key = model
+                    pass
+                # Apply the same config-driven normalization flag used for
+                # indexing so that Gemini query embeddings are treated
+                # consistently with content embeddings.
+                try:
+                    from backend.core.config import settings as _settings  # type: ignore
 
-                kwargs: Dict[str, Any] = {
-                    "provider": provider,
-                    "model": model_key,
-                    "input": text,
-                }
-                dims = spec.get("dimensions")
-                if provider == "gemini" and isinstance(dims, int) and dims > 0:
-                    kwargs["dimensions"] = dims
-                    # Apply config-driven task type for user queries
-                    try:
-                        from backend.core.config import settings as _settings  # type: ignore
-                        task_type = getattr(_settings, "gemini_embed_type_query", "RETRIEVAL_QUERY")
-                        kwargs["task_type"] = task_type
-                        logger.debug(f"[GEMINI QUERY] Using task_type={task_type} for user query")
-                    except Exception:
-                        pass
-                    # Apply the same config-driven normalization flag used for
-                    # indexing so that Gemini query embeddings are treated
-                    # consistently with content embeddings.
-                    try:
-                        from backend.core.config import settings as _settings  # type: ignore
-
-                        kwargs["normalize_embedding"] = bool(getattr(_settings, "gemini_embedding_normalize", False))
-                    except Exception:
-                        pass
-                response = llm_handler.embeddings.create(**kwargs)
+                    kwargs["normalize_embedding"] = bool(getattr(_settings, "gemini_embedding_normalize", False))
+                except Exception:
+                    pass
+            response = llm_handler.embeddings.create(**kwargs)
             # Record token usage if the SDK returns it
             try:
                 usage = getattr(response, "usage", None)

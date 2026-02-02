@@ -86,8 +86,8 @@ class EmbeddingsManager:
                     dims = spec.get("dimensions")
                 except Exception:
                     provider = "openai"
-                    model = getattr(settings, "embedding_model", None)
-                    dims = None
+                    model = "text-embedding-3-small"
+                    dims = 1536
 
                 if llm_handler is None:
                     raise ValueError("llm_handler is not available for embeddings generation")
@@ -236,7 +236,7 @@ class EmbeddingsManager:
             _emb_model_name_doc = _emb_spec_doc.get("model")
             _emb_provider_doc = _emb_spec_doc.get("provider", "openai")
         except Exception:
-            _emb_model_name_doc = getattr(settings, "embedding_model", None)
+            _emb_model_name_doc = "text-embedding-3-small"
             _emb_provider_doc = "openai"
 
         # Determine batch size based on embedding provider, with a safe default.
@@ -590,7 +590,7 @@ class EmbeddingsManager:
             _emb_model_name_chunks = _emb_spec_chunks.get("model")
             _emb_provider_chunks = _emb_spec_chunks.get("provider", "openai")
         except Exception:
-            _emb_model_name_chunks = getattr(settings, "embedding_model", None)
+            _emb_model_name_chunks = "text-embedding-3-small"
             _emb_provider_chunks = "openai"
 
         # Determine batch size based on embedding provider, with a safe default.

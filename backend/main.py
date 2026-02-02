@@ -1556,8 +1556,8 @@ async def get_model_config():
             embedding_model_display = emb_spec["model"]
     except Exception as e:
         logger.debug("Failed to resolve embedding spec for display: %s", e)
-        # Fallback to provider key if resolution fails
-        embedding_model_display = get_model_setting("embedding_model")
+        # Fallback to model key if resolution fails
+        embedding_model_display = get_model_setting("embedding_model_key")
     
     return ModelConfig(
         # Concrete model names

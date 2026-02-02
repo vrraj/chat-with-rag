@@ -177,7 +177,7 @@ def resolve_stage_specs(
     try:
         _emb = resolve_embedding_spec(settings_obj)  # {provider, model, dimensions}
     except Exception:
-        _emb = {"provider": "openai", "model": getattr(settings_obj, "openai_embedding_model", ""), "dimensions": None}
+        _emb = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1536}
 
     emb_provider = str((_emb or {}).get("provider") or "openai").strip() or "openai"
     emb_model = str((_emb or {}).get("model") or "").strip()
@@ -1037,9 +1037,9 @@ class Metrics:
         # Resolve embedding spec once so we can report the concrete model name
         try:
             _emb_spec = resolve_embedding_spec(settings_obj)
-            _emb_model_name = str(_emb_spec.get("model") or getattr(settings_obj, "embedding_model", "embedding"))
+            _emb_model_name = str(_emb_spec.get("model") or "text-embedding-3-small")
         except Exception:
-            _emb_model_name = getattr(settings_obj, "embedding_model", "embedding")
+            _emb_model_name = "text-embedding-3-small"
         # Exact shape expected by the UI
         self.turn: Dict[str, Any] = {
             "embedding": {"model": _emb_model_name, "input_tokens": 0, "cost": 0.0},
@@ -2697,10 +2697,10 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     try:
         _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
         _emb_model_for_cost = str(
-            (_emb_spec_cost.get("model") or getattr(settings_obj, "embedding_model", "embedding"))
+            (_emb_spec_cost.get("model") or "text-embedding-3-small")
         )
     except Exception:
-        _emb_model_for_cost = getattr(settings_obj, "embedding_model", "embedding")
+        _emb_model_for_cost = "text-embedding-3-small"
 
     m.record_stage(
         "embedding",
