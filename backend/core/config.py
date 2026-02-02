@@ -127,10 +127,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    collection_name: str = "document_index_gemini"  # gemini collection name
-    #collection_name: str = "document_index"  # openai collection name
+    #collection_name: str = "document_index_gemini"  # gemini collection name
+    collection_name: str = "document_index"  # openai collection name
     # Vector/search shape & retrieval knobs
-    vector_size: int = 1536 # Qdrant vector size (must match embedding dimension of the collection)
+    # vector_size is now computed dynamically based on embedding_model_key
     top_k: int = 8  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
@@ -142,8 +142,8 @@ class Settings(BaseSettings):
     # Embedding profile key (must match model_registry)
     # e.g. "openai:embed_small", "gemini:embed"
     # Model and dimensions come from model_registry capabilities
-    #embedding_model_key: str = "openai:embed_small"
-    embedding_model_key: str = "gemini:native-embed"
+    embedding_model_key: str = "openai:embed_small"
+    #embedding_model_key: str = "gemini:native-embed"
     # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
     # This should be applied consistently for both indexing and query embeddings.
     gemini_embedding_normalize: bool = True
@@ -166,6 +166,7 @@ class Settings(BaseSettings):
     # Embeddings profile key (must match model_registry)
     # Examples: "openai:fast", "openai:best", "gemini:fast", "openai:embed_small".
     # Stage model profile keys
+    # embedding model key is used for embeddings and the vector size is computed dynamically based on it below as @property
     rewrite_model_key: str = "openai:fast"
     rerank_model_key: str = "openai:fast"
     summarizer_model_key: str = "openai:fast"
@@ -370,7 +371,17 @@ class Settings(BaseSettings):
     show_processing_steps: bool = True  # controls whether intermediate SSE processing stages are emitted
 
     # -------------------------------------------------------------------------
-    # 12) Pydantic settings model config (preserved)
+    # 12) Computed Properties
+    # -------------------------------------------------------------------------
+    @property
+    def vector_size(self) -> int:
+        """Vector size from embedding_model_key registry capabilities"""
+        from backend.llm.model_registry import get_model_info
+        model_info = get_model_info(self.embedding_model_key)
+        return int(model_info.capabilities["dimensions"])
+
+    # -------------------------------------------------------------------------
+    # 13) Pydantic settings model config (preserved)
     # -------------------------------------------------------------------------
     # Shared directory for PDF files that can be referenced by filename only
     # shared_pdf_directory: str = Field(env="SHARED_PDF_DIRECTORY", default="/tmp/shared_pdfs")
