@@ -270,8 +270,8 @@ class Settings(BaseSettings):
     # Conversation context strategy:
     # - chat_history_window_turns: summarized older turns
     # - raw_tail_turns: most-recent turns kept verbatim
-    chat_history_window_turns: int = 2
-    raw_tail_turns: int = 2
+    chat_history_window_turns: int = 10
+    raw_tail_turns: int = 10
 
     enable_query_rewrite: bool = True
 

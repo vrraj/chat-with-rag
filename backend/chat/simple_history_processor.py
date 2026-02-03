@@ -34,6 +34,14 @@ class SimpleHistoryProcessor:
         3. Predictable ordering
         4. Stable content cleaning
         """
+        # DEBUG: Log input
+        logger.info(f"[TAIL] INFO: format_recent_conversation called with {len(verbatim_tail)} messages, log_origin={log_origin}")
+        logger.debug(f"[TAIL] ({log_origin}) Input: {len(verbatim_tail)} messages to format")
+        for i, msg in enumerate(verbatim_tail):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+            logger.debug(f"[TAIL] ({log_origin})   {i+1}. {role}: {content}")
+        
         # Create a deterministic copy to avoid modifying the original
         _tail = [dict(msg) for msg in verbatim_tail]
         
@@ -84,11 +92,16 @@ class SimpleHistoryProcessor:
             role = str(msg.get("role", "user")).strip()
             content = str(msg.get("content", "")).strip()
             
+            # DEBUG: Log before cleaning
+            logger.debug(f"[TAIL] ({log_origin}) Processing {role}: {content}")
+            
             # Clean sources from both original and target role formats
             if role == "assistant" or role == assistant_role:
                 cleaned = self._strip_sources_deterministic(content)
                 if cleaned != content:
                     trimmed += 1
+                    logger.debug(f"[TAIL] ({log_origin}) Sources stripped - before: {content}")
+                    logger.debug(f"[TAIL] ({log_origin}) Sources stripped - after:  {cleaned}")
                 content = cleaned
                 # Convert to target role if it was the original "assistant" role
                 if role == "assistant":
@@ -99,6 +112,12 @@ class SimpleHistoryProcessor:
         
         # Join with consistent line endings
         recent_block_str = "\n".join(tail_lines) + "\n\n"
+        
+        # DEBUG: Log final output
+        logger.info(f"[TAIL] INFO: Final recent_conversation output ({len(recent_block_str)} chars):")
+        output_lines = recent_block_str.strip().split('\n')
+        for i, line in enumerate(output_lines):
+            logger.debug(f"[TAIL] INFO:   {i+1}. {line}")
         
         if trimmed:
             logger.debug(
@@ -138,8 +157,8 @@ class SimpleHistoryProcessor:
             # Strip trailing whitespace consistently
             s = normalized.rstrip()
             
-            # Use a compiled regex for consistent behavior
-            pattern = re.compile(r"(?:\n)Sources:\s*\n[\s\S]*\Z")
+            # Handle actual Sources format: content.sources:[1] https://... (same line)
+            pattern = re.compile(r"(?:\n)?(?:<sources>Sources</sources>|Sources|sources):[\s\S]*\Z")
             m = pattern.search(s)
             if m:
                 s = s[:m.start()]

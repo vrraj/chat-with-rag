@@ -1999,8 +1999,8 @@ def _strip_trailing_sources_block(text: str) -> str:
     """
     try:
         s = (text or "").rstrip()
-        # Match a final block that starts with 'Sources:' on its own line to the end of string
-        m = re.search(r"(?:\r?\n)Sources:\s*\r?\n[\s\S]*\Z", s)
+        # Handle both old Sources: and new <sources>Sources</sources>: patterns for backward compatibility
+        m = re.search(r"(?:\r?\n)(?:<sources>Sources</sources>|Sources|sources):\s*\r?\n[\s\S]*\Z", s)
         if m:
             s = s[:m.start()]
         return s.rstrip()
@@ -3034,7 +3034,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
         for i, item in enumerate(context_items)
     ]
-    sources_section = "\nSources:\n" + _collapse_sources(indexed_for_collapse)
+    # Use <sources> marker for reliable stripping from history while maintaining clean user display
+    sources_section = "\n<sources>Sources</sources>:\n" + _collapse_sources(indexed_for_collapse)
     if web_context:
         web_notes = "\n" + "\n".join([f"[web-{i+1}] {item.get('url', 'Web result')}" for i, item in enumerate(web_context)])
         sources_section += web_notes
@@ -3554,7 +3555,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             # KB sources: keep only cited indices from the prompt-provided context_items
             if cited_doc_idxs:
                 filtered_indexed = [d for d in indexed_for_collapse if int(d.get("index") or 0) in cited_doc_idxs]
-                sources_section = "\nSources:\n" + _collapse_sources(filtered_indexed) if filtered_indexed else ""
+                # Use <sources> marker for reliable stripping from history while maintaining clean user display
+                sources_section = "\n<sources>Sources</sources>:\n" + _collapse_sources(filtered_indexed) if filtered_indexed else ""
                 try:
                     # Return only the cited reranked items (in original order)
                     sources = [it for i, it in enumerate(context_items, start=1) if i in cited_doc_idxs]
@@ -3573,7 +3575,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         if 1 <= i <= len(web_context)
                     ]
                 )
-                sources_section = (sources_section or "\nSources:\n") + web_notes
+                # Use <sources> marker for reliable stripping from history while maintaining clean user display
+                sources_section = (sources_section or "\n<sources>Sources</sources>:\n") + web_notes
                 try:
                     sources.extend([web_context[i-1] for i in sorted(cited_web_idxs) if 1 <= i <= len(web_context)])
                 except Exception:
@@ -3601,8 +3604,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
 
     legacy_metrics = {"vectors_retrieved": n}
+    
+    # Strip <sources> tags before returning to user for clean display
+    # History processing strips the entire sources block, but users see clean "Sources:" text
+    final_answer = answer.rstrip("\n") + sources_section
+    final_answer = re.sub(r"<sources>Sources</sources>:", "Sources:", final_answer)
+    
     return {
-        "answer": (answer.rstrip("\n") + sources_section),
+        "answer": final_answer,
         "sources": sources,
         "turn_metrics": turn_metrics,
         "conversation_totals": convo_snapshot,
