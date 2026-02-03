@@ -249,7 +249,7 @@ class Settings(BaseSettings):
     inference_reasoning_effort: str = "low"
     inference_reasoning_model: bool = False
 
-    debug_thoughts: bool = False # Gemini specific flag to display reasoning - the llm_handler will ignore this for other models
+    debug_thoughts: bool = True # Gemini specific flag to display reasoning - the llm_handler will ignore this for other models
 
     enable_tools: bool = True  # Enable agent-style tool calls (UI can override per-turn)
     max_tool_passes: int = 2  # Maximum number of tool loops to be called from LLM generated output for a single turn. This it to prevent runaway tool calls
@@ -408,19 +408,48 @@ class Settings(BaseSettings):
         model_info = get_model_info(self.embedding_model_key)
         return int(model_info.capabilities["dimensions"])
 
-    # -------------------------------------------------------------------------
-    # 13) Pydantic settings model config (preserved)
-    # -------------------------------------------------------------------------
-    # Shared directory for PDF files that can be referenced by filename only
-    # shared_pdf_directory: str = Field(env="SHARED_PDF_DIRECTORY", default="/tmp/shared_pdfs")
+def get_assistant_role(settings_obj: Any, params: Dict[str, Any] | None = None) -> str:
+    """
+    Get assistant role for current inference model from model registry.
+    
+    Considers per-request overrides from params["model_keys"]["inference"].
+    Falls back to settings_obj.inference_model_key, then "assistant".
+    
+    Args:
+        settings_obj: Settings instance with default model configuration
+        params: Optional per-request parameters that may contain model overrides
+        
+    Returns:
+        Assistant role string (e.g., "assistant" for OpenAI, "model" for Gemini)
+    """
+    try:
+        from backend.llm.model_registry import get_model_info
+        
+        # Check per-request override first
+        if params and params.get("model_keys", {}).get("inference"):
+            model_key = params["model_keys"]["inference"]
+        else:
+            model_key = getattr(settings_obj, "inference_model_key", "openai:fast")
+            
+        model_info = get_model_info(model_key)
+        return model_info.capabilities.get("assistant_role", "assistant")
+    except Exception:
+        return "assistant"
 
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "case_sensitive": False,
-        # Allow extra env vars (e.g., feature flags) without validation errors.
-        "extra": "ignore",
-    }
+
+# -------------------------------------------------------------------------
+# 13) Pydantic settings model config (preserved)
+# -------------------------------------------------------------------------
+# Shared directory for PDF files that can be referenced by filename only
+# shared_pdf_directory: str = Field(env="SHARED_PDF_DIRECTORY", default="/tmp/shared_pdfs")
+
+model_config = {
+    "env_file": ".env",
+    "env_file_encoding": "utf-8",
+    "case_sensitive": False,
+    # Allow extra env vars (e.g., feature flags) without validation errors.
+    "extra": "ignore",
+}
 
 
 # Initialize settings after all classes are defined

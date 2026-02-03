@@ -2354,11 +2354,14 @@ class LLMHandler:
                     try:
                         candidates = getattr(resp, "candidates", None)
                         parts = None
+                        role = None
                         thought_true = 0
                         thought_other = 0
                         if isinstance(candidates, list) and candidates:
                             c0 = candidates[0]
                             c0_content = getattr(c0, "content", None)
+                            # Extract role from Gemini native response
+                            role = getattr(c0_content, "role", None) if c0_content is not None else None
                             parts = getattr(c0_content, "parts", None) if c0_content is not None else None
                         if isinstance(parts, list):
                             for p in parts:
@@ -2370,12 +2373,13 @@ class LLMHandler:
                                 except Exception:
                                     thought_other += 1
                         logger.debug(
-                            "[GEMINI SDK DEBUG] model=%s parts_total=%s thought_true=%s thought_other=%s extracted_len=%s",
+                            "[GEMINI SDK DEBUG] model=%s parts_total=%s thought_true=%s thought_other=%s extracted_len=%s role=%s",
                             str(model_key_dbg or model),
                             (len(parts) if isinstance(parts, list) else None),
                             thought_true,
                             thought_other,
                             (len(text) if isinstance(text, str) else None),
+                            role,
                         )
                     except Exception:
                         pass
@@ -2662,11 +2666,13 @@ class LLMHandler:
                         try:
                             fr = self._extract_finish_reason(resp)
                             us = getattr(resp, "usage", None)
+                            role = resp.choices[0].message.role if resp.choices and resp.choices[0].message else None
                             logger.debug(
-                                "[GEMINI ADAPTER DEBUG] raw_response_repr=%s finish_reason=%s usage=%s",
+                                "[GEMINI ADAPTER DEBUG] raw_response_repr=%s finish_reason=%s usage=%s role=%s",
                                 _truncate_debug(resp, 2000),  # Truncate to 2000 chars
                                 fr,
                                 us,
+                                role,
                             )
                         except Exception:
                             pass

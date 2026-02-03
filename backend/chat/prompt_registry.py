@@ -5,20 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from jinja2 import Template
-import logging
 
 from backend.llm.llm_handler import LLMError
-
-
-logger = logging.getLogger(__name__)
-
-
-def _log_full_enabled() -> bool:
-    try:
-        v = str(os.getenv("PROMPT_REGISTRY_LOG_FULL", "") or "").strip().lower()
-        return v in {"1", "true", "yes", "y", "on"}
-    except Exception:
-        return False
 
 
 @dataclass(frozen=True)
@@ -162,35 +150,6 @@ def resolve_inference_prompt(*, registry_path: str, domain: Optional[str]) -> In
     else:
         system_instruction = base_sys
 
-    try:
-        _tail = (system_instruction or "")[-100:]
-        logger.debug(
-            "[PROMPT_REGISTRY] inference resolved domain='%s' overlay=%s sys_tail=%r",
-            (dom or "<global_defaults>"),
-            bool(dom_sys),
-            _tail,
-        )
-    except Exception:
-        pass
-
-    if _log_full_enabled():
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] inference system_instruction (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                system_instruction,
-            )
-        except Exception:
-            pass
-
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] inference full_payload_template (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                full_payload_template,
-            )
-        except Exception:
-            pass
 
     return InferencePromptSpec(
         system_instruction=system_instruction,
@@ -255,34 +214,6 @@ def resolve_rewrite_prompt(*, registry_path: str, domain: Optional[str]) -> Rewr
     else:
         system_instruction = base_sys
 
-    try:
-        _tail = (system_instruction or "")[-100:]
-        logger.debug(
-            "[PROMPT_REGISTRY] rewrite resolved domain='%s' overlay=%s sys_tail=%r",
-            (dom or "<global_defaults>"),
-            bool(dom_sys),
-            _tail,
-        )
-    except Exception:
-        pass
-
-    if _log_full_enabled():
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] rewrite system_instruction (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                system_instruction,
-            )
-        except Exception:
-            pass
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] rewrite full_payload_template (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                full_payload_template,
-            )
-        except Exception:
-            pass
 
     return RewritePromptSpec(
         system_instruction=system_instruction,
@@ -345,34 +276,6 @@ def resolve_rerank_prompt(*, registry_path: str, domain: Optional[str]) -> Reran
     else:
         system_instruction = base_sys
 
-    try:
-        _tail = (system_instruction or "")[-100:]
-        logger.debug(
-            "[PROMPT_REGISTRY] rerank resolved domain='%s' overlay=%s sys_tail=%r",
-            (dom or "<global_defaults>"),
-            bool(dom_sys),
-            _tail,
-        )
-    except Exception:
-        pass
-
-    if _log_full_enabled():
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] rerank system_instruction (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                system_instruction,
-            )
-        except Exception:
-            pass
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] rerank full_payload_template (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                full_payload_template,
-            )
-        except Exception:
-            pass
 
     return RerankPromptSpec(
         system_instruction=system_instruction,
@@ -417,26 +320,6 @@ def resolve_summary_prompt(*, registry_path: str, domain: Optional[str]) -> Summ
     else:
         system_instruction = base_sys
 
-    try:
-        _tail = (system_instruction or "")[-100:]
-        logger.debug(
-            "[PROMPT_REGISTRY] summary resolved domain='%s' overlay=%s sys_tail=%r",
-            (dom or "<global_defaults>"),
-            bool(dom_sys),
-            _tail,
-        )
-    except Exception:
-        pass
-
-    if _log_full_enabled():
-        try:
-            logger.debug(
-                "[PROMPT_REGISTRY] summary system_instruction (FULL) domain='%s':\n%s",
-                (dom or "<global_defaults>"),
-                system_instruction,
-            )
-        except Exception:
-            pass
 
     return SummaryPromptSpec(system_instruction=system_instruction)
 
@@ -446,11 +329,6 @@ def render_full_payload(template_str: str, *, variables: Dict[str, Any]) -> str:
         tmpl = Template(template_str)
         rendered = tmpl.render(**(variables or {}))
         out = str(rendered or "").strip()
-        if _log_full_enabled():
-            try:
-                logger.debug("[PROMPT_REGISTRY] inference rendered payload (FULL):\n%s", out)
-            except Exception:
-                pass
         return out
     except Exception as e:
         raise LLMError(

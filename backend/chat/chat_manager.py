@@ -47,6 +47,8 @@ from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
 from backend.llm.llm_handler import llm_handler, LLMError
+from backend.chat.simple_history_processor import SimpleHistoryProcessor
+from backend.chat.utils import _get_param_int, split_history_for_prompt
 from backend.chat.prompt_registry import (
     resolve_inference_prompt,
     resolve_rewrite_prompt,
@@ -556,34 +558,6 @@ def _pick(params: Dict[str, Any] | None, keys: List[str], default=None):
             return p[k]
     return default
 
-# Inserted helper: _get_param_int
-def _get_param_int(params: Dict[str, Any] | None, keys: List[str], default: int, minimum: int | None = None, maximum: int | None = None) -> tuple[int, str]:
-    """
-    Return (value, source) reading the first available key in `keys` from params, else the `default`.
-    Coerces to int and clamps to [minimum, maximum] if provided.
-    Source is 'param:<key>' or 'settings'.
-    """
-    p = params or {}
-    for k in keys:
-        if k in p and p[k] is not None:
-            try:
-                v = int(p[k])
-                if minimum is not None:
-                    v = max(minimum, v)
-                if maximum is not None:
-                    v = min(maximum, v)
-                return v, f"param:{k}"
-            except Exception:
-                continue
-    try:
-        v = int(default)
-    except Exception:
-        v = default if isinstance(default, int) else 0
-    if minimum is not None:
-        v = max(minimum, v)
-    if maximum is not None:
-        v = min(maximum, v)
-    return v, "settings"
 
 # Inserted helper: _get_param_float
 def _get_param_float(params: Dict[str, Any] | None, keys: List[str], default: float,
@@ -2014,35 +1988,7 @@ def parse_tool_args(raw: Any) -> Dict[str, Any]:
     return {}
 
 #
-# --- History slicing helper  ---
-def split_history_for_prompt(history_msgs: List[Dict[str, str]] | None, raw_tail_turns: int, window_turns: int):
-    """
-    Split a flat message list into (to_summarize, verbatim_tail).
-
-    Definitions:
-      - 1 turn = 2 messages (user + assistant).
-      - verbatim_tail: the last `raw_tail_turns` turns (up to available), kept verbatim in the prompt.
-      - to_summarize: `window_turns` turns immediately before the tail, used to build a short summary.
-
-    This function is pure and does not modify the input list.
-    """
-    msgs = history_msgs or []
-    msgs_per_turn = 2
-    tail_msg_count = max(0, int(raw_tail_turns)) * msgs_per_turn
-    window_msg_count = max(0, int(window_turns)) * msgs_per_turn
-
-    total = len(msgs)
-    # Verbatim tail = last K turns (2*K messages)
-    verbatim_tail = msgs[-tail_msg_count:] if tail_msg_count > 0 else []
-
-    # Summary window = the turns immediately before the tail (2*window_turns messages)
-    end = max(0, total - tail_msg_count)
-    start = max(0, end - window_msg_count)
-    to_summarize = msgs[start:end]
-
-    return to_summarize, verbatim_tail
-
-# --- end helper ---
+# --- History slicing helper moved to utils.py ---
 
 
 # --- Tail cleanup helper (optional, cosmetic) ---
@@ -2935,102 +2881,53 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     except Exception:
         pass
     # --- History summary slices
+    # Initialize simple history processor for consistent formatting
+    history_processor = SimpleHistoryProcessor(settings_obj)
+    
+    # Process history parameters
+    raw_tail, src_raw_tail = _get_param_int(params, ["raw_tail_turns", "raw-tail_turns"], getattr(settings_obj, "raw_tail_turns", 2), minimum=0)
+    window_turns, src_window = _get_param_int(params, ["chat_history_window_turns", "chat_history_max_turns"], getattr(settings_obj, "chat_history_window_turns", 3), minimum=1)
+    to_summarize, verbatim_tail = split_history_for_prompt(history, raw_tail, window_turns)
+    
+    # Initialize summary text
     summary_text = ""
-    recent_block_str = ""
-    try:
-        raw_tail, src_raw_tail = _get_param_int(params, ["raw_tail_turns", "raw-tail_turns"], getattr(settings_obj, "raw_tail_turns", 2), minimum=0)
-        window_turns, src_window = _get_param_int(params, ["chat_history_window_turns", "chat_history_max_turns"], getattr(settings_obj, "chat_history_window_turns", 3), minimum=1)
-        to_summarize, verbatim_tail = split_history_for_prompt(history, raw_tail, window_turns)
-        if to_summarize:
-            sum_in, src_sum_in = _get_param_int(params, ["summarizer_max_input_tokens"], getattr(settings_obj, "summarizer_max_input_tokens", 512), minimum=0)
-            sum_out, src_sum_out = _get_param_int(params, ["summarizer_max_output_tokens"], getattr(settings_obj, "summarizer_max_output_tokens", 128), minimum=1)
-            logger.debug("[PARAMS] (%s) raw_tail_turns=%d (%s), chat_history_window_turns=%d (%s), summarizer_max_input_tokens=%d (%s), summarizer_max_output_tokens=%d (%s)",
-                         log_origin, raw_tail, src_raw_tail, window_turns, src_window, sum_in, src_sum_in, sum_out, src_sum_out)
-            # Prefix tag with namespace if provided to isolate cache entries by conversation
-            _tag_inf = (f"{namespace}|inference" if namespace else "inference")
-            sum_spec = (stage_specs or {}).get("summary") or {}
+    
+    # Handle summarization (keep existing logic)
+    if to_summarize:
+        sum_in, src_sum_in = _get_param_int(params, ["summarizer_max_input_tokens"], getattr(settings_obj, "summarizer_max_input_tokens", 512), minimum=0)
+        sum_out, src_sum_out = _get_param_int(params, ["summarizer_max_output_tokens"], getattr(settings_obj, "summarizer_max_output_tokens", 128), minimum=1)
+        
+        logger.debug("[PARAMS] (%s) raw_tail_turns=%d (%s), chat_history_window_turns=%d (%s), summarizer_max_input_tokens=%d (%s), summarizer_max_output_tokens=%d (%s)",
+                     log_origin, raw_tail, src_raw_tail, window_turns, src_window, sum_in, src_sum_in, sum_out, src_sum_out)
+        
+        # Prefix tag with namespace if provided to isolate cache entries by conversation
+        _tag_inf = (f"{namespace}|inference" if namespace else "inference")
+        sum_spec = (stage_specs or {}).get("summary") or {}
+        
+        try:
+            _pd_sum = str((params or {}).get("prompt_domain") or "").strip()
+        except Exception:
+            _pd_sum = ""
+        if not _pd_sum:
             try:
-                _pd_sum = str((params or {}).get("prompt_domain") or "").strip()
+                _pd_sum = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
             except Exception:
                 _pd_sum = ""
-            if not _pd_sum:
-                try:
-                    _pd_sum = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
-                except Exception:
-                    _pd_sum = ""
-            try:
-                summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
-                    to_summarize,
-                    cache,
-                    tag=_tag_inf,
-                    model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
-                    temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
-                    max_input_tokens=sum_in,
-                    max_output_tokens=sum_out,
-                    prompt_domain=_pd_sum,
-                    log_prefix=f"[SUMMARY] {log_origin}",
-                    stage_spec=sum_spec,
-                )
-            except LLMError as e:
-                # Surface rate limits from the summarizer model as a clear final answer.
-                kind = getattr(e, "kind", "") or ""
-                if kind == "rate_limit":
-                    try:
-                        _prov = str(getattr(e, "provider", "") or "").strip() or "the summarizer provider"
-                        _model = str(getattr(e, "model", "") or "").strip() or "(unspecified summarizer model)"
-                        quota_msg = (
-                            f"Our summarizer model (provider={_prov}, model={_model}) "
-                            "is currently over its rate-limit or quota. I couldn't "
-                            "summarize the chat history safely, so this turn has been "
-                            "stopped. Please try again later or contact the "
-                            "administrator to increase the quota."
-                        )
-                    except Exception:
-                        quota_msg = (
-                            "The summarizer model is currently over its rate limit or quota. "
-                            "Please try again later."
-                        )
-
-                    try:
-                        emit_stage(
-                            req_id,
-                            "Final Answer",
-                            final=True,
-                            finalContent=quota_msg,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        close_stream(req_id)
-                    except Exception:
-                        pass
-                    try:
-                        m.finalize_turn()
-                        turn_metrics, convo_snapshot = m.snapshot()
-                    except Exception:
-                        turn_metrics = m.turn
-                        convo_snapshot = {
-                            "tokens": {
-                                "embedding": 0,
-                                "llm_input": 0,
-                                "llm_output": 0,
-                                "conversation_total": 0,
-                            },
-                            "cost": {"conversation_total": 0.0},
-                        }
-                    return {
-                        "answer": quota_msg,
-                        "sources": [],
-                        "turn_metrics": turn_metrics,
-                        "conversation_totals": convo_snapshot,
-                        "metrics": {"vectors_retrieved": 0},
-                        "tools_used": [],
-                        "rewrite_display": rewrite_display,
-                    }
-
-                # Non-rate-limit LLMErrors fall through to the generic summary error handler.
-                raise
-
+        
+        try:
+            summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
+                to_summarize,
+                cache,
+                tag=_tag_inf,
+                model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
+                temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
+                max_input_tokens=sum_in,
+                max_output_tokens=sum_out,
+                prompt_domain=_pd_sum,
+                log_prefix=f"[SUMMARY] {log_origin}",
+                stage_spec=sum_spec,
+            )
+            
             if not _from_cache_inf and _u_inf:
                 _summary_model_used = str((sum_spec or {}).get("model") or getattr(settings_obj, "summarizer_model", settings_obj.inference_model))
                 m.record_stage(
@@ -3039,36 +2936,74 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     usage=_u_inf,
                     extra={"applied": True, "reason": f"prev {window_turns} turns (before last {raw_tail} turns)"},
                     model_key=(_stage_model_keys or {}).get("summary"),
+                )
+                
+        except LLMError as e:
+            # Handle rate limit errors (keep existing logic)
+            kind = getattr(e, "kind", "") or ""
+            if kind == "rate_limit":
+                try:
+                    _prov = str(getattr(e, "provider", "") or "").strip() or "the summarizer provider"
+                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified summarizer model)"
+                    quota_msg = (
+                        f"Our summarizer model (provider={_prov}, model={_model}) "
+                        "is currently over its rate-limit or quota. I couldn't "
+                        "summarize the chat history safely, so this turn has been "
+                        "stopped. Please try again later or contact the "
+                        "administrator to increase the quota."
                     )
-        if verbatim_tail:
-            _tail = list(verbatim_tail)
-            try:
-                if _tail and (_tail[-1].get("role") == "assistant") and (str(_tail[-1].get("content") or "").strip().lower() == "processing"):
-                    _tail.pop()
-            except Exception:
-                pass
-            try:
-                if _tail and (_tail[-1].get("role") == "user") and (str(_tail[-1].get("content") or "").strip() == str(message or "").strip()):
-                    _tail.pop()
-            except Exception:
-                pass
+                except Exception:
+                    quota_msg = (
+                        "The summarizer model is currently over its rate limit or quota. "
+                        "Please try again later."
+                    )
 
-            tail_lines: List[str] = []
-            trimmed = 0
-            for msg in _tail:
-                role = msg.get("role", "user")
-                content = msg.get("content", "") or ""
-                if role == "assistant":
-                    cleaned = _strip_trailing_sources_block(content)
-                    if cleaned != content:
-                        trimmed += 1
-                    content = cleaned
-                tail_lines.append(f"{role}: {content}")
-            recent_block_str = "\n".join(tail_lines) + "\n\n"
-            if trimmed:
-                logger.debug("[TAIL] (%s) stripped trailing Sources: blocks from %d assistant messages", log_origin, trimmed)
-    except Exception as e:
-        logger.warning("[SUMMARY] (%s) failed; proceeding without summary/tail: %s", log_origin, e, exc_info=True)
+                try:
+                    emit_stage(
+                        req_id,
+                        "Final Answer",
+                        final=True,
+                        finalContent=quota_msg,
+                    )
+                except Exception:
+                    pass
+                try:
+                    close_stream(req_id)
+                except Exception:
+                    pass
+                try:
+                    m.finalize_turn()
+                    turn_metrics, convo_snapshot = m.snapshot()
+                except Exception:
+                    turn_metrics = m.turn
+                    convo_snapshot = {
+                        "tokens": {
+                            "embedding": 0,
+                            "llm_input": 0,
+                            "llm_output": 0,
+                            "conversation_total": 0,
+                        },
+                        "cost": {"conversation_total": 0.0},
+                    }
+                return {
+                    "answer": quota_msg,
+                    "sources": [],
+                    "turn_metrics": turn_metrics,
+                    "conversation_totals": convo_snapshot,
+                    "metrics": {"vectors_retrieved": 0},
+                    "tools_used": [],
+                    "rewrite_display": rewrite_display,
+                }
+
+            # Non-rate-limit LLMErrors fall through to the generic summary error handler.
+            raise
+    
+    # Handle recent conversation formatting with SimpleHistoryProcessor for byte-level consistency
+    recent_block_str = ""
+    if verbatim_tail:
+        recent_block_str = history_processor.format_recent_conversation(
+            verbatim_tail, params, log_origin
+        )
 
     # Stage: Establish Web Context
     # --- (Optional) web context

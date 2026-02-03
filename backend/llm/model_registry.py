@@ -69,6 +69,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": False,
             "top_p": True,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_output_tokens",  # OpenAI non-reasoning models use max_tokens
     ),
@@ -84,6 +85,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": False,
             "top_p": True,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_output_tokens", 
     ),
@@ -104,6 +106,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": False,
             "top_p": True,
+            "assistant_role": "assistant",
         },
         # Chat Completions token limit parameter is "max_completion_tokens";
         # callers should continue to pass model-agnostic max_output_tokens and
@@ -122,6 +125,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": False,
             "top_p": True,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_completion_tokens",
     ),
@@ -137,6 +141,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": False,  # o1/o3 models don't support temperature
             "reasoning_effort": True,  
             "top_p": False,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_output_tokens",  
         reasoning_parameter=("reasoning_effort", "low"),  
@@ -153,6 +158,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": False,  # gpt-5-mini doesn't support temperature
             "reasoning_effort": True,  
             "top_p": False,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_output_tokens",  
         reasoning_parameter=("reasoning_effort", "minimal"),  
@@ -170,6 +176,7 @@ REGISTRY: Dict[str, ModelInfo] = {
         capabilities={
             "dimensions": 1536,
             "normalize_embedding": False,  # Let caller decide
+            "assistant_role": "model",
         },
         max_tokens_parameter="max_tokens",  # Embeddings don't use max_tokens but set for consistency
     ),
@@ -191,6 +198,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "task_type": "RETRIEVAL_DOCUMENT",
             "output_dimensionality": 1536,
             "normalize_embedding": False,  # Let caller decide
+            "assistant_role": "model",
         },
         max_tokens_parameter="max_tokens",
     ),
@@ -206,6 +214,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": False,
             "top_p": True,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_completion_tokens", # Can also be max_completion_tokens or max_tokens 
         thinking_tax={
@@ -230,6 +239,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": True,  
             "top_p": True,
+            "assistant_role": "assistant",
         },
         max_tokens_parameter="max_completion_tokens",  # Can also be max_output_tokens or max_tokens 
         reasoning_parameter=("thinking_level", "minimal"),  
@@ -263,6 +273,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": True,
             "top_p": True,
+            "assistant_role": "model",
         },
         max_tokens_parameter="max_completion_tokens",
         reasoning_parameter=("thinking_level", "low"),
@@ -296,6 +307,7 @@ REGISTRY: Dict[str, ModelInfo] = {
             "temperature": True,
             "reasoning_effort": True,  
             "top_p": True,
+            "assistant_role": "model",
         },
         max_tokens_parameter="max_completion_tokens",  
         reasoning_parameter=("thinking_budget", 1000),  
