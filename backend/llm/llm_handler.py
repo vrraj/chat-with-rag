@@ -1701,6 +1701,31 @@ class LLMHandler:
         except Exception:
             usage = None
 
+        # If no usage metadata, estimate tokens for Gemini embeddings
+        if usage is None:
+            try:
+                # Estimate tokens based on input text
+                if isinstance(contents, list):
+                    total_text = " ".join(str(c) for c in contents)
+                else:
+                    total_text = str(contents)
+                approx = self._estimate_embedding_tokens(total_text)
+                
+                class _EmbeddingUsageShim:
+                    def __init__(self, prompt_tokens: int, total_tokens: int) -> None:
+                        self.prompt_tokens = prompt_tokens
+                        self.total_tokens = total_tokens
+                
+                usage = _EmbeddingUsageShim(prompt_tokens=approx, total_tokens=approx)
+            except Exception:
+                # Fallback to zero usage if estimation fails
+                class _EmbeddingUsageShim:
+                    def __init__(self, prompt_tokens: int, total_tokens: int) -> None:
+                        self.prompt_tokens = prompt_tokens
+                        self.total_tokens = total_tokens
+                
+                usage = _EmbeddingUsageShim(prompt_tokens=0, total_tokens=0)
+
         # OpenAI-style embeddings wrapper
         class _EmbeddingItem:
             def __init__(self, embedding, magnitude=None, normalized=False, provider="gemini_native"):
