@@ -16,6 +16,8 @@ This system goes beyond basic vector search by implementing a multi-stage LLM or
 - **Advanced Context Management** - Cache-optimized conversation history with summary injection
 - **Gemini Native Embeddings** - Direct SDK integration with token estimation fallback
 - **Performance Optimizations** - Batch processing, rate limit management, and cost tracking
+- **Domain-Based Collection Management** - Tightly coupled collections and embedding models with automatic dimension derivation
+- **Stage-Specific Model Configuration** - Flexible runtime model selection per pipeline stage via frontend/API parameters
 
 <p align="center">
   <a href="images/content-ingestion-primary-actions.png">
@@ -132,6 +134,8 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Dynamic Model Selection (UI)**: Click "Configure Models" in the chat interface to open the model selection modal. Choose different models for each pipeline stage, mix and match providers (OpenAI + Gemini) within the same conversation, and apply changes to subsequent chat turns.
 * **Multi-API Support**: Unified support for OpenAI Chat Completions, Responses API, Gemini OpenAI-compatible adapter, and Gemini native SDK
 * **Prompt Registry (YAML)**: Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain` (UI dropdown).
+* **Stage-Specific Model Configuration**: Models for each pipeline stage are now defined in `stage_specs` and can be passed via frontend/API parameters for flexible runtime configuration
+* **Model Registry Centralization**: All model-specific configurations (costs, capabilities, parameters) moved from `config.py` to the centralized model registry for unified management
 * **Chunked Conversation History**: Efficient context management with configurable chunk size via `raw_tail_turns`.
   - Maintains an **accumulated conversation summary** plus a **verbatim recent chunk**.
   - When the chunk limit is reached, the chunk is summarized and the recent chunk resets.
@@ -572,7 +576,7 @@ python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
 
 ### 🔄 Managing Your Collections
 
-The system supports **domain-based collection management** where each domain can have its own collection and embedding model configuration. This approach links collection names to specific embedding models automatically.
+The system supports **domain-based collection management** where each domain is tightly coupled with its embedding model to prevent dimension drift and ensure consistency. Selecting a collection automatically sets the compatible embedding model and vector dimensions.
 
 #### **Domain-Based Configuration (Recommended)**
 
@@ -604,6 +608,7 @@ active_domain: str = "oceans"
 - 🔗 **Automatic Linking**: Collection and embedding model are always correctly paired
 - 📏 **Dynamic Vector Size**: Automatically computed from the embedding model's dimensions
 - 🌐 **Domain-Specific**: Each domain can use different providers (OpenAI, Gemini)
+- 🛡️ **Dimension Safety**: Prevents model/collection dimension mismatches
 
 **Usage Examples:**
 ```python
@@ -611,14 +616,24 @@ active_domain: str = "oceans"
 active_domain: str = "oceans"
 # → collection_name = "document_index_gemini"
 # → embedding_model_key = "gemini:native-embed" 
-# → vector_size = 1536
+# → vector_size = 1536 (auto-derived from model registry)
 
 # Switch to mountains domain (OpenAI embeddings)
 active_domain: str = "mountains"
 # → collection_name = "document_index"
 # → embedding_model_key = "openai:embed_small"
-# → vector_size = 1536
+# → vector_size = 1536 (auto-derived from model registry)
 ```
+
+#### **Creating New Collections**
+
+When creating a new collection in the UI or via API:
+1. **Choose Domain**: Select or create a domain configuration
+2. **Model Auto-Selected**: The compatible embedding model is automatically assigned
+3. **Dimensions Set**: Vector size is derived from the model registry
+4. **Ready to Use**: Collection is immediately ready for ingestion with the correct model
+
+This tight coupling ensures that you can never accidentally use incompatible embedding models with existing collections, preventing data corruption and search failures.
 
 #### **Legacy Manual Configuration**
 

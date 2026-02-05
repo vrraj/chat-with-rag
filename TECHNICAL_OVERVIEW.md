@@ -1,8 +1,8 @@
 
 
-# 🧠 Technical Overview
+# Technical Overview
 
-## 📚 Table of Contents
+## Table of Contents
 
 - [High‑Level Architecture Diagram](#-highlevel-architecture-diagram)
 - [Purpose and Scope](#-purpose-and-scope)
@@ -437,7 +437,7 @@ These controls enhance reliability during large‑scale ingestion.
 ---
 
 
-## 🧠 Chat Orchestration
+## Chat Orchestration
 
 This section will describe how user queries flow through the multi-stage chat pipeline, including retrieval, reranking, tool calls, and final LLM response construction. It will outline the orchestration sequence and the role of intermediate stages.
 
@@ -881,9 +881,50 @@ The centralized logging configuration in `backend/core/logging.py` also configur
 
 
 
-## ⚙️ Configuration and Settings
+## Configuration and Settings
 
-Configuration is centralized in `backend/core/config.py`, which acts as the control plane for model selection, pipeline behavior, and safety limits. The system is designed so most behavior can be tuned through configuration without requiring code changes.
+Configuration is centralized across multiple components, with model-specific configurations moved to the model registry and application settings in `backend/core/config.py`. The system is designed so most behavior can be tuned through configuration without requiring code changes.
+
+### Model Registry Architecture
+
+The **Model Registry** (`backend/llm/model_registry.py`) serves as the single source of truth for all model configurations:
+
+- **Model Definitions**: Complete model specifications including provider, model ID, endpoint, pricing, and capabilities
+- **Capability Mapping**: Feature support flags (tools, streaming, reasoning, temperature, dimensions, etc.)
+- **Cost Information**: Input/output token rates for budget tracking and cost management
+- **Parameter Standardization**: Consistent parameter names and defaults across providers
+
+### Stage-Specific Configuration
+
+Models for each pipeline stage are defined in `stage_specs` and can be overridden at runtime:
+
+- **Rewrite Stage**: `rewrite_model_key` - Model for query optimization
+- **Rerank Stage**: `rerank_model_key` - Model for relevance scoring  
+- **Inference Stage**: `inference_model_key` - Model for final response generation
+- **Summarization Stage**: `summarizer_model_key` - Model for conversation summarization
+- **Embedding Stage**: `embedding_model_key` - Model for vector embeddings
+
+### Domain-Based Collection Management
+
+Collections and embedding models are tightly coupled to prevent dimension drift:
+
+```python
+DOMAIN_EMBEDDING_CONFIG = {
+    "default": {
+        "collection_name": "document_index",
+        "embedding_model_key": "openai:embed_small"
+    },
+    "oceans": {
+        "collection_name": "document_index_gemini", 
+        "embedding_model_key": "gemini:native-embed"
+    }
+}
+```
+
+**Benefits:**
+- **Automatic Model Selection**: Choosing a domain automatically sets the compatible embedding model
+- **Dimension Safety**: Vector sizes derived from model registry prevent mismatches
+- **Single Change Point**: Switch domains with one configuration change
 
 ### Key Configuration Categories
 
@@ -932,10 +973,11 @@ All settings can be overridden per-request through the `params` object in the `/
 - Configure rewrite behavior (tail turns, summary turns, confidence threshold)
 - Set inference parameters (temperature, top_p, max tokens)
 - Enable/disable features (tools, web search, query rewrite)
+- Select models per stage (rewrite, rerank, inference, summarization)
 
 Configuration values are loaded at application startup and can be overridden via environment variables for different deployment environments.
 
-## 🛡️ Error Handling and Stability Guarantees
+## Error Handling and Stability Guarantees
 
 The system employs multiple layers of protection to prevent runaway computation and ensure graceful degradation.
 
@@ -958,7 +1000,7 @@ The system employs multiple layers of protection to prevent runaway computation 
 - safe stream termination
 - consumer registry tracking
 
-## 🧰 Extensibility and Organization-Specific Customization
+## Extensibility and Organization-Specific Customization
 
 Although this project includes working examples—such as weather and nearby‑airports tools,
 sample batch ingestion, and seed datasets—it is primarily intended as a modular,
@@ -980,7 +1022,7 @@ Common customization areas include:
   customer‑facing application, or wiring the backend into a different user interface.
 
 
-## 🧾 Architecture Summary
+## Architecture Summary
 
 The RAG Pipeline Chat system is composed of modular, loosely coupled stages:
 
