@@ -291,7 +291,7 @@ class Settings(BaseSettings):
     rewrite_tail_turns: int = 3
 
     # How many older turns to summarize before the rewrite tail (0 = no pre-summary)
-    rewrite_summary_turns: int = 3
+    rewrite_summary_turns: int = 0
 
     # Minimum confidence (0–1) required before a rewritten query replaces the user’s original
     rewrite_confidence_threshold: float = 0.7
