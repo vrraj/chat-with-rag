@@ -58,6 +58,21 @@ def test_adapter_embedding() -> None:
 
     print("Raw embedding response type (norm):", type(resp_yes))
 
+    # Check usage for adapter responses
+    print("\n=== Adapter usage check (no_norm) ===")
+    print(f"Raw response (no_norm): {resp_no}")
+    if hasattr(resp_no, 'usage') and resp_no.usage:
+        print(f"Usage (no_norm): {resp_no.usage}")
+    else:
+        print("No usage in adapter response (no_norm)")
+
+    print("\n=== Adapter usage check (norm) ===")
+    print(f"Raw response (norm): {resp_yes}")
+    if hasattr(resp_yes, 'usage') and resp_yes.usage:
+        print(f"Usage (norm): {resp_yes.usage}")
+    else:
+        print("No usage in adapter response (norm)")
+
     # Inspect first embedding and L2 norms before/after normalization using
     # a tiny pure-Python norm helper.
     try:
@@ -167,6 +182,19 @@ def test_native_via_llm_handler() -> None:
         }
         pprint(top_level_no)
 
+        print("\n=== Native via llm_handler: usage details (no_norm) ===")
+        print(f"Raw response (no_norm): {resp_no_norm}")
+        if hasattr(resp_no_norm, "usage") and resp_no_norm.usage:
+            usage_no = resp_no_norm.usage
+            print(f"Usage type: {type(usage_no)}")
+            print(f"Usage attributes: {dir(usage_no)}")
+            if hasattr(usage_no, "prompt_tokens"):
+                print(f"Prompt tokens: {usage_no.prompt_tokens}")
+            if hasattr(usage_no, "total_tokens"):
+                print(f"Total tokens: {usage_no.total_tokens}")
+        else:
+            print("No usage found in no_norm response")
+
         print("\n=== Native via llm_handler: top-level attributes (norm) ===")
         top_level_yes = {
             "has_data": hasattr(resp_norm, "data"),
@@ -174,6 +202,36 @@ def test_native_via_llm_handler() -> None:
             "dir": [n for n in dir(resp_norm) if not n.startswith("__")],
         }
         pprint(top_level_yes)
+
+        print("\n=== Native via llm_handler: usage details (norm) ===")
+        print(f"Raw response (norm): {resp_norm}")
+        if hasattr(resp_norm, "usage") and resp_norm.usage:
+            usage_yes = resp_norm.usage
+            print(f"Usage type: {type(usage_yes)}")
+            print(f"Usage attributes: {dir(usage_yes)}")
+            if hasattr(usage_yes, "prompt_tokens"):
+                print(f"Prompt tokens: {usage_yes.prompt_tokens}")
+            if hasattr(usage_yes, "total_tokens"):
+                print(f"Total tokens: {usage_yes.total_tokens}")
+        else:
+            print("No usage found in norm response")
+
+        # Test usage extraction like the system does
+        try:
+            import sys
+            sys.path.insert(0, str(_PROJECT_ROOT))
+            from backend.chat.chat_manager import _extract_usage_from_responses
+            
+            usage_dict_no = _extract_usage_from_responses(resp_no_norm, provider="gemini")
+            usage_dict_yes = _extract_usage_from_responses(resp_norm, provider="gemini")
+            
+            print(f"\n=== Extracted usage dict (no_norm) ===")
+            pprint(usage_dict_no)
+            
+            print(f"\n=== Extracted usage dict (norm) ===")
+            pprint(usage_dict_yes)
+        except Exception as e:
+            print(f"Could not extract usage: {e}")
 
         if v_no is not None:
             arr_no = np.asarray(v_no, dtype="float32")
@@ -257,6 +315,21 @@ def test_native_embedding() -> None:
             model=model,
             contents=contents,
         )
+        
+        print(f"\n=== RAW GEMINI RESPONSE ===")
+        print(f"Response type: {type(resp)}")
+        print(f"Response: {resp}")
+        print(f"Response dir: {[x for x in dir(resp) if not x.startswith('_')]}")
+        
+        # Check for usage_metadata
+        usage_meta = getattr(resp, "usage_metadata", None)
+        if usage_meta is not None:
+            print(f"\nusage_metadata type: {type(usage_meta)}")
+            print(f"usage_metadata: {usage_meta}")
+            print(f"usage_metadata dir: {[x for x in dir(usage_meta) if not x.startswith('_')]}")
+        else:
+            print("\nNo usage_metadata found in response")
+            
     except Exception as e:
         print("Error calling native embed_content:", e)
         return
@@ -269,20 +342,15 @@ def test_native_embedding() -> None:
             if values is not None:
                 print("First native embedding length:", len(values))
                 print("First 8 native embedding values:", values[:8])
-        # Try to locate any usage-like metadata if exposed
-        usage_meta = getattr(resp, "usage_metadata", None)
-        if usage_meta is not None:
-            print("\nusage_metadata:")
-            pprint(usage_meta)
     except Exception as e:  # pragma: no cover - debug helper
         print("Error while inspecting native embedding response:", e)
 
 
 def main() -> None:
-    # test_adapter_embedding(). # enable to test OpenAI compatible adapter
-    test_native_via_llm_handler()
+    test_adapter_embedding()  # Test OpenAI compatible adapter
+    test_native_via_llm_handler()  # Test native SDK
     # test_native_count_tokens() # enable to test native count_tokens
-    #test_native_embedding() # enable to test native embedding without llm_handler
+    test_native_embedding()  # Test raw native SDK response
 
 
 if __name__ == "__main__":

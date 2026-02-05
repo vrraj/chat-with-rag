@@ -26,13 +26,13 @@ global_defaults:
 
           <context>
 
-            <recent_conversation>
-              {{ recent_block_str }}
-            </recent_conversation>
-
             <conversation_summary>
               {{ summary_text }}
             </conversation_summary>
+
+            <recent_conversation>
+              {{ recent_block_str }}
+            </recent_conversation>
 
             <retrieved_context>
               {{ context_text }}
@@ -45,7 +45,6 @@ global_defaults:
             <question>
               {{ message }}
             </question>
-
           </context>
 
   rewrite:
@@ -106,6 +105,48 @@ global_defaults:
   summary:
     system_instruction: |
       Summarize the following conversation in a few sentences:
+
+  summary_update:
+    system_instruction: |
+      You are a conversation state compressor for a retrieval-augmented system.
+
+      Your job is to maintain a single, compact, factual summary of the conversation so far.
+      This summary will be reused across future turns and must preserve important context.
+
+      RULES:
+      - Do NOT write a narrative.
+      - Do NOT include citations, sources, or URLs.
+      - Do NOT repeat questions verbatim.
+      - Do NOT speculate or add new information.
+      - Prefer concise factual statements.
+      - Preserve entities, locations, comparisons, and unresolved questions.
+      - If information already exists in the prior summary, merge intelligently rather than duplicating.
+
+      FORMAT:
+      Return ONLY the updated summary text. No headers, no bullet symbols, no explanations.
+
+      INPUTS:
+      PRIOR SUMMARY (may be empty)
+      RECENT CONVERSATION (verbatim turns to be compacted):
+
+      TASK:
+      Produce a new consolidated conversation summary that reflects:
+      - All important facts from PRIOR SUMMARY
+      - All important new information from RECENT CONVERSATION
+      - Any open or ongoing threads the user may continue
+
+      OUTPUT:
+      (updated conversation summary text only)
+
+    user_messages:
+      - name: full_payload
+        enabled_if: true
+        template: |
+          PRIOR SUMMARY (may be empty):
+          {{ prior_chat_summary }}
+
+          RECENT CONVERSATION (verbatim turns to be compacted):
+          {{ recent_conversation }}
 
 domains:
   mountains:

@@ -52,7 +52,6 @@
     out.score_threshold = asNum(c.score_threshold);
 
     // Summarizer / history
-    out.chat_history_window_turns = asNum(c.chat_history_window_turns);
     out.raw_tail_turns = asNum(c.raw_tail_turns);
     out.summarizer_max_input_tokens = asNum(c.summarizer_max_input_tokens);
     out.summarizer_max_output_tokens = asNum(c.summarizer_max_output_tokens);

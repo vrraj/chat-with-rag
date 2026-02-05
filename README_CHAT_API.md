@@ -130,7 +130,6 @@ class ChatRequest(BaseModel):
 
 #### Summarizer / history window
 
-- `chat_history_window_turns: int | null`  
 - `raw_tail_turns: int | null`  
 - `summarizer_max_input_tokens: int | null`  
 - `summarizer_max_output_tokens: int | null`
@@ -146,6 +145,7 @@ class ChatRequest(BaseModel):
 - `enable_query_rewrite: bool | null`  
 - `rewrite_confidence_threshold: float | null`  
 - `rewrite_tail_turns: int | null`
+- `rewrite_summary_turns: int | null`
 
 #### Tools
 
@@ -267,6 +267,7 @@ curl -X POST http://localhost:8000/chat \
       "enable_query_rewrite": true,
       "rewrite_confidence_threshold": 0.67,
       "rewrite_tail_turns": 1,
+      "rewrite_summary_turns": 3,
       "use_tools": false,
       "show_processing_steps": false,
       "query_id": "abcd1234",
@@ -296,7 +297,6 @@ def call_chat(message: str, show_steps: bool = True):
             "score_threshold": 0.35,
             "summarizer_max_input_tokens": 400,
             "summarizer_max_output_tokens": 200,
-            "chat_history_window_turns": 2,
             "raw_tail_turns": 2,
             "temperature": 0.4,
             "top_p": 0.9,
@@ -304,6 +304,7 @@ def call_chat(message: str, show_steps: bool = True):
             "enable_query_rewrite": True,
             "rewrite_confidence_threshold": 0.67,
             "rewrite_tail_turns": 1,
+            "rewrite_summary_turns": 3,
             "use_tools": False,
             "show_processing_steps": show_steps,
             "query_id": query_id,

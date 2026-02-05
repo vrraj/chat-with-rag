@@ -102,7 +102,6 @@ The embed page is configured by query parameters on the `chat-embed.html` URL. A
 
 ### 4.2 Summarizer / history
 
-- `chat_history_window_turns`
 - `raw_tail_turns`
 - `summarizer_max_input_tokens`
 - `summarizer_max_output_tokens`
@@ -120,6 +119,7 @@ All should be integers if provided.
 - `enable_query_rewrite` – `true` / `false` / `1` / `0` / `yes` / `no`.
 - `rewrite_confidence_threshold` – float.
 - `rewrite_tail_turns` – integer.
+- `rewrite_summary_turns` – integer.
 
 ### 4.5 Tools
 
@@ -193,6 +193,7 @@ Relies entirely on backend defaults; uses a generated `conversation_id`.
   enable_query_rewrite=true&
   rewrite_confidence_threshold=0.67&
   rewrite_tail_turns=1&
+  rewrite_summary_turns=3&
   use_tools=false
 ```
 
@@ -318,6 +319,7 @@ For fast, one-off experiments (without editing any HTML files), you can inject t
     + '&enable_query_rewrite=true'
     + '&rewrite_confidence_threshold=0.67'
     + '&rewrite_tail_turns=1'
+    + '&rewrite_summary_turns=3'
     + '&use_tools=false'
     + '&show_processing_steps=true'
     + '&namespace=devtools-test';

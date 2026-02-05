@@ -49,6 +49,7 @@ from backend.tools import list_tools, get_executor
 from backend.llm.llm_handler import llm_handler, LLMError
 from backend.chat.simple_history_processor import SimpleHistoryProcessor
 from backend.chat.utils import _get_param_int, split_history_for_prompt
+from backend.chat.chunked_history_manager import ChunkedHistoryManager
 from backend.chat.prompt_registry import (
     resolve_inference_prompt,
     resolve_rewrite_prompt,
@@ -60,6 +61,69 @@ from backend.chat.prompt_registry import (
 from backend.markdown_render import render_markdown_to_html
 
 _SUMMARY_CACHE: Dict[str, str] = {}
+_SUMMARY_CACHE_LAST_SEEN: Dict[str, float] = {}
+
+_CHUNK_MANAGERS_BY_NS: Dict[str, ChunkedHistoryManager] = {}
+_CHUNK_MANAGERS_LAST_SEEN: Dict[str, float] = {}
+
+
+def _evict_idle_chunk_managers(now: float | None = None, max_idle_seconds: int | None = None) -> Dict[str, int]:
+    try:
+        _now = float(now if now is not None else time.time())
+    except Exception:
+        _now = time.time()
+    try:
+        _ttl = int(max_idle_seconds) if max_idle_seconds is not None else int(getattr(settings, "chunk_manager_idle_ttl_seconds", 3600) or 3600)
+    except Exception:
+        _ttl = 3600
+
+    cleared = 0
+    try:
+        idle_keys = [k for k, ts in _CHUNK_MANAGERS_LAST_SEEN.items() if (_now - float(ts or 0.0)) > _ttl]
+        for k in idle_keys:
+            _CHUNK_MANAGERS_LAST_SEEN.pop(k, None)
+            if k in _CHUNK_MANAGERS_BY_NS:
+                _CHUNK_MANAGERS_BY_NS.pop(k, None)
+                cleared += 1
+    except Exception:
+        pass
+    return {"cleared": cleared, "active_namespaces": len(_CHUNK_MANAGERS_BY_NS)}
+
+
+def _get_chunk_manager_for_namespace(namespace: str, settings_obj: Any) -> ChunkedHistoryManager:
+    ns = str(namespace or "").strip()
+    key = ns or ""
+    try:
+        _evict_idle_chunk_managers()
+    except Exception:
+        pass
+
+    mgr = _CHUNK_MANAGERS_BY_NS.get(key)
+    if mgr is None:
+        try:
+            chunk_size_limit = int(getattr(settings_obj, "raw_tail_turns", 10) or 10)
+        except Exception:
+            chunk_size_limit = 10
+        mgr = ChunkedHistoryManager(chunk_size_limit=chunk_size_limit, session_id=(ns or "default"))
+        _CHUNK_MANAGERS_BY_NS[key] = mgr
+
+    try:
+        _CHUNK_MANAGERS_LAST_SEEN[key] = time.time()
+    except Exception:
+        pass
+    return mgr
+
+
+def clear_chunk_manager_for_namespace(namespace: str) -> Dict[str, Any]:
+    ns = str(namespace or "").strip()
+    key = ns or ""
+    existed = key in _CHUNK_MANAGERS_BY_NS
+    if existed:
+        _CHUNK_MANAGERS_BY_NS.pop(key, None)
+    _CHUNK_MANAGERS_LAST_SEEN.pop(key, None)
+    return {"cleared": bool(existed), "namespace": key, "active_namespaces": len(_CHUNK_MANAGERS_BY_NS)}
+
+
 # Option A support: index of namespace -> set of cache keys for precise clearing
 _SUMMARY_NS_INDEX: Dict[str, Set[str]] = defaultdict(set)
 # Option A support: last-seen timestamp per namespace for idle eviction
@@ -1807,6 +1871,26 @@ class ChatManager:
         self.chat_history = []
         # Per-instance lightweight cache for history summaries reused within a turn
         self._summary_cache: Dict[str, str] = {}
+        
+        # Chunked history managers for different sessions
+        self.chunk_managers: Dict[str, ChunkedHistoryManager] = {}
+
+    def get_or_create_chunk_manager(self, session_id: str = "default") -> ChunkedHistoryManager:
+        """Get or create a chunk manager for the given session."""
+        if session_id not in self.chunk_managers:
+            chunk_size_limit = getattr(settings, 'raw_tail_turns', 10)  # Use existing config
+            self.chunk_managers[session_id] = ChunkedHistoryManager(
+                chunk_size_limit=chunk_size_limit,
+                session_id=session_id
+            )
+            logger.debug(f"[CHUNKED] Created new chunk manager for session {session_id}, chunk_size={chunk_size_limit}")
+        return self.chunk_managers[session_id]
+
+    def _get_session_id(self, params: Dict[str, Any] | None) -> str:
+        """Extract session ID from params or use default."""
+        if not params:
+            return "default"
+        return str(params.get("session_id", "default"))
 
     def _get_context(self, query: str, limit: int | None = None, score_threshold: float | None = None) -> List[Dict]:
         """Get relevant context from QdrantDB"""
@@ -2194,13 +2278,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 # Per-turn overrides for rewrite behavior (handle_chat passes these via params)
                 rw_tail, src_rw_tail = _get_param_int(params, ["rewrite_tail_turns"], getattr(settings_obj, "rewrite_tail_turns", 1), minimum=0)
                 rw_tail = int(rw_tail)
+                rw_summary, src_rw_summary = _get_param_int(params, ["rewrite_summary_turns"], getattr(settings_obj, "rewrite_summary_turns", 3), minimum=0)
                 thr, src_thr = _get_param_float(params, ["rewrite_confidence_threshold"], getattr(settings_obj, "rewrite_confidence_threshold", 0.6), minimum=0.0, maximum=0.99)
-                logger.debug("[REWRITE PARAMS] (%s) enable=%s tail_turns=%d (%s) threshold=%.2f (%s)", log_origin, True, rw_tail, src_rw_tail, thr, src_thr)
+                logger.debug("[REWRITE PARAMS] (%s) enable=%s tail_turns=%d (%s) summary_turns=%d (%s) threshold=%.2f (%s)", log_origin, True, rw_tail, src_rw_tail, rw_summary, src_rw_summary, thr, src_thr)
                 raw_tail = max(0, int(rw_tail))
-                window_turns = max(1, int(getattr(settings_obj, "chat_history_window_turns", 3)))
+                window_turns = max(0, int(rw_summary))
                 to_sum_rw, tail_rw = split_history_for_prompt(history, raw_tail, window_turns)
                 summary_rw = ""
-                if to_sum_rw:
+                # Skip pre-summary if rewrite_summary_turns is 0
+                if window_turns > 0 and to_sum_rw:
                     # Prefix tag with namespace if provided to isolate cache entries by conversation
                     _tag_rw = (f"{namespace}|rewrite" if namespace else "rewrite")
                     sum_spec = (stage_specs or {}).get("summary") or {}
@@ -2884,119 +2970,56 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Initialize simple history processor for consistent formatting
     history_processor = SimpleHistoryProcessor(settings_obj)
     
-    # Process history parameters
-    raw_tail, src_raw_tail = _get_param_int(params, ["raw_tail_turns", "raw-tail_turns"], getattr(settings_obj, "raw_tail_turns", 2), minimum=0)
-    window_turns, src_window = _get_param_int(params, ["chat_history_window_turns", "chat_history_max_turns"], getattr(settings_obj, "chat_history_window_turns", 3), minimum=1)
-    to_summarize, verbatim_tail = split_history_for_prompt(history, raw_tail, window_turns)
+    # Always use chunked history approach
+    chunk_manager = _get_chunk_manager_for_namespace(namespace, settings_obj)
+    try:
+        _effective_chunk_turns, _chunk_turns_src = _get_param_int(
+            params,
+            ["raw_tail_turns"],
+            int(getattr(settings_obj, "raw_tail_turns", 10) or 10),
+        )
+    except Exception:
+        _effective_chunk_turns = int(getattr(settings_obj, "raw_tail_turns", 10) or 10)
+    try:
+        if int(_effective_chunk_turns or 0) > 0 and int(getattr(chunk_manager, "chunk_size_limit", 0) or 0) != int(_effective_chunk_turns):
+            chunk_manager.chunk_size_limit = int(_effective_chunk_turns)
+    except Exception:
+        pass
+    try:
+        logger.debug(f"[CHUNKED] Using chunked history for namespace '{namespace or ''}'")
+    except Exception:
+        pass
     
-    # Initialize summary text
-    summary_text = ""
+    # Check if we should use token-based chunks
+    enable_token_based = getattr(settings_obj, 'enable_token_based_chunks', False)
     
-    # Handle summarization (keep existing logic)
-    if to_summarize:
-        sum_in, src_sum_in = _get_param_int(params, ["summarizer_max_input_tokens"], getattr(settings_obj, "summarizer_max_input_tokens", 512), minimum=0)
-        sum_out, src_sum_out = _get_param_int(params, ["summarizer_max_output_tokens"], getattr(settings_obj, "summarizer_max_output_tokens", 128), minimum=1)
-        
-        logger.debug("[PARAMS] (%s) raw_tail_turns=%d (%s), chat_history_window_turns=%d (%s), summarizer_max_input_tokens=%d (%s), summarizer_max_output_tokens=%d (%s)",
-                     log_origin, raw_tail, src_raw_tail, window_turns, src_window, sum_in, src_sum_in, sum_out, src_sum_out)
-        
-        # Prefix tag with namespace if provided to isolate cache entries by conversation
-        _tag_inf = (f"{namespace}|inference" if namespace else "inference")
-        sum_spec = (stage_specs or {}).get("summary") or {}
-        
-        try:
-            _pd_sum = str((params or {}).get("prompt_domain") or "").strip()
-        except Exception:
-            _pd_sum = ""
-        if not _pd_sum:
-            try:
-                _pd_sum = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
-            except Exception:
-                _pd_sum = ""
-        
-        try:
-            summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
-                to_summarize,
-                cache,
-                tag=_tag_inf,
-                model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
-                temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
-                max_input_tokens=sum_in,
-                max_output_tokens=sum_out,
-                prompt_domain=_pd_sum,
-                log_prefix=f"[SUMMARY] {log_origin}",
-                stage_spec=sum_spec,
-            )
-            
-            if not _from_cache_inf and _u_inf:
-                _summary_model_used = str((sum_spec or {}).get("model") or getattr(settings_obj, "summarizer_model", settings_obj.inference_model))
-                m.record_stage(
-                    "summary",
-                    model=_summary_model_used,
-                    usage=_u_inf,
-                    extra={"applied": True, "reason": f"prev {window_turns} turns (before last {raw_tail} turns)"},
-                    model_key=(_stage_model_keys or {}).get("summary"),
-                )
-                
-        except LLMError as e:
-            # Handle rate limit errors (keep existing logic)
-            kind = getattr(e, "kind", "") or ""
-            if kind == "rate_limit":
-                try:
-                    _prov = str(getattr(e, "provider", "") or "").strip() or "the summarizer provider"
-                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified summarizer model)"
-                    quota_msg = (
-                        f"Our summarizer model (provider={_prov}, model={_model}) "
-                        "is currently over its rate-limit or quota. I couldn't "
-                        "summarize the chat history safely, so this turn has been "
-                        "stopped. Please try again later or contact the "
-                        "administrator to increase the quota."
-                    )
-                except Exception:
-                    quota_msg = (
-                        "The summarizer model is currently over its rate limit or quota. "
-                        "Please try again later."
-                    )
-
-                try:
-                    emit_stage(
-                        req_id,
-                        "Final Answer",
-                        final=True,
-                        finalContent=quota_msg,
-                    )
-                except Exception:
-                    pass
-                try:
-                    close_stream(req_id)
-                except Exception:
-                    pass
-                try:
-                    m.finalize_turn()
-                    turn_metrics, convo_snapshot = m.snapshot()
-                except Exception:
-                    turn_metrics = m.turn
-                    convo_snapshot = {
-                        "tokens": {
-                            "embedding": 0,
-                            "llm_input": 0,
-                            "llm_output": 0,
-                            "conversation_total": 0,
-                        },
-                        "cost": {"conversation_total": 0.0},
-                    }
-                return {
-                    "answer": quota_msg,
-                    "sources": [],
-                    "turn_metrics": turn_metrics,
-                    "conversation_totals": convo_snapshot,
-                    "metrics": {"vectors_retrieved": 0},
-                    "tools_used": [],
-                    "rewrite_display": rewrite_display,
-                }
-
-            # Non-rate-limit LLMErrors fall through to the generic summary error handler.
-            raise
+    # Check if we need to create a new chunk
+    should_create_chunk = False
+    if enable_token_based:
+        # Use token-based chunk detection
+        token_limit = getattr(settings_obj, 'raw_tail_token_limit', 4000)
+        current_chunk = chunk_manager.get_current_chunk_messages(history)
+        should_create_chunk = chunk_manager.should_create_new_chunk_by_tokens(current_chunk, token_limit)
+        if should_create_chunk:
+            logger.info(f"[CHUNKED] Creating new chunk for namespace '{namespace or ''}' (token limit reached: {token_limit})")
+    else:
+        # Use turn-based chunk detection
+        should_create_chunk = chunk_manager.should_create_new_chunk()
+        if should_create_chunk:
+            logger.info(f"[CHUNKED] Creating new chunk for namespace '{namespace or ''}' (turn limit reached)")
+    
+    if should_create_chunk:
+        success = chunk_manager.create_new_chunk(history, settings_obj, cache, namespace)
+        if not success:
+            logger.warning(f"[CHUNKED] Failed to create new chunk for namespace '{namespace or ''}', falling back to current chunk")
+    
+    # Get history for prompt from chunk manager
+    recent_conversation, summary_text = chunk_manager.get_history_for_prompt(history)
+    to_summarize = []  # No separate summarization in chunked mode
+    verbatim_tail = recent_conversation
+    
+    # Increment turn count for current chunk
+    chunk_manager.increment_turn_count()
     
     # Handle recent conversation formatting with SimpleHistoryProcessor for byte-level consistency
     recent_block_str = ""

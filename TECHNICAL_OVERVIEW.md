@@ -480,6 +480,48 @@ At a high level, the chat orchestration pipeline processes queries as follows:
 
 Context assembly builds the inference context using two inputs: **raw tail turns** (a configurable number of the most recent user/assistant turns) and **summarized history** (a condensed representation of earlier conversation state). These controls are configurable so deployments can tune for cost, context window pressure, and answer quality.
 
+#### Chunked Conversation History (cache-efficient)
+
+For multi-turn chats, the backend uses a chunked history strategy designed to improve cache efficiency and avoid re-summarizing the entire conversation on every turn.
+
+- **Chunk size**: `raw_tail_turns` controls the number of turns per chunk.
+- **State per conversation**: chunk state is keyed by a request namespace (typically `user_id:conversation_id` or `conversation_id`).
+- **What is persisted per namespace** (in-process today):
+  - `accumulated_summary`: merged summary of all completed chunks
+  - `current_chunk_start` / `summarized_until_turn`: boundary used to slice `history` into “verbatim recent chunk”
+  - `current_chunk_size`: number of turns accumulated in the current chunk
+
+On each request:
+
+1. The orchestrator loads (or creates) a chunk manager for the namespace.
+2. If the chunk limit is reached, it runs a `summary_update` prompt that merges `accumulated_summary` with the chunk being closed.
+3. The chunk boundary advances and the recent chunk resets.
+4. The inference prompt is built as:
+   - `<conversation_summary>` = accumulated summary
+   - `<recent_conversation>` = verbatim messages from the current chunk only
+
+This keeps prompts stable across turns inside a chunk and improves the likelihood of cache hits.
+
+##### Stateless `POST /chat` and required client identifiers
+
+The stateless chat API expects the client to send the growing `history` each turn. To benefit from chunking, the client must also provide a stable namespace via `params.conversation_id` (and optionally `params.user_id`). Without a stable namespace, state may collide or reset.
+
+##### Clear Chat (`POST /chat/clear`)
+
+The frontend Clear Chat action calls `POST /chat/clear` with `conversation_id` (and optionally `user_id`). The backend uses this to clear namespace-scoped in-memory state so the next turn starts fresh for that conversation:
+
+- summary cache entries for the namespace
+- chunked-history state (chunk manager / accumulated summary)
+- per-conversation totals accumulator
+
+##### Eviction / TTL (bounded memory)
+
+Namespace-scoped chunk managers are evicted after an idle TTL to bound process memory usage. The default is 1 hour and can be tuned via `chunk_manager_idle_ttl_seconds`.
+
+##### Migration to Redis / SQLite / Postgres
+
+The chunking mechanism is intentionally modeled as “state keyed by namespace”. To support multi-worker deployments or persistence across restarts, the in-process state can be replaced with a shared store (Redis/SQLite/Postgres) while keeping the same state shape and keying.
+
 #### Summarization and Token Budgeting
 
 When conversation history exceeds the configured window size, older turns are processed through a summarization stage to maintain context while staying within token limits:
@@ -843,18 +885,55 @@ The centralized logging configuration in `backend/core/logging.py` also configur
 
 Configuration is centralized in `backend/core/config.py`, which acts as the control plane for model selection, pipeline behavior, and safety limits. The system is designed so most behavior can be tuned through configuration without requiring code changes.
 
-At a high level, configuration covers the following control categories:
+### Key Configuration Categories
 
 - **Model selection (per stage):** embedding, reranking, inference, and tool-synthesis models used across ingestion and chat.
-- **Extraction behavior (by source type):** source-specific controls for HTML, MediaWiki, and PDF extraction, including table-aware extraction and preservation of structured content where supported.
-- **Chunking controls:** chunk size and overlap, section-aware chunking behavior, and per-document safety caps (maximum chunks and token budgets).
-- **Table and structured data handling:** enable/disable table indexing, structured versus flattened table strategies, and safeguards to avoid duplicate or oversized table-derived chunks.
+- **Extraction behavior (by source type):** source-specific controls for HTML, MediaWiki, and PDF extraction.
+- **Chunking controls:** chunk size and overlap, section-aware chunking behavior, and per-document safety caps.
+- **Table and structured data handling:** enable/disable table indexing and structured versus flattened strategies.
 - **Retrieval and ranking behavior:** top-k retrieval limits, similarity thresholds, and optional reranking toggles.
-- **Context assembly knobs:** configuration for how conversation history is incorporated (raw tail turns versus summarized history) and limits that prevent context-window overflow.
-- **Stability and safeguards:** retry policies, timeouts, and failure caps applied across ingestion and chat execution.
-- **Feature flags:** enable or disable optional capabilities such as tools, web search, estimation-only ingestion mode, and related experimental features.
+- **Context assembly knobs:** configuration for conversation history incorporation and context-window limits.
+- **Stability and safeguards:** retry policies, timeouts, and failure caps.
+- **Feature flags:** enable/disable optional capabilities such as tools, web search, and experimental features.
 
-Configuration values are loaded at application startup and can be overridden via environment variables for different deployment environments. Defaults are chosen to be safe for local development while remaining suitable for production tuning.
+### Chat Pipeline Settings
+
+#### Conversation History Management
+- **`raw_tail_turns`** (default: 10): Number of recent turns kept verbatim in the current chunk. When exceeded, triggers chunk rollover with summary update.
+- **`summary_update_model`**: Model used for chunk rollover summaries (empty = use summarizer_model).
+
+#### Query Rewrite Configuration
+- **`enable_query_rewrite`** (default: true): Enable/disable query rewriting.
+- **`rewrite_tail_turns`** (default: 3): How many recent turns the rewriter sees verbatim.
+- **`rewrite_summary_turns`** (default: 3): How many older turns to summarize before the tail (set to 0 to disable pre-summary).
+- **`rewrite_confidence_threshold`** (default: 0.7): Minimum confidence (0–1) required before a rewritten query replaces the original.
+- **`rewrite_cache_ttl_s`** (default: 300): Cache rewrites for this many seconds to avoid repeat calls.
+
+#### Retrieval and Inference
+- **`top_k`**: Maximum number of documents to retrieve.
+- **`score_threshold`**: Minimum similarity score for retrieved documents.
+- **`inference_temperature`**, **`inference_top_p`**: Sampling parameters for inference.
+- **`max_inference_output_tokens`**: Limit on inference response length.
+
+#### Summarization
+- **`summarizer_model`**: Model used for summarization tasks.
+- **`summarizer_max_input_tokens`**, **`summarizer_max_output_tokens`**: Token limits for summarization.
+- **`summarizer_temperature`**: Sampling parameter for summarization.
+
+#### Tools and Features
+- **`enable_tools`**: Enable/disable tool calling.
+- **`use_web_search`**: Enable automatic web search context.
+- **`display_sources_for_chat`**, **`display_sources_for_embed`**: UI display toggles.
+
+### Runtime Overrides
+
+All settings can be overridden per-request through the `params` object in the `/chat` API. The UI exposes these controls in the sidebar, allowing users to:
+- Adjust retrieval parameters (top_k, score_threshold)
+- Configure rewrite behavior (tail turns, summary turns, confidence threshold)
+- Set inference parameters (temperature, top_p, max tokens)
+- Enable/disable features (tools, web search, query rewrite)
+
+Configuration values are loaded at application startup and can be overridden via environment variables for different deployment environments.
 
 ## 🛡️ Error Handling and Stability Guarantees
 

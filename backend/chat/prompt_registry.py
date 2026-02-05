@@ -30,6 +30,7 @@ class RerankPromptSpec:
 @dataclass(frozen=True)
 class SummaryPromptSpec:
     system_instruction: str
+    full_payload_template: str = ""
 
 
 _CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -320,8 +321,65 @@ def resolve_summary_prompt(*, registry_path: str, domain: Optional[str]) -> Summ
     else:
         system_instruction = base_sys
 
+    # Get the full payload template
+    try:
+        full_payload_template = base_sum.get("user_messages", [{}])[0].get("template", "")
+    except Exception:
+        full_payload_template = ""
 
-    return SummaryPromptSpec(system_instruction=system_instruction)
+    return SummaryPromptSpec(
+        system_instruction=system_instruction,
+        full_payload_template=full_payload_template
+    )
+
+
+def resolve_summary_update_prompt(*, registry_path: str, domain: Optional[str]) -> SummaryPromptSpec:
+    """Resolve summary update prompt spec for chunked history.
+
+    Rules:
+    - Base prompt is global_defaults.summary_update
+    - If domain is provided and domains.<domain>.summary_update.system_instruction exists, append it to the base system_instruction.
+    """
+
+    reg = _get_cached_yaml(registry_path)
+
+    try:
+        base_sum = (reg.get("global_defaults") or {}).get("summary_update") or {}
+    except Exception:
+        base_sum = {}
+
+    base_sys = str(base_sum.get("system_instruction") or "").strip()
+    if not base_sys:
+        raise LLMError(
+            provider="internal",
+            kind="config",
+            message="Prompt registry missing required global_defaults.summary_update.system_instruction",
+        )
+
+    dom = (domain or "").strip()
+    dom_sys = ""
+    if dom:
+        try:
+            dom_sum = ((reg.get("domains") or {}).get(dom) or {}).get("summary_update") or {}
+            dom_sys = str(dom_sum.get("system_instruction") or "").strip()
+        except Exception:
+            dom_sys = ""
+
+    if dom_sys:
+        system_instruction = base_sys + "\n\n" + dom_sys
+    else:
+        system_instruction = base_sys
+
+    # Get the full payload template
+    try:
+        full_payload_template = base_sum.get("user_messages", [{}])[0].get("template", "")
+    except Exception:
+        full_payload_template = ""
+
+    return SummaryPromptSpec(
+        system_instruction=system_instruction,
+        full_payload_template=full_payload_template
+    )
 
 
 def render_full_payload(template_str: str, *, variables: Dict[str, Any]) -> str:

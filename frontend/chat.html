@@ -66,7 +66,16 @@
               </div>
               <div class="form-field">
                 <label for="rewrite_tail_turns">Rewrite Tail Turns</label>
-                <input id="rewrite_tail_turns" type="number" min="0" step="1" value="1" />
+                <input id="rewrite_tail_turns" type="number" min="0" step="1" value="3" />
+              </div>
+              <div class="form-field">
+                <label for="rewrite_summary_turns">Rewrite Summary Turns</label>
+                <input id="rewrite_summary_turns" type="number" min="0" step="1" value="3" />
+                <div id="rewrite_summary_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;">
+                  <p>
+                    Number of older turns to summarize before the rewrite tail. Set to 0 to disable pre-summary and use only the tail turns.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -77,10 +86,6 @@
               <span class="chevron" aria-hidden="true">▲</span>
             </button>
             <div class="collapsible-body">
-              <div class="form-field">
-                <label for="chat_history_window_turns">Chat History Window Turns</label>
-                <input id="chat_history_window_turns" type="number" min="0" step="1" value="10" />
-              </div>
               <div class="form-field">
                 <label for="raw_tail_turns">Raw Tail Turns</label>
                 <input id="raw_tail_turns" type="number" min="0" step="1" value="2" />

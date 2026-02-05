@@ -532,6 +532,13 @@ async def clear_chat_summaries(payload: ClearChatRequest, request: Request):
             return JSONResponse({"removed": 0, "remaining": 0, "reclaimed_bytes": 0})
         ns = f"{uid}:{cid}" if uid and cid else (cid or "")
         stats = cm.clear_summaries_for_namespace(ns)
+        # Also clear chunked history state for this namespace so the conversation truly resets.
+        try:
+            chunk_stats = cm.clear_chunk_manager_for_namespace(ns)
+            if isinstance(stats, dict) and isinstance(chunk_stats, dict):
+                stats["chunked_history"] = chunk_stats
+        except Exception:
+            pass
         # Also reset per-conversation totals for this namespace so a new conversation_id starts at zero
         try:
             totals_stats = cm.clear_convo_totals_for_namespace(ns)
@@ -1529,11 +1536,13 @@ class ModelConfig(BaseModel):
     summarizer_max_output_tokens: Optional[int] = None
     inference_temperature: Optional[float] = None
     inference_top_p: Optional[float] = None
-    chat_history_window_turns: Optional[int] = None
     raw_tail_turns: Optional[int] = None
     max_inference_output_tokens: Optional[int] = None
     enable_tools: Optional[bool] = None
     enable_query_rewrite: Optional[bool] = None
+    rewrite_confidence_threshold: Optional[float] = None
+    rewrite_tail_turns: Optional[int] = None
+    rewrite_summary_turns: Optional[int] = None
     inference_context_rows: Optional[int] = None
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
@@ -1581,11 +1590,13 @@ async def get_model_config():
         summarizer_max_output_tokens=get_model_setting("summarizer_max_output_tokens"),
         inference_temperature=get_model_setting("inference_temperature"),
         inference_top_p=get_model_setting("inference_top_p"),
-        chat_history_window_turns=get_model_setting("chat_history_window_turns"),
         raw_tail_turns=get_model_setting("raw_tail_turns"),
         max_inference_output_tokens=get_model_setting("max_inference_output_tokens"),
         enable_tools=get_model_setting("enable_tools"),
         enable_query_rewrite=get_model_setting("enable_query_rewrite"),
+        rewrite_confidence_threshold=get_model_setting("rewrite_confidence_threshold"),
+        rewrite_tail_turns=get_model_setting("rewrite_tail_turns"),
+        rewrite_summary_turns=get_model_setting("rewrite_summary_turns"),
         inference_context_rows=get_model_setting("inference_context_rows"),
     )
 

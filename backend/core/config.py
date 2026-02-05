@@ -215,8 +215,8 @@ class Settings(BaseSettings):
     # 5) Summarizer
     # -------------------------------------------------------------------------
     summarizer_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
-    summarizer_max_input_tokens: int = 400  # set an int to limit input tokens
-    summarizer_max_output_tokens: int = 200  # set an int to limit output tokens
+    summarizer_max_input_tokens: int = 1000  # set an int to limit input tokens
+    summarizer_max_output_tokens: int = 300  # set an int to limit output tokens
     summarizer_temperature: float = 0.3
 
     # -------------------------------------------------------------------------
@@ -268,10 +268,18 @@ class Settings(BaseSettings):
     max_history_tokens: int = 4000  # Max tokens of prior chat retained when building context
 
     # Conversation context strategy:
-    # - chat_history_window_turns: summarized older turns
-    # - raw_tail_turns: most-recent turns kept verbatim
-    chat_history_window_turns: int = 10
+    # - raw_tail_turns: most-recent turns kept verbatim for chunked history
     raw_tail_turns: int = 10
+
+    # -------------------------------------------------------------------------
+    # Chunked History Management (DEFAULT)
+    # -------------------------------------------------------------------------
+    # Model to use for summary updates (can be different from main summarizer)
+    summary_update_model: str = ""  # Empty = use summarizer_model
+    
+    # Enable token-based chunks (future feature)
+    enable_token_based_chunks: bool = False
+    raw_tail_token_limit: int = 4000  # Tokens per chunk when token-based is enabled
 
     enable_query_rewrite: bool = True
 
@@ -280,7 +288,13 @@ class Settings(BaseSettings):
     use_web_search: bool = False
 
     # How many most‑recent turns the rewriter sees (can differ from raw_tail_turns if desired)
-    rewrite_tail_turns: int = 2
+    rewrite_tail_turns: int = 3
+
+    # How many older turns to summarize before the rewrite tail (0 = no pre-summary)
+    rewrite_summary_turns: int = 3
+
+    # Minimum confidence (0–1) required before a rewritten query replaces the user’s original
+    rewrite_confidence_threshold: float = 0.7
 
     # Cache rewrites for a short time to avoid repeat calls on identical context
     rewrite_cache_ttl_s: int = 300

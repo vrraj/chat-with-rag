@@ -711,11 +711,11 @@
       temperature: getNum('temperature'),
       max_output_tokens: getNum('max_output_tokens'),
       top_p: getNum('top_p'),
-      chat_history_window_turns: getNum('chat_history_window_turns'),
       raw_tail_turns: getNum('raw_tail_turns'),
       enable_query_rewrite: (qs('#enable_query_rewrite') ? !!qs('#enable_query_rewrite').checked : null),
       rewrite_confidence_threshold: getNum('rewrite_confidence_threshold'),
       rewrite_tail_turns: getNum('rewrite_tail_turns'),
+      rewrite_summary_turns: getNum('rewrite_summary_turns'),
       use_tools,
     };
 
@@ -846,7 +846,7 @@
     setupStageStreaming(queryId, bubble);
     // Once the conversation has started, lock the history-window controls
     try {
-      const lockIds = ['chat_history_window_turns', 'raw_tail_turns'];
+      const lockIds = ['raw_tail_turns'];
       lockIds.forEach(id => {
         const el = qs('#' + id);
         if (el && !el.disabled) {
@@ -1088,7 +1088,7 @@
       } catch (_) {}
       // Unlock any convo-locked controls so the user can change them for next conversation
       try {
-        ['chat_history_window_turns', 'raw_tail_turns'].forEach(id => {
+        ['raw_tail_turns'].forEach(id => {
           const el = qs('#' + id);
           // Also remove the locked_link and its popup if present
           try {
@@ -1235,13 +1235,13 @@
             inference_temperature: 'temperature',
             inference_top_p: 'top_p',
             inference_context_rows: 'inference_context_rows',
-            chat_history_window_turns: 'chat_history_window_turns',
             raw_tail_turns: 'raw_tail_turns',
             max_inference_output_tokens: 'max_output_tokens',
             enable_tools: 'use_tools',
             enable_query_rewrite: 'enable_query_rewrite',
             rewrite_confidence_threshold: 'rewrite_confidence_threshold',
-            rewrite_tail_turns: 'rewrite_tail_turns'
+            rewrite_tail_turns: 'rewrite_tail_turns',
+            rewrite_summary_turns: 'rewrite_summary_turns'
           };
           Object.entries(mapping).forEach(([cfgKey, elId]) => {
             if (cfg[cfgKey] === undefined) return;

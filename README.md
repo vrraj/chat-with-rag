@@ -104,11 +104,17 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
 * **Dynamic Model Selection (UI)**: Click "Configure Models" in the chat interface to open the model selection modal. Choose different models for each pipeline stage, mix and match providers (OpenAI + Gemini) within the same conversation, and apply changes to subsequent chat turns.
 * **Prompt Registry (YAML)**: Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain` (UI dropdown).
-* **Dynamic Context Control**: Fine-tune conversation history using a hybrid approach of **raw tail-turns** and **summary turns** to perfectly balance memory depth and token efficiency.
+* **Chunked Conversation History**: Efficient context management with configurable chunk size via `raw_tail_turns`.
+  - Maintains an **accumulated conversation summary** plus a **verbatim recent chunk**.
+  - When the chunk limit is reached, the chunk is summarized and the recent chunk resets.
+  - UI **Clear Chat** action clears all server state for the active conversation.
+* **Query Rewrite Optimization**: Intelligent expansion of user prompts with confidence-based filtering.
+  - **Rewrite Tail Turns**: Controls how many recent turns the rewriter sees verbatim.
+  - **Rewrite Summary Turns**: Controls how many older turns to summarize before the tail (set to 0 to disable pre-summary).
+  - **Rewrite Confidence Threshold**: Minimum confidence required before a rewritten query replaces the original.
 * **Retrieval Optimization**:
     * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.
-    * **Semantic Reranking**: Secondary relevance scoring applied to retrieved candidates to eliminate "hallucination noise."
-    * **Query Rewriting**: Intelligent expansion of user prompts with confidence-based filtering for better search hits.
+    * **Semantic Reranking**: Secondary relevance scoring applied to retrieved candidates.
 * **Verified Citations**: Final answers include direct deep-linked citations across multiple source documents.
 
 ### 🛠️ Developer & Ops Experience
