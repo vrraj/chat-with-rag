@@ -1,4 +1,4 @@
-# Release Notes: v1.0.1 → v2.0.0
+# Release Notes: v2.0.0
 
 ## 🎯 Executive Summary
 
@@ -60,6 +60,7 @@ This release transforms the application from a single-provider system into a **m
 - **Batch processing capabilities** with configurable batch sizes
 - **Magnitude metadata inclusion** for normalized embeddings
 - **Registry-driven embedding model selection**
+- **Token estimation fallback** for Gemini native SDK when usage metadata is missing
 
 ---
 

@@ -2,11 +2,20 @@
 
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
-
 A modular RAG framework that transforms unstructured data into **actionable intelligence** through sophisticated retrieval-reranking pipelines, real-time observability, and tool-augmented reasoning.
 
-
 This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
+
+## 🆕 What's New in v2.0
+
+- **Model Registry Architecture** - Centralized model management with capability definitions, pricing, and provider abstraction
+- **Embeddable Chat Widget** - Deploy to any website with domain controls and real-time streaming
+- **Enhanced Security Framework** - Domain-based access controls for all API endpoints
+- **Prompt Registry (YAML)** - Externalized prompts with global and domain-specific customization
+- **Multi-Provider LLM Handler** - Unified abstraction supporting OpenAI, Gemini, and future providers
+- **Advanced Context Management** - Cache-optimized conversation history with summary injection
+- **Gemini Native Embeddings** - Direct SDK integration with token estimation fallback
+- **Performance Optimizations** - Batch processing, rate limit management, and cost tracking
 
 <p align="center">
   <a href="images/content-ingestion-primary-actions.png">
@@ -100,9 +109,28 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
     * **Noise Filtering**: Automated removal of headers, footers, and irrelevant boilerplate for cleaner context.
 * **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
 
+### 🌐 Embeddable Chat Widget
+- **Production-ready embeddable chat** for any website
+- **Configurable via data attributes**:
+  - `data-model_key` - Preselected model from registry
+  - `data-temperature` - Response creativity control
+  - `data-top_k` - Retrieval configuration
+  - `data-show_processing_steps` - Enable streaming visualization of pipeline stages
+  - `data-show_citations` - Source citation display
+  - `data-namespace` - Custom knowledge base isolation
+- **Advanced Controls**: Full access to all pipeline tuning parameters:
+  - Rewrite context configuration (tail turns, summary turns, confidence threshold)
+  - Inference context management (history chunking, conversation limits)
+  - Model selection per stage (rewrite, rerank, inference, summarization)
+  - Retrieval parameters (top_k, distance thresholds, filters)
+- **Easy integration** - Single script tag deployment
+- **Responsive iframe design** with isolated styling
+- **Real-time streaming** support for processing visualization
+
 ### 🧠 Advanced Chat Orchestration
 * **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
 * **Dynamic Model Selection (UI)**: Click "Configure Models" in the chat interface to open the model selection modal. Choose different models for each pipeline stage, mix and match providers (OpenAI + Gemini) within the same conversation, and apply changes to subsequent chat turns.
+* **Multi-API Support**: Unified support for OpenAI Chat Completions, Responses API, Gemini OpenAI-compatible adapter, and Gemini native SDK
 * **Prompt Registry (YAML)**: Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain` (UI dropdown).
 * **Chunked Conversation History**: Efficient context management with configurable chunk size via `raw_tail_turns`.
   - Maintains an **accumulated conversation summary** plus a **verbatim recent chunk**.
