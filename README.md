@@ -18,7 +18,7 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 - **Centralized Model Registry**  
   Single source of truth for model capabilities (reasoning-effort, completion-tokens etc), pricing, API routing, parameter normalization and provider-specific nuances.
 
-**Prompt Registry (YAML-Driven)**  
+- **Prompt Registry (YAML-Driven)**  
   Centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. Supports per-request `prompt_domain` switching for parallel sessions and A/B testing without code changes.
 
 - **Advanced Context & Memory Management**  
