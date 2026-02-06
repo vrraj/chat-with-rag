@@ -68,25 +68,14 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
 ### Ingestion Pipeline (Data → Enriched Vectors)
-> 
 > Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process & normalize (chunking) ⟹ Metadata augmentation ⟹ Embeddings ⟹ Vector storage
->
 
 ### Chat Orchestration Pipeline (Prompt → Answer)
-> 
->User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
->
 
-__Summarization__ Long-running conversation support with semantic continuity preservation
+> User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
 
-__Context Assembly__ Summarization + Verbatim Tails + Reranked Chunks + Web Context
 
-__Inference Prompt Assembly__ Prompt Registry + Context
-
-__Post-Processing__ Markdown → HTML, sources formatting
-
-__Final Response__ Final Response with citations
-
+### Inference Pipeline in Action 
 
 The screenshot below illustrates how these **inference pipeline stages** work together to generate a complete response in action, showing multi-turn conversation with  rewritten query, context maintenance across turns (_compare with ..._), tool calling capabilities, **multi-model** capabilities (openai, gemini), and LLM response postprocessing (HTML-formatted responses) with citations.
 
