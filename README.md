@@ -74,9 +74,13 @@ Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process
 User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly  ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
 
 __Summarization__ Long-running conversation support with semantic continuity preservation
+
 __Context Assembly__ Summarization + Verbatim Tails + Reranked Chunks + Web Context
+
 __Inference Prompt Assembly__ Prompt Registry + Context
+
 __Post-Processing__ Markdown → HTML, sources formatting
+
 __Final Response__ Final Response with citations
 
 
