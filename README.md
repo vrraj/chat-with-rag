@@ -68,14 +68,14 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
 ### Ingestion Pipeline (Data → Enriched Vectors)
-```
+<div style="border: 1px solid #ddd; padding: 10px; background: #f9f9f9; border-radius: 4px;">
 Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process & normalize (chunking) ⟹ Metadata augmentation ⟹ Embeddings ⟹ Vector storage
-```
+</div>
 
 ### Chat Orchestration Pipeline (Prompt → Answer)
-```
+<div style="border: 1px solid #ddd; padding: 10px; background: #f9f9f9; border-radius: 4px;">
 User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
-```
+</div>
 
 __Summarization__ Long-running conversation support with semantic continuity preservation
 
