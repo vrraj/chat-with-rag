@@ -27,16 +27,18 @@ This release transforms the application from a single-provider system into a **m
 
 ### **🌐 Embeddable Chat Widget**
 - **Production-ready embeddable chat** for any website
-- **Configurable via data attributes**:
-  - `data-model_key` - Preselected model from registry
-  - `data-temperature` - Response creativity control
+- **Comprehensive configuration options**:
+  - `data-model_key` - Per-stage model selection from registry
+  - `data-prompt_domain` - Prompt registry domain selection
   - `data-top_k` - Retrieval configuration
   - `data-show_processing_steps` - Enable streaming visualization
   - `data-show_citations` - Source citation display
   - `data-namespace` - Custom knowledge base isolation
+  - Context control parameters and other advanced settings
 - **Easy integration** - Single script tag deployment
 - **Responsive iframe design** with isolated styling
 - **Real-time streaming** support for processing visualization
+- **Full pipeline control** - Same configuration options as main application
 
 ### **🔒 Comprehensive Security Framework**
 - **Domain-based access controls** for all FastAPI routes
@@ -49,11 +51,44 @@ This release transforms the application from a single-provider system into a **m
 - **CORS protection** with configurable domain whitelisting
 - **Best-effort security** - graceful fallback when not configured
 
+### **🧠 Advanced Context & Memory Management**
+- **Cache-optimized conversation history** with rolling summaries and bounded context windows
+- **Chunked conversation strategy** maintaining accumulated summary + verbatim recent tail
+- **Configurable chunk size** via `raw_tail_turns` parameter
+- **Automatic context window management** preventing token limit overflows
+- **Efficient caching behavior** through stable context patterns
+- **Long-running conversation support** with semantic continuity preservation
+
+### **⚙️ Per-Stage Model Configuration**
+- **Runtime model selection** per pipeline stage via UI or API
+- **Independent model configuration** for: Query Rewrite, Reranking, Inference, Summarization
+- **Dynamic Model Selection UI** - "Configure Models" modal for mid-conversation changes
+- **Provider mixing** - Use OpenAI for some stages, Gemini for others
+- **API-level control** - Programmatic configuration via FastAPI endpoints
+- **Stage-specific optimization** - Cost/performance tuning per pipeline stage
+
 ### **Multiple LLM Provider Support**
 - **Unified LLM handler** leveraging the model registry for provider abstraction
 - **Seamless provider switching** through registry key configuration
 - **Capability-based routing** - handler automatically selects correct endpoint
 - **Provider-specific optimizations** handled transparently
+
+### **🏗️ Domain-Aware Vector Collections**
+- **Application domain configuration** with tightly coupled collections and embedding models
+- **Automatic vector dimension derivation** from embedding model registry
+- **Domain isolation** - Separate collections per application domain (oceans, mountains, etc.)
+- **Configuration-driven collection management** via `DOMAIN_EMBEDDING_CONFIG`
+- **Single change point** - Switch domains by changing `active_domain` variable
+- **Automatic collection creation** - Missing collections created automatically with correct dimensions
+- **Provider flexibility** - Different domains can use different embedding providers (OpenAI vs Gemini)
+
+### **📊 Performance & Cost Controls**
+- **Batch ingestion** with configurable batch sizes per provider
+- **Rate-limit handling** with provider-specific optimizations
+- **Per-stage cost tracking** with detailed token usage metrics
+- **Budget management** through registry-based pricing models
+- **Performance monitoring** with real-time cost visibility
+- **Optimized token usage** tracking and estimation
 
 ### **Advanced Embedding Support**
 - **Gemini embeddings integration** with L2 normalization

@@ -25,7 +25,7 @@ This project explores end-to-end RAG system design, prioritizing transparency an
   Cache-optimized conversation history with rolling summaries and bounded context windows.
 
 - **Per-Stage Model Configuration**  
-  Runtime model selection per pipeline stage via UI or API (rewrite, rerank, inference, summarization ).
+  Runtime model selection per pipeline stage via UI or API (rewrite, rerank, inference, summarization).
 
 - **Domain-Aware Vector Collections**  
   Tight coupling between domains, embedding models, and vector dimensions with automatic derivation.
@@ -34,10 +34,12 @@ This project explores end-to-end RAG system design, prioritizing transparency an
   Batch ingestion, rate-limit handling, and per-stage cost tracking.
 
 - **Embeddable Chat Widget**  
-  Drop-in widget with domain controls, streaming, and observability.
+  Drop-in widget with comprehensive configuration: per-stage model selection, prompt domains, top-k retrieval, context control, processing visualization, among others.
 
 - **Domain-Based Access Controls**  
   Isolation and authorization enforced consistently across APIs and embedded clients.
+
+> **For comprehensive details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
 
 
@@ -66,11 +68,16 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
 ### Ingestion Pipeline (Data → Enriched Vectors)
-Documents (single or batch) ⇒ Load ⇒ Extract (PDF / HTML / Wiki) ⇒ Process & normalize (chunking) ⇒ Metadata augmentation ⇒ Embeddings (OpenAI / Gemini) ⇒ Vector storage (Qdrant)
+Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process & normalize (chunking) ⟹ Metadata augmentation ⟹ Embeddings ⟹ Vector storage
 
 ### Chat Orchestration Pipeline (Prompt → Answer)
-User prompt ⇒ Query rewrite ⇒ Retrieval ⇒ Rerank ⇒ Summarization (history beyond verbatim turns) ⇒ Context assembly (summary + verbatim tail + reranked chunks + web context) ⇒ Inference prompt assembly (prompt registry + context) ⇒ LLM inference ⇒ Tool execution (optional) ⇒ Post-processing (Markdown → HTML, sources formatting) ⇒ Final response (with citations)
+User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly  ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
 
+__Summarization__ Long-running conversation support with semantic continuity preservation
+__Context Assembly__ Summarization + Verbatim Tails + Reranked Chunks + Web Context
+__Inference Prompt Assembly__ Prompt Registry + Context
+__Post-Processing__ Markdown → HTML, sources formatting
+__Final Response__ Final Response with citations
 
 
 The screenshot below illustrates how these **inference pipeline stages** work together to generate a complete response in action, showing multi-turn conversation with  rewritten query, context maintenance across turns (_compare with ..._), tool calling capabilities, **multi-model** capabilities (openai, gemini), and LLM response postprocessing (HTML-formatted responses) with citations.
