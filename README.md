@@ -6,24 +6,40 @@ A modular RAG framework that turns unstructured data into reliable answers using
 
 This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
 
-## 🆕 What's New in v2.0
-
-- **Multi-Provider LLM Handler** - Unified abstraction supporting OpenAI, Gemini, and future providers
-- **Model Registry Architecture** - Centralized model management with capability definitions, pricing, and provider abstraction
-- **Prompt Registry (YAML)** - Externalized prompts with global and domain-specific customization
-- **Advanced Context Management** - Cache-optimized conversation history with summary injection
-- **Stage-Specific Model Configuration** - Flexible runtime model selection per pipeline stage via frontend/API parameters
-- **Domain-Based Collection Management** - Application domain configuration with tightly coupled collections and embedding models with automatic dimension derivation
-- **Gemini Native Embeddings** - Direct SDK integration with token estimation fallback
-- **Performance Optimizations** - Batch processing, rate limit management, and cost tracking
-- **Embeddable Chat Widget** - Deploy to any website with domain controls and real-time streaming
-- **Domain-Based Access Controls** - Domain-based access controls for all API endpoints
-
-
-
 **Project Scope & Intent**
 
 This project explores end-to-end RAG system design, prioritizing transparency and modularity over abstraction-heavy frameworks to make pipeline behavior explicit and observable.
+
+## 🆕 What's New in v2.0
+
+- **Multi-Provider LLM Framework**  
+  Unified abstraction supporting OpenAI, Gemini, and extensible to additional providers across multiple API surfaces.
+
+- **Centralized Model Registry**  
+  Single source of truth for model capabilities (reasoning-effort, completion-tokens etc), pricing, API routing, parameter normalization and provider-specific nuances.
+
+**Prompt Registry (YAML-Driven)**  
+  Centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. Supports per-request `prompt_domain` switching for parallel sessions and A/B testing without code changes.
+
+- **Advanced Context & Memory Management**  
+  Cache-optimized conversation history with rolling summaries and bounded context windows.
+
+- **Per-Stage Model Configuration**  
+  Runtime model selection per pipeline stage via UI or API (rewrite, rerank, inference, summarization ).
+
+- **Domain-Aware Vector Collections**  
+  Tight coupling between domains, embedding models, and vector dimensions with automatic derivation.
+
+- **Performance & Cost Controls**  
+  Batch ingestion, rate-limit handling, and per-stage cost tracking.
+
+- **Embeddable Chat Widget**  
+  Drop-in widget with domain controls, streaming, and observability.
+
+- **Domain-Based Access Controls**  
+  Isolation and authorization enforced consistently across APIs and embedded clients.
+
+
 
 ## Table of Contents
 
@@ -47,20 +63,15 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 
 ## 🧠 High-Level RAG Pipeline Overview
 
-  The system operates through two primary parallel workflows: an **Ingestion Pipeline** for knowledge base construction and a **Chat Pipeline** for real-time retrieval and response generation.
+The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
-| **Ingestion Pipeline** (Data → Vector) | **Chat Pipeline** (Prompt → Answer) |
-| :--- | :--- |
-| 1. **Documents** (Single or Batch) | 1. **User Prompt** |
-| 2. **Document Loading** | 2. **Query Rewrite** (Optimization) |
-| 3. **Extraction** (PDF, HTML, Wiki) | 3. **Document Retrieval** (Qdrant Search) |
-| 4. **Processing & Normalization** | 4. **Relevance Reranking** |
-| 5. **Metadata Augmentation** | 5. **Context Construction** (History + reranked chunks) |
-| 6. **Embedding Generation** (OpenAI) | 6. **Inference Context Assembly** (System + Domain + History + Chunks + Web + User) |
-| 7. **Vector Storage** (Qdrant) | 7. **LLM Inference** (GPT-4o-mini) |
-| | 8. **Tool Execution** (e.g., Weather, Maps) |
-| | 9. **Postprocessing** (Markdown → HTML, Sources formatting) |
-| | 10. **Final Response** (with Citations) |
+### Ingestion Pipeline (Data → Enriched Vectors)
+Documents (single or batch) ⇒ Load ⇒ Extract (PDF / HTML / Wiki) ⇒ Process & normalize (chunking) ⇒ Metadata augmentation ⇒ Embeddings (OpenAI / Gemini) ⇒ Vector storage (Qdrant)
+
+### Chat Orchestration Pipeline (Prompt → Answer)
+User prompt ⇒ Query rewrite ⇒ Retrieval ⇒ Rerank ⇒ Summarization (history beyond verbatim turns) ⇒ Context assembly (summary + verbatim tail + reranked chunks + web context) ⇒ Inference prompt assembly (prompt registry + context) ⇒ LLM inference ⇒ Tool execution (optional) ⇒ Post-processing (Markdown → HTML, sources formatting) ⇒ Final response (with citations)
+
+
 
 The screenshot below illustrates how these **inference pipeline stages** work together to generate a complete response in action, showing multi-turn conversation with  rewritten query, context maintenance across turns (_compare with ..._), tool calling capabilities, **multi-model** capabilities (openai, gemini), and LLM response postprocessing (HTML-formatted responses) with citations.
 
@@ -143,13 +154,8 @@ See the **Embeddable Widget Configuration** section below for detailed implement
   All model definitions are centralized in a registry that abstracts provider- and model-specific nuances (capabilities, pricing, parameters).  
   These definitions are consumed uniformly by the LLM handler and the application to drive routing, validation, and cost tracking.
 
-- **Prompt Registry (YAML-Driven Control)**  
-  All prompts for rewrite, rerank, summarization, and inference are centralized in a prompt registry, fully decoupled from code.  
-  The registry supports:
-  - Global default prompts
-  - Domain-specific augmentation (e.g., finance, geography)
-  - Instruction and example layering  
-  Runtime context (history, retrieved chunks, web results, user constraints) is injected by the application, not hardcoded in prompts.
+    - **Prompt Registry (YAML-Driven Control)**  
+      A centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. A `prompt_domain` parameter can be passed per request to alter pipeline behavior without code changes, enabling parallel chat sessions and A/B testing of prompt strategies.
 
 - **Post-processing & Output Transformation**  
   Final model outputs pass through a dedicated post-processing stage that formats responses into structured HTML (tables, highlights, links) for the UI.  
@@ -207,6 +213,8 @@ Web search is supported via an optional automatic web context stage and via an L
 
 ##  Getting Started
 
+> **Provider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. All supported and tested models are defined centrally in the **Model Registry**, which serves as the source of truth for provider routing, model capabilities, and cost tracking.
+
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
 
 ### 📋 1. Prerequisites
@@ -215,7 +223,7 @@ Ensure your environment meets these requirements before proceeding:
 - **Git** – required to clone the repository. Install: https://git-scm.com/downloads
 - **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
 - **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
-- **OpenAI API Key:** Required for embeddings and chat pipeline. [Get one here](https://platform.openai.com/api-keys)
+- **LLM Provider API Keys:** Required for embeddings and chat pipeline. Default setup uses OpenAI. [Get one here](https://platform.openai.com/api-keys)
 
 
 
