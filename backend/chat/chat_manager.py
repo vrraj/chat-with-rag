@@ -691,6 +691,10 @@ def _build_summary_prompt_with_budget(messages: List[Dict[str, str]], max_input_
     """
     Build a summary prompt that fits within `max_input_tokens` by trimming older lines first.
     Guarantees the most recent line is always included (clipped if necessary).
+    
+    NOTE: This function is currently ONLY used for rewrite stage pre-summarization.
+    Other stages (inference, rerank) do not use this token budgeting mechanism.
+    Chunked history mode bypasses this entirely and uses ChunkedHistoryManager.
     """
     header = (header if isinstance(header, str) and header else "Summarize the following conversation in a few sentences:\n\n")
     if not messages:
@@ -765,18 +769,24 @@ def _summarize_messages_with_cache(
     messages: List[Dict[str, str]],
     cache: Dict[str, str],
     *,
-    tag: str,
-    model: str,
-    temperature: float,
-    max_output_tokens: int | None = None,
+    tag: str = "",
+    model: str | None = None,
+    temperature: float | None = None,
     max_input_tokens: int | None = None,
-    prompt_domain: str = "",
+    max_output_tokens: int | None = None,
     log_prefix: str = "[SUMMARY]",
     stage_spec: Dict[str, Any] | None = None,
+    provider: str | None = None,
+    prompt_domain: str = "",
 ) -> tuple[str, bool, Dict[str, int] | None]:
-    """Summarize a slice of messages with a tiny prompt, caching by (messages, tag).
+    """
+    Summarize a slice of messages with a tiny prompt, caching by (messages, tag).
 
     Returns: (summary_text, from_cache, usage_dict_or_none)
+    
+    NOTE: This function is currently ONLY used for rewrite stage pre-summarization.
+    The tag parameter is used to distinguish cache keys (e.g., 'rewrite' vs 'namespace|rewrite').
+    Other stages do not use this summarization mechanism.
     """
     # Log current cache size for observability
     if logger.isEnabledFor(logging.DEBUG):
@@ -2291,6 +2301,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     _tag_rw = (f"{namespace}|rewrite" if namespace else "rewrite")
                     sum_spec = (stage_specs or {}).get("summary") or {}
                     try:
+                        # NOTE: This is the ONLY place where _summarize_messages_with_cache is called
+                        # Used exclusively for rewrite stage pre-summarization when rewrite_summary_turns > 0
                         summary_rw, _from_cache_rw, _u_rw = _summarize_messages_with_cache(
                             to_sum_rw,
                             cache,
@@ -3063,9 +3075,9 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         web_notes = "\n" + "\n".join([f"[web-{i+1}] {item.get('url', 'Web result')}" for i, item in enumerate(web_context)])
         sources_section += web_notes
 
-    # Stage: Inference Pass 1: Inference Prompt Build + Tools Output (if enabled and needed)
+    # Stage: Inference Pass 1: Inference Context Assembly + Tools Output (if enabled and needed)
     if show_processing_steps:
-        emit_stage(req_id, "Inference Prompt Build")
+        emit_stage(req_id, "Inference Context Assembly")
     # Inference Prompt built from the Prompt Registry YAML file
     # Resolve prompt domain for this turn. Infer
     try:

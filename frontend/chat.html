@@ -77,12 +77,16 @@
                   </p>
                 </div>
               </div>
+              <div class="form-field">
+                <label for="summarizer_max_input_tokens">Summarizer Max Input Tokens</label>
+                <input id="summarizer_max_input_tokens" type="number" min="0" step="1" />
+              </div>
             </div>
           </div>
-          <!-- Summarizer group -->
+          <!-- Context Window group -->
           <div class="group-box ux-11px collapsible-group is-collapsed">
             <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
-              <span class="subsection-title">Summarizer</span>
+              <span class="subsection-title">Context Window</span>
               <span class="chevron" aria-hidden="true">▲</span>
             </button>
             <div class="collapsible-body">
@@ -90,13 +94,14 @@
                 <label for="raw_tail_turns">Raw Tail Turns</label>
                 <input id="raw_tail_turns" type="number" min="0" step="1" value="2" />
               </div>
-              <div class="form-field">
-                <label for="summarizer_max_input_tokens">Summarizer Max Input Tokens</label>
-                <input id="summarizer_max_input_tokens" type="number" min="0" step="1" />
-              </div>
-              <div class="form-field">
-                <label for="summarizer_max_output_tokens">Summarizer Max Output Tokens</label>
+              <div class="form-field field-row" style="position: relative;">
+                <label for="summarizer_max_output_tokens">
+                  Summarizer Max Output Tokens
+                  <a href="#" id="summarizer_output_help_link" class="help-link" aria-haspopup="true" aria-controls="summarizer_output_help_popup">Help</a>
+                </label>
                 <input id="summarizer_max_output_tokens" type="number" min="0" step="1" />
+                <!-- Lightweight popover container; populated by chat.js -->
+                <div id="summarizer_output_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;"></div>
               </div>
             </div>
           </div>

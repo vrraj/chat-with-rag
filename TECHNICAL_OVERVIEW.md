@@ -518,6 +518,13 @@ The frontend Clear Chat action calls `POST /chat/clear` with `conversation_id` (
 
 Namespace-scoped chunk managers are evicted after an idle TTL to bound process memory usage. The default is 1 hour and can be tuned via `chunk_manager_idle_ttl_seconds`.
 
+##### Current Limitations
+
+- **Single Process**: Only works with single worker deployment (no multi-worker scaling)
+- **Memory Only**: No persistence across server restarts - state is lost on process restart
+- **TTL Eviction**: State lost after idle timeout (default 1 hour) for memory management
+- **Namespace Required**: Requires stable `conversation_id`/`user_id` namespace - without it, state may collide or reset
+
 ##### Migration to Redis / SQLite / Postgres
 
 The chunking mechanism is intentionally modeled as “state keyed by namespace”. To support multi-worker deployments or persistence across restarts, the in-process state can be replaced with a shared store (Redis/SQLite/Postgres) while keeping the same state shape and keying.
@@ -632,7 +639,7 @@ For each major step in the pipeline, the orchestrator emits a human-readable SSE
 - `Rerank Retrieval Results`
 - `Summarize Chat History`
 - `Establish Web Context` (when web search is enabled)
-- `Inference Prompt Build`
+- `Inference Context Assembly`
 - `Generating Response`
 - `Tool Calls`
 

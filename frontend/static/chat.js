@@ -15,6 +15,8 @@
   const subsectionPopup = qs('#rewrite_subsection_popup');
   const rewriteHelpLink = qs('#rewrite_help_link');
   const rewriteHelpPopup = qs('#rewrite_help_popup');
+  const summarizerOutputHelpLink = qs('#summarizer_output_help_link');
+  const summarizerOutputHelpPopup = qs('#summarizer_output_help_popup');
 
   // --- Model configuration (providers/models per stage) ---
   const changeModelsBtn = qs('#change_models_btn');
@@ -405,6 +407,40 @@
     }
   }
 
+  function renderSummarizerOutputHelp() {
+    if (!summarizerOutputHelpPopup) return;
+    const parts = [];
+    parts.push('<div class="title">Summarizer Max Output Tokens</div>');
+    parts.push('<div class="tool-desc">This setting controls the maximum length of generated summaries and applies to both:</div>');
+    parts.push('<div class="tool-examples">');
+    parts.push('<div><span class="label" style="color:var(--muted);font-size:12px;">Rewrite Pre-Summarization:</span> Limits output when summarizing older conversation turns before query rewrite.</div>');
+    parts.push('<div><span class="label" style="color:var(--muted);font-size:12px;">Context Window (Chunked History):</span> Limits output when updating accumulated conversation summaries in chunked mode.</div>');
+    parts.push('</div>');
+    parts.push('<div class="tool-desc"><strong>Raw Tail Turns:</strong> When the conversation reaches this limit, older turns are summarized into a rolling summary that maintains the full conversation context. This summary grows incrementally as the conversation continues, ensuring no context is lost while keeping the active window manageable.</div>');
+    parts.push('<div class="tool-desc">Note: Input token limiting (summarizer_max_input_tokens) only applies to rewrite pre-summarization, not chunked history.</div>');
+    summarizerOutputHelpPopup.innerHTML = parts.join('');
+  }
+
+  function showSummarizerOutputHelp() {
+    if (!summarizerOutputHelpPopup || !summarizerOutputHelpLink) return;
+    renderSummarizerOutputHelp();
+    summarizerOutputHelpPopup.style.display = 'block';
+    summarizerOutputHelpPopup.setAttribute('aria-hidden', 'false');
+  }
+
+  function hideSummarizerOutputHelp() {
+    if (!summarizerOutputHelpPopup) return;
+    summarizerOutputHelpPopup.style.display = 'none';
+    summarizerOutputHelpPopup.setAttribute('aria-hidden', 'true');
+  }
+
+  function toggleSummarizerOutputHelp(evt) {
+    evt && evt.preventDefault();
+    if (!summarizerOutputHelpPopup) return;
+    const isHidden = summarizerOutputHelpPopup.getAttribute('aria-hidden') !== 'false' && summarizerOutputHelpPopup.style.display !== 'block';
+    if (isHidden) showSummarizerOutputHelp(); else hideSummarizerOutputHelp();
+  }
+
   function renderToolsHelp() {
     if (!helpPopup) return;
     const parts = [];
@@ -452,11 +488,23 @@
     if (!within) hideToolsHelp();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideToolsHelp();
+    if (e.key === 'Escape') {
+      hideToolsHelp();
+      hideSummarizerOutputHelp();
+    }
   });
   if (helpLink) {
     helpLink.addEventListener('click', toggleToolsHelp);
   }
+  if (summarizerOutputHelpLink) {
+    summarizerOutputHelpLink.addEventListener('click', toggleSummarizerOutputHelp);
+  }
+  // Dismiss summarizer output help on outside click
+  document.addEventListener('click', (e) => {
+    if (!summarizerOutputHelpPopup || summarizerOutputHelpPopup.style.display !== 'block') return;
+    const within = summarizerOutputHelpPopup.contains(e.target) || (summarizerOutputHelpLink && summarizerOutputHelpLink.contains(e.target));
+    if (!within) hideSummarizerOutputHelp();
+  });
   if (subsectionHelpLink) {
     subsectionHelpLink.addEventListener('click', (e) => {
       e.preventDefault();

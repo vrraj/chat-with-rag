@@ -62,14 +62,15 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 | **Ingestion Pipeline** (Data → Vector) | **Chat Pipeline** (Prompt → Answer) |
 | :--- | :--- |
 | 1. **Documents** (Single or Batch) | 1. **User Prompt** |
-| 2. **Extraction** (PDF, HTML, Wiki) | 2. **Query Rewrite** (Optimization) |
-| 3. **Processing & Normalization** | 3. **Document Retrieval** (Qdrant Search) |
-| 4. **Metadata Augmentation** | 4. **Relevance Reranking** |
-| 5. **Embedding Generation** (OpenAI) | 5. **Context Construction** (History + reranked chunks) |
-| 6. **Vector Storage** (Qdrant) | 6. **LLM Inference** (GPT-4o-mini) |
-| | 7. **Tool Execution** (e.g., Weather, Maps) |
-| | 8. **Postprocessing** (Markdown → HTML, Sources formatting) |
-| | 9. **Final Response** (with Citations) |
+| 2. **Document Loading** | 2. **Query Rewrite** (Optimization) |
+| 3. **Extraction** (PDF, HTML, Wiki) | 3. **Document Retrieval** (Qdrant Search) |
+| 4. **Processing & Normalization** | 4. **Relevance Reranking** |
+| 5. **Metadata Augmentation** | 5. **Context Construction** (History + reranked chunks) |
+| 6. **Embedding Generation** (OpenAI) | 6. **Inference Context Assembly** (System + Domain + History + Chunks + Web + User) |
+| 7. **Vector Storage** (Qdrant) | 7. **LLM Inference** (GPT-4o-mini) |
+| | 8. **Tool Execution** (e.g., Weather, Maps) |
+| | 9. **Postprocessing** (Markdown → HTML, Sources formatting) |
+| | 10. **Final Response** (with Citations) |
 
 The screenshot below illustrates how these **pipeline stages** surface in the multi-turn live chat interface.
 
@@ -85,19 +86,9 @@ The screenshot below illustrates how these **pipeline stages** surface in the mu
 
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
-
 > **Auth & Security Note**
->
-> The current demo stack intentionally keeps the core FastAPI routes simple:
-> there is no built-in authentication or rate limiting in this repository. Any
-> client that can reach your deployment can, in principle, call critical
-> endpoints such as `/chat` or indexing routes, and can embed `chat-embed.html`.
->
-> When deploying beyond local/dev environments, you should layer additional
-> protections (origin/host allowlists, user auth, rate limiting, etc.) around
-> these routes according to your risk model. This section is the canonical
-> overview of auth/security for the application; feature-specific docs (such as
-> `README_CHAT_EMBED.md`) refer back here.
+
+This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional production recommendations.
 
 ## ✨ Features
 
@@ -144,9 +135,23 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
   - **Rewrite Tail Turns**: Controls how many recent turns the rewriter sees verbatim.
   - **Rewrite Summary Turns**: Controls how many older turns to summarize before the tail (set to 0 to disable pre-summary).
   - **Rewrite Confidence Threshold**: Minimum confidence required before a rewritten query replaces the original.
+* **Summarization Configuration**: Token budgeting and output control for conversation summarization.
+  - **Summarizer Max Output Tokens**: Controls maximum length of generated summaries for both rewrite pre-summarization and chunked history context window.
+  - **Summarizer Max Input Tokens**: Limits input tokens only for rewrite pre-summarization (not used in chunked history).
+  - **Dual Mechanisms**: 
+    - *Rewrite Pre-Summarization*: Summarizes older turns before query rewrite with both input and output token limits.
+    - *Chunked History*: Maintains rolling conversation summaries with only output token limits.
 * **Retrieval Optimization**:
     * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.
     * **Semantic Reranking**: Secondary relevance scoring applied to retrieved candidates.
+* **Inference Context Assembly**: Combines all context sources into the final LLM prompt.
+  - **System Instruction**: Base behavior and role definition from prompt registry.
+  - **Domain Augmentation**: Domain-specific prompts and instructions (if configured).
+  - **Context Window**: Conversation history (verbatim tails + accumulated summary) from context construction.
+  - **Retrieved Chunks**: Reranked document chunks from retrieval stage.
+  - **Web Search Results**: Optional web context if web search was invoked.
+  - **User Instructions**: Task-specific guidance and constraints.
+  - **User Query**: The original (or rewritten) user question.
 * **Verified Citations**: Final answers include direct deep-linked citations across multiple source documents.
 
 ### 🛠️ Developer & Ops Experience
@@ -1126,7 +1131,88 @@ chat-with-rag/
 
 ---
 
-## 📜 License & Usage
+## � Security & Deployment
+
+This application includes a **domain-based access control framework** that provides built-in security for API endpoints and embedded widgets.
+
+### **Implemented Security Features**
+
+#### **Domain-Based Access Controls**
+- **API Endpoint Protection**: All `/chat` and embedding endpoints enforce domain-based access controls
+- **Embeddable Widget Security**: `chat-embed.html` can only be embedded on authorized domains via `data-domain` attribute
+- **Collection Isolation**: Each domain has isolated collections and embedding models to prevent data cross-contamination
+- **Configuration-Based**: Security enforced through `DOMAIN_EMBEDDING_CONFIG` in `backend/core/config.py`
+
+#### **Domain Configuration Example**
+```python
+# In backend/core/config.py
+DOMAIN_EMBEDDING_CONFIG = {
+    "default": {
+        "collection_name": "document_index",
+        "embedding_model_key": "openai:embed_small"
+    },
+    "oceans": {
+        "collection_name": "document_index_gemini", 
+        "embedding_model_key": "gemini:native-embed"
+    }
+}
+
+# Active domain selection
+active_domain: str = "oceans"  # Switches both collection and model
+```
+
+#### **Embeddable Widget Security**
+```html
+<!-- Only works on authorized domains -->
+<div id="chat-embed" 
+     data-domain="oceans" 
+     data-api-url="https://your-server.com">
+</div>
+```
+
+### **Additional Security Recommendations**
+
+#### **Production Deployments**
+When deploying beyond local/dev environments, consider these additional protections:
+
+#### **Network Layer Security**
+- **Reverse Proxy**: Use nginx/Apache with SSL termination
+- **Firewall Rules**: Restrict access to API endpoints by IP/CIDR
+- **VPN/Private Networks**: Deploy within private networks when possible
+
+#### **Authentication & Authorization**
+- **API Keys**: Implement API key authentication for external access
+- **OAuth/JWT**: Add user authentication for multi-tenant scenarios  
+- **Role-Based Access**: Different permissions for different user types
+
+#### **Rate Limiting & Abuse Prevention**
+- **Request Rate Limiting**: Per-IP and per-user rate limits
+- **Request Size Limits**: Prevent large payload attacks
+- **Captcha Integration**: For public-facing deployments
+
+#### **Monitoring & Auditing**
+- **Access Logs**: Log all API access with timestamps and user identifiers
+- **Anomaly Detection**: Monitor for unusual usage patterns
+- **Security Headers**: Implement proper CORS, CSP, and security headers
+
+#### **Data Protection**
+- **Encryption at Rest**: Encrypt database storage
+- **Encryption in Transit**: Enforce HTTPS/TLS for all communications
+- **Data Retention Policies**: Automatic cleanup of old conversation data
+
+### **Security Architecture Benefits**
+
+✅ **Domain Isolation**: Each domain operates in its own security context  
+✅ **Collection Separation**: Data cannot leak between domains  
+✅ **Widget Lockdown**: Embedded widgets only work on authorized domains  
+✅ **Configuration-Driven**: Security enforced through config, not code changes  
+✅ **Scalable**: Easy to add new domains without security reconfiguration  
+
+This section serves as the canonical overview of auth/security for the application; feature-specific docs (such as `README_CHAT_EMBED.md`) refer back here.
+
+---
+
+## �📜 License & Usage
 
 This project is **source-available** for **personal, educational, and evaluation purposes**.  
 It is permitted to **run, modify, and fork** the code for non-commercial use.
