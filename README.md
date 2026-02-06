@@ -2,34 +2,24 @@
 
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
-A modular RAG framework that transforms unstructured data into **actionable intelligence** through sophisticated retrieval-reranking pipelines, real-time observability, and tool-augmented reasoning.
+A modular RAG framework that turns unstructured data into reliable answers using query rewriting, explicit retrieval, reranking, observability, and tool-augmented inference.
 
 This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
 
 ## 🆕 What's New in v2.0
 
-- **Model Registry Architecture** - Centralized model management with capability definitions, pricing, and provider abstraction
-- **Embeddable Chat Widget** - Deploy to any website with domain controls and real-time streaming
-- **Enhanced Security Framework** - Domain-based access controls for all API endpoints
-- **Prompt Registry (YAML)** - Externalized prompts with global and domain-specific customization
 - **Multi-Provider LLM Handler** - Unified abstraction supporting OpenAI, Gemini, and future providers
+- **Model Registry Architecture** - Centralized model management with capability definitions, pricing, and provider abstraction
+- **Prompt Registry (YAML)** - Externalized prompts with global and domain-specific customization
 - **Advanced Context Management** - Cache-optimized conversation history with summary injection
+- **Stage-Specific Model Configuration** - Flexible runtime model selection per pipeline stage via frontend/API parameters
+- **Domain-Based Collection Management** - Application domain configuration with tightly coupled collections and embedding models with automatic dimension derivation
 - **Gemini Native Embeddings** - Direct SDK integration with token estimation fallback
 - **Performance Optimizations** - Batch processing, rate limit management, and cost tracking
-- **Domain-Based Collection Management** - Tightly coupled collections and embedding models with automatic dimension derivation
-- **Stage-Specific Model Configuration** - Flexible runtime model selection per pipeline stage via frontend/API parameters
+- **Embeddable Chat Widget** - Deploy to any website with domain controls and real-time streaming
+- **Domain-Based Access Controls** - Domain-based access controls for all API endpoints
 
-<p align="center">
-  <a href="images/content-ingestion-primary-actions.png">
-    <img
-      src="images/content-ingestion-primary-actions.png"
-      style="max-width: 100%; height: auto;"
-      alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
-    />
-  </a>
-</p>
 
-*Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 
 **Project Scope & Intent**
 
@@ -72,7 +62,7 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 | | 9. **Postprocessing** (Markdown → HTML, Sources formatting) |
 | | 10. **Final Response** (with Citations) |
 
-The screenshot below illustrates how these **pipeline stages** surface in the multi-turn live chat interface.
+The screenshot below illustrates how these **inference pipeline stages** work together to generate a complete response in action, showing multi-turn conversation with  rewritten query, context maintenance across turns (_compare with ..._), tool calling capabilities, **multi-model** capabilities (openai, gemini), and LLM response postprocessing (HTML-formatted responses) with citations.
 
 <p align="center">
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
@@ -86,9 +76,22 @@ The screenshot below illustrates how these **pipeline stages** surface in the mu
 
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
+This workspace is the **main entry point to the application**, combining navigation, ingestion, and operational tooling into a single interface. It provides access to chat configuration, embeddable experiences, vector store inspection, document management, and batch ingestion, making the full lifecycle of data and retrieval behavior visible and controllable from one place.
+
+<p align="center">
+  <a href="images/content-ingestion-primary-actions.png">
+    <img
+      src="images/content-ingestion-primary-actions.png"
+      style="max-width: 100%; height: auto;"
+      alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
+    />
+  </a>
+</p>
+
+*Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 > **Auth & Security Note**
 
-This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional production recommendations.
+This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional deployment recommendations.
 
 ## ✨ Features
 
@@ -103,58 +106,91 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 * **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
 
 ### 🌐 Embeddable Chat Widget
-- **Production-ready embeddable chat** for any website
-- **Configurable via data attributes**:
-  - `data-model_key` - Preselected model from registry
-  - `data-temperature` - Response creativity control
-  - `data-top_k` - Retrieval configuration
-  - `data-show_processing_steps` - Enable streaming visualization of pipeline stages
-  - `data-show_citations` - Source citation display
-  - `data-namespace` - Custom knowledge base isolation
-- **Advanced Controls**: Full access to all pipeline tuning parameters:
-  - Rewrite context configuration (tail turns, summary turns, confidence threshold)
-  - Inference context management (history chunking, conversation limits)
-  - Model selection per stage (rewrite, rerank, inference, summarization)
-  - Retrieval parameters (top_k, distance thresholds, filters)
-- **Easy integration** - Single script tag deployment
-- **Responsive iframe design** with isolated styling
-- **Real-time streaming** support for processing visualization
+- **Embeddable chat** for any website with configurable data attributes and advanced controls.
+
+See the **Embeddable Widget Configuration** section below for detailed implementation examples and all available options.
 
 ### 🧠 Advanced Chat Orchestration
-* **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
-* **Dynamic Model Selection (UI)**: Click "Configure Models" in the chat interface to open the model selection modal. Choose different models for each pipeline stage, mix and match providers (OpenAI + Gemini) within the same conversation, and apply changes to subsequent chat turns.
-* **Multi-API Support**: Unified support for OpenAI Chat Completions, Responses API, Gemini OpenAI-compatible adapter, and Gemini native SDK
-* **Prompt Registry (YAML)**: Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain` (UI dropdown).
-* **Stage-Specific Model Configuration**: Models for each pipeline stage are now defined in `stage_specs` and can be passed via frontend/API parameters for flexible runtime configuration
-* **Model Registry Centralization**: All model-specific configurations (costs, capabilities, parameters) moved from `config.py` to the centralized model registry for unified management
-* **Chunked Conversation History**: Efficient context management with configurable chunk size via `raw_tail_turns`.
-  - Maintains an **accumulated conversation summary** plus a **verbatim recent chunk**.
-  - When the chunk limit is reached, the chunk is summarized and the recent chunk resets.
-  - UI **Clear Chat** action clears all server state for the active conversation.
-* **Query Rewrite Optimization**: Intelligent expansion of user prompts with confidence-based filtering.
-  - **Rewrite Tail Turns**: Controls how many recent turns the rewriter sees verbatim.
-  - **Rewrite Summary Turns**: Controls how many older turns to summarize before the tail (set to 0 to disable pre-summary).
-  - **Rewrite Confidence Threshold**: Minimum confidence required before a rewritten query replaces the original.
-* **Summarization Configuration**: Token budgeting and output control for conversation summarization.
-  - **Summarizer Max Output Tokens**: Controls maximum length of generated summaries for both rewrite pre-summarization and chunked history context window.
-  - **Summarizer Max Input Tokens**: Limits input tokens only for rewrite pre-summarization (not used in chunked history).
-  - **Dual Mechanisms**: 
-    - *Rewrite Pre-Summarization*: Summarizes older turns before query rewrite with both input and output token limits.
-    - *Chunked History*: Maintains rolling conversation summaries with only output token limits.
-* **Retrieval Optimization**:
-    * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.
-    * **Semantic Reranking**: Secondary relevance scoring applied to retrieved candidates.
-* **Inference Context Assembly**: Combines all context sources into the final LLM prompt.
-  - **System Instruction**: Base behavior and role definition from prompt registry.
-  - **Domain Augmentation**: Domain-specific prompts and instructions (if configured).
-  - **Context Window**: Conversation history (verbatim tails + accumulated summary) from context construction.
-  - **Retrieved Chunks**: Reranked document chunks from retrieval stage.
-  - **Web Search Results**: Optional web context if web search was invoked.
-  - **User Instructions**: Task-specific guidance and constraints.
-  - **User Query**: The original (or rewritten) user question.
-* **Verified Citations**: Final answers include direct deep-linked citations across multiple source documents.
 
-### 🛠️ Developer & Ops Experience
+**Advanced Chat Orchestration is the control plane of the system — it governs which models run, in what order, with which prompts, context, providers, and output formats for every request.**
+
+---
+
+#### 1️⃣ Pipeline Control & Execution Flow  
+*What runs, when, and how each stage is configured*
+
+- **Multi-Stage LLM Pipeline Orchestration**  
+  Granular control over each stage: Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing.
+
+- **Stage-Specific Model Configuration**  
+  Independent model selection per stage (rewrite, rerank, inference, summarization), configurable at runtime via UI or API.
+
+- **Dynamic Model Selection (UI)**  
+  “Configure Models” modal enables per-stage model changes mid-conversation, including mixing providers (OpenAI + Gemini).
+
+- **API-Level Control**  
+  Full pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and experimentation.
+
+- **Multiple LLM Provider Support Framework**  
+  A unified execution framework that abstracts multiple provider surfaces behind a single contract:
+  - OpenAI Chat Completions API  
+  - OpenAI Responses API  
+  - Gemini OpenAI-compatible adapter  
+  - Gemini native SDK  
+  Provider-specific differences are normalized so the pipeline remains provider-agnostic.
+
+- **Model Registry Centralization**  
+  All model definitions are centralized in a registry that abstracts provider- and model-specific nuances (capabilities, pricing, parameters).  
+  These definitions are consumed uniformly by the LLM handler and the application to drive routing, validation, and cost tracking.
+
+- **Prompt Registry (YAML-Driven Control)**  
+  All prompts for rewrite, rerank, summarization, and inference are centralized in a prompt registry, fully decoupled from code.  
+  The registry supports:
+  - Global default prompts
+  - Domain-specific augmentation (e.g., finance, geography)
+  - Instruction and example layering  
+  Runtime context (history, retrieved chunks, web results, user constraints) is injected by the application, not hardcoded in prompts.
+
+- **Post-processing & Output Transformation**  
+  Final model outputs pass through a dedicated post-processing stage that formats responses into structured HTML (tables, highlights, links) for the UI.  
+  This module is extensible and intentionally separated from inference, allowing future output formats beyond HTML.
+
+---
+
+#### 2️⃣ Context & Memory Management
+
+Conversation history is managed using a bounded, cache-aware strategy that preserves semantic continuity without exceeding context limits. The system maintains an accumulated conversation summary alongside a verbatim recent tail of turns. When the tail reaches a configurable size, it is summarized and folded into the accumulated context while the tail resets. This ensures stable context size, efficient caching behavior, and continuity across long-running conversations.
+
+---
+
+#### 3️⃣ Query Intelligence & Rewrite Optimization
+
+Before retrieval, user queries may be expanded or clarified by a rewrite stage that improves recall and precision. Rewrite behavior is confidence-gated, ensuring rewritten queries only replace the original when confidence exceeds a threshold. The rewrite stage can draw from recent turns verbatim, summarized history, or be disabled entirely, allowing precise control over how user intent is refined.
+
+---
+
+#### 4️⃣ Retrieval, Inference & Tool Augmentation  
+*How answers are synthesized and verified*
+
+- **Retrieval Optimization**
+  - Vector search via Qdrant with configurable Top-K and distance thresholds
+  - Secondary semantic reranking for relevance
+
+- **Inference Context Assembly**  
+  Final LLM prompts are composed from:
+  - System instructions (prompt registry)
+  - Domain-specific augmentations
+  - Conversation summary and verbatim tail
+  - Retrieved and reranked document chunks
+  - Optional web search context
+  - User instructions and query
+
+- **Tool Execution**
+  - Native function/tool calling (weather, airports, web search, etc.)
+  - Tool outputs are merged into the final synthesis stage
+
+- **Verified Citations**
+  - All final answers include deep-linked citations to source documents
 * **Real-Time Observability**: Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens.
 * **Granular Cost Tracking**: Instant transparency with per-stage token usage and dollar-cost metrics for every request.
 * **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
@@ -515,6 +551,66 @@ To log the full resolved prompt/template for debugging, set:
 - `PROMPT_REGISTRY_LOG_FULL=1`
 
 ---
+
+---
+
+## 🌐 Embeddable Chat Widget
+
+Embeddable chat for any website with comprehensive configuration options.
+
+### **Basic Integration**
+```html
+<script src="https://your-server.com/chat-embed.js"></script>
+<div id="chat-embed" 
+     data-api-url="https://your-server.com"
+     data-namespace="oceans">
+</div>
+```
+
+### **Configurable via Data Attributes**
+- **`data-model_key`** - Preselected model from registry (e.g., "openai:gpt-4o-mini")
+- **`data-temperature`** - Response creativity control (0.0-1.0)
+- **`data-top_k`** - Retrieval configuration (number of documents to retrieve)
+- **`data-show_processing_steps`** - Enable streaming visualization of pipeline stages
+- **`data-show_citations`** - Source citation display toggle
+- **`data-namespace`** - Custom knowledge base isolation
+
+### **Advanced Controls**
+Full access to all pipeline tuning parameters:
+- **Rewrite context configuration** (tail turns, summary turns, confidence threshold)
+- **Inference context management** (history chunking, conversation limits)
+- **Model selection per stage** (rewrite, rerank, inference, summarization)
+- **Retrieval parameters** (top_k, distance thresholds, filters)
+
+### **Features**
+- **Easy integration** - Single script tag deployment
+- **Responsive iframe design** with isolated styling
+- **Real-time streaming** support for processing visualization
+- **Domain-based security** - Widget only works on authorized domains
+
+### **Example Configurations**
+
+#### **Simple Chat Widget**
+```html
+<div id="chat-embed" 
+     data-api-url="https://your-server.com"
+     data-top_k="5"
+     data-show_citations="true">
+</div>
+```
+
+#### **Advanced Configuration**
+```html
+<div id="chat-embed" 
+     data-api-url="https://your-server.com"
+     data-model_key="openai:gpt-4o-mini"
+     data-temperature="0.7"
+     data-top_k="10"
+     data-show_processing_steps="true"
+     data-show_citations="true"
+     data-namespace="oceans">
+</div>
+```
 
 ---
 
@@ -1172,7 +1268,7 @@ active_domain: str = "oceans"  # Switches both collection and model
 
 ### **Additional Security Recommendations**
 
-#### **Production Deployments**
+#### **Deployment Considerations**
 When deploying beyond local/dev environments, consider these additional protections:
 
 #### **Network Layer Security**
@@ -1212,7 +1308,80 @@ This section serves as the canonical overview of auth/security for the applicati
 
 ---
 
-## �📜 License & Usage
+## 📡 API Usage Example
+
+### **Complete Chat API Call**
+
+```bash
+curl -X POST "http://localhost:8000/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are the main differences between Atlantic and Pacific oceans?",
+    "namespace": "oceans",
+    "render_html": true,
+    "show_processing_steps": true,
+    "stage_specs": {
+      "rewrite": {"model_key": "openai:gpt-4o-mini"},
+      "rerank": {"model_key": "openai:gpt-4o-mini"},
+      "inference": {"model_key": "openai:gpt-4o-mini"},
+      "summarization": {"model_key": "openai:gpt-4o-mini"}
+    },
+    "top_k": 5,
+    "show_citations": true
+  }' | jq '.'
+```
+
+### **Sample API Response**
+
+```json
+{
+  "answer": "The Atlantic Ocean is generally warmer and saltier than the Pacific Ocean...",
+  "response": "The Atlantic Ocean is generally warmer and saltier than the Pacific Ocean...",
+  "answer_html": "<p>The Atlantic Ocean is generally warmer and saltier than the Pacific Ocean...</p>",
+  "sources": [
+    {
+      "title": "Ocean Comparison Study",
+      "url": "https://example.com/ocean-study",
+      "snippet": "Atlantic waters average 22°C while Pacific averages 17°C...",
+      "citation": "[1]"
+    }
+  ],
+  "metrics": {
+    "vectors_retrieved": 5,
+    "tokens_used": 1250,
+    "cost_estimate": 0.0042
+  },
+  "turn_metrics": {
+    "rewrite_confidence": 0.85,
+    "reranking_score": 0.92
+  },
+  "conversation_totals": {
+    "total_turns": 3,
+    "total_tokens": 3800
+  },
+  "tools_used": ["web_search"],
+  "rewrite_display": {
+    "original": "differences between Atlantic and Pacific",
+    "rewritten": "What are the main differences between Atlantic and Pacific oceans?",
+    "confidence": 0.85
+  }
+}
+```
+
+### **Key Response Fields**
+
+- **`answer`**: Complete response text with citations
+- **`answer_html`**: Formatted HTML response (when `render_html=true`)
+- **`sources`**: Source documents with citations
+- **`metrics`**: Token usage, costs, retrieval counts
+- **`turn_metrics`**: Current turn performance data
+- **`conversation_totals`**: Session-level statistics
+- **`tools_used`**: Tools invoked during processing
+- **`rewrite_display`**: Query rewrite information
+
+---
+
+## �� License & Usage
 
 This project is **source-available** for **personal, educational, and evaluation purposes**.  
 It is permitted to **run, modify, and fork** the code for non-commercial use.
