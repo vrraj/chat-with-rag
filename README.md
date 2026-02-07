@@ -10,7 +10,7 @@ This system goes beyond basic vector search by implementing a multi-stage LLM or
 
 This project explores end-to-end RAG system design, prioritizing transparency and modularity over abstraction-heavy frameworks to make pipeline behavior explicit and observable.
 
-## 🆕 What's New in v2.0
+### 🆕 What's New in v2.0
 
 - **Multi-Provider LLM Framework**  
 Unified abstraction supporting OpenAI, Gemini, and extensible to additional providers.
@@ -89,6 +89,7 @@ The screenshot below illustrates how these **inference pipeline stages** work to
 
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
+### Application Workspace
 This workspace is the **main entry point to the application**, combining navigation, ingestion, and operational tooling into a single interface. It provides access to chat configuration, embeddable experiences, vector store inspection, document management, and batch ingestion, making the full lifecycle of data and retrieval behavior visible and controllable from one place.
 
 <p align="center">
