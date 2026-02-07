@@ -113,104 +113,108 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 ### 📥 High-Fidelity Ingestion
 * **Multi-Source Extraction**: Native support for high-fidelity parsing of **PDFs**, **MediaWiki**, and **HTML**.
 * **Intelligent Processing**: 
-    * **Smart Chunking**: Configurable strategies to preserve semantic context across fragments.
-    * **Structure Preservation**: Maintains the integrity of complex tables and structured layouts.
-    * **Noise Filtering**: Automated removal of headers, footers, and irrelevant boilerplate for cleaner context.
-* **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
+    * **Smart Chunking**: Preserves semantic context across chunks.
+    * **Structure Preservation**: Maintains the integrity of tables and structured layouts.
+    * **Noise Filtering**: Configurable noise filtering to remove headers, footers, and selected sections for cleaner context.
+> **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
 
-### 🌐 Embeddable Chat Widget
-- **Embeddable chat** for any website with configurable data attributes and advanced controls.
-
-See the **Embeddable Widget Configuration** section below for detailed implementation examples and all available options.
 
 ### 🧠 Advanced Chat Orchestration
 
-**Advanced Chat Orchestration is the control plane of the system — it governs which models run, in what order, with which prompts, context, providers, and output formats for every request.**
+Advanced Chat Orchestration is the control plane of the system — it governs which models run, with which prompts, context, tools, LLM providers, and output formats for every request.
 
----
-
-#### 1️⃣ Pipeline Control & Execution Flow  
+#### 1. Pipeline Control & Execution Flow  
 *What runs, when, and how each stage is configured*
 
 - **Multi-Stage LLM Pipeline Orchestration**  
   Granular control over each stage: Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing.
 
 - **Stage-Specific Model Configuration**  
-  Independent model selection per stage (rewrite, rerank, inference, summarization), configurable at runtime via UI or API.
+  Independent model selection per stage, configurable at runtime via UI or API.
 
 - **Dynamic Model Selection (UI)**  
-  “Configure Models” modal enables per-stage model changes mid-conversation, including mixing providers (OpenAI + Gemini).
+  Per-stage model selection mid-conversation, including mixing providers (OpenAI + Gemini) for model capabilities leverage and cost-control.
 
 - **API-Level Control**  
-  Full pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and experimentation.
+  Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
 
-- **Multiple LLM Provider Support Framework**  
-  A unified execution framework that abstracts multiple provider surfaces behind a single contract:
-  - OpenAI Chat Completions API  
-  - OpenAI Responses API  
-  - Gemini OpenAI-compatible adapter  
-  - Gemini native SDK  
-  Provider-specific differences are normalized so the pipeline remains provider-agnostic.
+- **Multiple LLM Provider Support**  
+  A unified **LLM Adapter** framework that abstracts multiple provider surfaces behind a single contract. Currrently supports
+  - OpenAI (Chat Completions API, Responses API)  
+  - Gemini (OpenAI-compatible adapter, native SDK)  
+
+  >**Provider-specific differences are normalized so the pipeline remains provider-agnostic.**
 
 - **Model Registry Centralization**  
   All model definitions are centralized in a registry that abstracts provider- and model-specific nuances (capabilities, pricing, parameters).  
-  These definitions are consumed uniformly by the LLM handler and the application to drive routing, validation, and cost tracking.
+  These definitions are consumed uniformly by the LLM handler and the application to drive routing, parameter normalization, validation, and cost tracking.
 
-    - **Prompt Registry (YAML-Driven Control)**  
-      A centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. A `prompt_domain` parameter can be passed per request to alter pipeline behavior without code changes, enabling parallel chat sessions and A/B testing of prompt strategies.
+- **Prompt Registry (YAML-Driven Control)**  
+  A centralized prompt control layer that decouples prompts from code, supports default system and user prompts, with  domain-specific augmentation. Injects application-derived context dynamically at runtime. 
+  >A `prompt_domain` parameter can be passed per request to alter pipeline behavior without code changes, enabling parallel chat sessions and **A/B testing** of prompt strategies.
 
-- **Post-processing & Output Transformation**  
-  Final model outputs pass through a dedicated post-processing stage that formats responses into structured HTML (tables, highlights, links) for the UI.  
-  This module is extensible and intentionally separated from inference, allowing future output formats beyond HTML.
+### 🌐 Embeddable Chat Widget
+- **Embeddable chat** for any website with full access to pipeline configuration controls.
 
----
+See the **Embeddable Widget Configuration** section below for detailed implementation examples and all available options.
 
-#### 2️⃣ Context & Memory Management
 
-Conversation history is managed using a bounded, cache-aware strategy that preserves semantic continuity without exceeding context limits. The system maintains an accumulated conversation summary alongside a verbatim recent tail of turns. When the tail reaches a configurable size, it is summarized and folded into the accumulated context while the tail resets. This ensures stable context size, efficient caching behavior, and continuity across long-running conversations.
+#### 2. Context & Memory Management
 
----
+Long-running conversations remain coherent and performant without exceeding context limits by combining a persistent conversation summary with a short, verbatim recent history. As the conversation grows, older turns are automatically **summarized and merged into the active context**, preserving continuity while maintaining stable context size and cache efficiency.
 
-#### 3️⃣ Query Intelligence & Rewrite Optimization
+
+#### 3. Query Intelligence & Rewrite
 
 Before retrieval, user queries may be expanded or clarified by a rewrite stage that improves recall and precision. Rewrite behavior is confidence-gated, ensuring rewritten queries only replace the original when confidence exceeds a threshold. The rewrite stage can draw from recent turns verbatim, summarized history, or be disabled entirely, allowing precise control over how user intent is refined.
+>Rewrite prompts are configurable via the prompt registry.
 
----
 
-#### 4️⃣ Retrieval, Inference & Tool Augmentation  
+#### 4. Retrieval, Inference & Tool Augmentation  
 *How answers are synthesized and verified*
 
 - **Retrieval Optimization**
-  - Vector search via Qdrant with configurable Top-K and distance thresholds
+  - Vector search via Qdrant with configurable Top-K and score thresholds
   - Secondary semantic reranking for relevance
 
 - **Inference Context Assembly**  
   Final LLM prompts are composed from:
-  - System instructions (prompt registry)
-  - Domain-specific augmentations
+  - System and user instructions (prompt registry)
+  - Domain-specific prompt augmentations
   - Conversation summary and verbatim tail
   - Retrieved and reranked document chunks
   - Optional web search context
-  - User instructions and query
+  - User query
 
 - **Tool Execution**
-  - Native function/tool calling (weather, airports, web search, etc.)
+  - Native function/tool calling (currently get_weather and get_airports)
   - Tool outputs are merged into the final synthesis stage
+  > Web search is supported via an optional automatic web context stage and via an LLM tool call.
 
 - **Verified Citations**
   - All final answers include deep-linked citations to source documents
-* **Real-Time Observability**: Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens.
-* **Granular Cost Tracking**: Instant transparency with per-stage token usage and dollar-cost metrics for every request.
-* **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
 
-#### 🧪 Postprocessing (Markdown → HTML)
-After inference, the system optionally postprocesses the assistant’s text to render rich Markdown content in the chat UI:
-- **Backend rendering** (`backend/markdown_render.py`): Converts Markdown to sanitized HTML using `markdown-it-py`/`Markdown` with `bleach`. Wraps tables in scrollable containers and hardens links.
-- **Sources formatting**: Detects and splits any `Sources:` block so it starts on a new line, with each source on its own line, and makes the heading bold.
-- **Frontend rendering**: When `params.render_html=true`, the backend returns `answer_html` (and `finalHtml` via SSE). The frontend uses `innerHTML` to display rendered content, with scoped CSS for tighter spacing and table styling.
-- **Fallback**: If HTML rendering is disabled or fails, the frontend gracefully falls back to plain text (`textContent`).
 
-Web search is supported via an optional automatic web context stage and via an LLM tool call. See the Web Search section below for details.
+#### 5. Observability & Cost Management
+*How the system provides transparency and control*
+
+- **Real-Time Observability**
+  - Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens
+
+- **Granular Cost Tracking**
+  - Instant transparency with per-stage token usage and dollar-cost metrics for every request
+
+- **Extensible Tooling**
+  - Built-in support for function calling to augment responses with live, real-time data
+
+#### 6. Postprocessing & Output Rendering
+
+After inference, responses can be post-processed to deliver a richer, presentation-ready experience in the chat UI.
+
+> This post-processing stage is isolated from inference, ensuring output formatting can evolve independently without affecting core model behavior. In addition post processing can be extended to support custom workflows and transformations.
+
+
+
 
 
 ##  Getting Started
@@ -585,6 +589,9 @@ Embeddable chat for any website with comprehensive configuration options.
 <script src="https://your-server.com/static/embed-loader.js"
         data-target="#support-chat"
         data-top_k="8"
+        data-max_output_tokens="256"
+        data-show_processing_steps="true"
+        data-show_citations="true"
         data-temperature="0.4"
         data-namespace="docs-help">
 </script>
