@@ -105,9 +105,6 @@ This workspace is the **main entry point to the application**, combining navigat
 - [Technical Overview](#technical-overview)
 - [Project Structure](#project-structure)
 - [License & Usage](#license--usage)
-> **Auth & Security Note**
-
-This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional deployment recommendations.
 
 ## ✨ Features
 
@@ -567,26 +564,47 @@ To log the full resolved prompt/template for debugging, set:
 
 ---
 
+> **Auth & Security Note**
+
+This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional deployment recommendations.
+
+---
+
+---
+
 ## 🌐 Embeddable Chat Widget
 
 Embeddable chat for any website with comprehensive configuration options.
 
 ### **Basic Integration**
 ```html
-<script src="https://your-server.com/chat-embed.js"></script>
-<div id="chat-embed" 
-     data-api-url="https://your-server.com"
-     data-namespace="oceans">
-</div>
+<!-- 1. Add target container -->
+<div id="support-chat"></div>
+
+<!-- 2. Add embed loader script -->
+<script src="https://your-server.com/static/embed-loader.js"
+        data-target="#support-chat"
+        data-top_k="8"
+        data-temperature="0.4"
+        data-namespace="docs-help">
+</script>
+```
+
+### **How It Works**
+The embed loader automatically creates an iframe pointing to:
+```
+/chat-embed.html?top_k=8&temperature=0.4&namespace=docs-help
 ```
 
 ### **Configurable via Data Attributes**
-- **`data-model_key`** - Preselected model from registry (e.g., "openai:gpt-4o-mini")
-- **`data-temperature`** - Response creativity control (0.0-1.0)
+- **`data-target`** - CSS selector for container (default: `#embed-chat-root`)
 - **`data-top_k`** - Retrieval configuration (number of documents to retrieve)
+- **`data-temperature`** - Response creativity control (0.0-1.0)
+- **`data-namespace`** - Custom knowledge base isolation
 - **`data-show_processing_steps`** - Enable streaming visualization of pipeline stages
 - **`data-show_citations`** - Source citation display toggle
-- **`data-namespace`** - Custom knowledge base isolation
+- **`data-width`** - Iframe width (default: `100%`)
+- **`data-height`** - Iframe height (default: `400px`)
 
 ### **Advanced Controls**
 Full access to all pipeline tuning parameters:

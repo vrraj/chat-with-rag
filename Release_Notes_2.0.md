@@ -6,15 +6,13 @@ This release transforms the application from a single-provider system into a **m
 
 **Key Achievements:**
 - 🏗️ **Model Registry Architecture** - Single source of truth for all model configurations
-- 🔄 **Multi-Provider LLM Framework** - Unified abstraction supporting OpenAI, Gemini, and extensible to additional providers across multiple API surfaces
-- 🧩 **Prompt Registry (YAML-Driven)** - Centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. Supports per-request `prompt_domain` switching for parallel sessions and A/B testing without code changes
-- 🧠 **Advanced Context & Memory Management** - Cache-optimized conversation history with rolling summaries and bounded context windows
-- ⚙️ **Per-Stage Model Configuration** - Runtime model selection per pipeline stage via UI or API (rewrite, rerank, inference, summarization)
-- 🏗️ **Domain-Aware Vector Collections** - Tight coupling between domains, embedding models, and vector dimensions with automatic derivation
-- ⚡ **Performance & Cost Controls** - Batch ingestion, rate-limit handling, and per-stage cost tracking
-- 🧪 **Postprocessing LLM Response** - Markdown to HTML conversion with scoped styling, extensible for additional actions like email notifications
-- 🌐 **Embeddable Chat Widget** - Drop-in widget with comprehensive configuration: per-stage model selection, prompt domains, top-k retrieval, context control, processing visualization
-- 🔒 **Domain-Based Access Controls** - Isolation and authorization enforced consistently across APIs and embedded clients
+- 🔄 **Multi-Provider Support** - OpenAI and Gemini with unified abstraction
+- 🧩 **Prompt Registry (YAML)** - Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain`
+- ⚡ **Performance Optimization** - Batch processing and rate limit management
+- 🔒 **Security Enhancements** - Embeddable chat with domain controls + API security
+- 📊 **Cost Management** - Provider-specific pricing and budget tracking
+- 🌐 **Embeddable Chat Widget** - Configurable chat for any website
+- 🧪 **Postprocessing (Markdown → HTML)** - Backend rendering with sanitized HTML, sources formatting, and scoped UI styling
 
 ---
 

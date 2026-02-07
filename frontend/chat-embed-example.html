@@ -106,9 +106,9 @@
       </header>
 
       <section class="section">
-        <h2>What this page shows</h2>
+        <h2>Method 1: Direct iframe (Simple)</h2>
         <ul>
-          <li>How to render a floating Chat with us button.</li>
+          <li>How to render a floating "Chat with us" button.</li>
           <li>How to open/close a popup that contains the embeddable chat iframe.</li>
           <li>
             How to override RAG parameters via the iframe URL, for example:
@@ -128,6 +128,41 @@
           <span>Chat with us</span>
         </button>
       </section>
+
+      <section class="section">
+        <h2>Method 2: Embed Loader Script (Flexible)</h2>
+        <ul>
+          <li>Uses embed-loader.js to dynamically create the iframe.</li>
+          <li>Configuration via data attributes on the script tag.</li>
+          <li>More flexible - script handles iframe creation and sizing.</li>
+          <li>Cleaner HTML - just a div and script tag.</li>
+        </ul>
+
+        <p style="margin-top: 8px; font-size: 0.85rem; color: #64748b;">
+          This method uses the same parameters but passed as data attributes:
+          <code>data-top_k="5"</code>, <code>data-max_output_tokens="256"</code>, 
+          <code>data-show_processing_steps="true"</code>, <code>data-show_sources="true"</code>, 
+          <code>data-namespace="example-script"</code>
+        </p>
+
+        <div style="margin-top: 16px; padding: 12px; background: #f1f5f9; border-radius: 8px; border: 1px solid #e2e8f0;">
+          <h4 style="margin: 0 0 8px 0; font-size: 0.9rem; color: #475569;">Embedded Chat (Inline):</h4>
+          <!-- Inline embed container -->
+          <div id="chat-embed-inline" style="height: 400px; border-radius: 8px; overflow: hidden; background: #ffffff; border: 1px solid #e2e8f0;"></div>
+        </div>
+
+        <!-- Embed loader script for inline embedding -->
+        <script src="static/embed-loader.js"
+                data-target="#chat-embed-inline"
+                data-top_k="5"
+                data-max_output_tokens="256"
+                data-show_processing_steps="true"
+                data-show_sources="true"
+                data-namespace="example-script"
+                data-width="100%"
+                data-height="100%">
+        </script>
+      </section>
     </div>
 
     <!-- Popup container holding the embeddable chat UI -->
@@ -146,9 +181,11 @@
 
     <script>
       (function () {
+        // Only handle the popup method (Method 1)
         const toggle = document.getElementById('chat-toggle-btn');
         const popup = document.getElementById('chat-embed-popup');
         const closeBtn = document.getElementById('chat-embed-close');
+        
         if (!toggle || !popup) return;
 
         let isOpen = false;
@@ -169,7 +206,9 @@
 
         // Optional: close on Escape
         document.addEventListener('keydown', function (e) {
-          if (e.key === 'Escape') setOpen(false);
+          if (e.key === 'Escape') {
+            setOpen(false);
+          }
         });
       })();
     </script>
