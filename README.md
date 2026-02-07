@@ -72,7 +72,7 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 
 ### Chat Orchestration Pipeline (Prompt → Answer)
 
-> User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
+> **User prompt** ⟹ **Query rewrite** ⟹ **Retrieval** ⟹ **Rerank** ⟹ **Summarization** ⟹ **Context assembly** ⟹ **Inference prompt assembly** ⟹ **LLM inference** ⟹ **Tool execution** (if needed) ⟹ **Post-processing** ⟹ **Final response**
 
 
 ### Inference Pipeline in Action 
