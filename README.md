@@ -12,14 +12,11 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 
 ## 🆕 What's New in v2.0
 
-- **Multi-Provider LLM Framework**  
-  Unified abstraction supporting OpenAI, Gemini, and extensible to additional providers across multiple API surfaces.
+- **Multi-Provider LLM Framework** Unified abstraction supporting OpenAI, Gemini, and extensible to additional providers across multiple API surfaces.
 
-- **Centralized Model Registry**  
-  Single source of truth for model capabilities (reasoning-effort, completion-tokens etc), pricing, API routing, parameter normalization and provider-specific nuances.
+- **Centralized Model Registry** Single source of truth for model capabilities (reasoning-effort, completion-tokens etc), pricing, API routing, parameter normalization and provider-specific nuances.
 
-- **Prompt Registry (YAML-Driven)**  
-  Centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. Supports per-request `prompt_domain` switching for parallel sessions and A/B testing without code changes.
+- **Prompt Registry (YAML-Driven)** Centralized prompt control layer that decouples prompts from code, supports global defaults and domain-specific augmentation, and injects application-derived context dynamically at runtime. Supports per-request `prompt_domain` switching for parallel sessions and A/B testing without code changes.
 
 - **Advanced Context & Memory Management**  
   Cache-optimized conversation history with rolling summaries and bounded context windows.
@@ -32,6 +29,9 @@ This project explores end-to-end RAG system design, prioritizing transparency an
 
 - **Performance & Cost Controls**  
   Batch ingestion, rate-limit handling, and per-stage cost tracking.
+
+* ** Postprocessing LLM Response**  
+  Currently Markdown to HTML conversion, and scoped styling, can be extended for additional actions like email notifications
 
 - **Embeddable Chat Widget**  
   Drop-in widget with comprehensive configuration: per-stage model selection, prompt domains, top-k retrieval, context control, processing visualization, among others.
