@@ -123,8 +123,8 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 
 Advanced Chat Orchestration is the control plane of the system — it governs which models run, with which prompts, context, tools, LLM providers, and output formats for every request.
 
-#### 1. Pipeline Control & Execution Flow  
-*What runs, when, and how each stage is configured*
+#### 🔹 1. Pipeline Control & Execution Flow
+*Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
 
 - **Multi-Stage LLM Pipeline Orchestration**  
   Granular control over each stage: Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing.
@@ -133,7 +133,7 @@ Advanced Chat Orchestration is the control plane of the system — it governs wh
   Independent model selection per stage, configurable at runtime via UI or API.
 
 - **Dynamic Model Selection (UI)**  
-  Per-stage model selection mid-conversation, including mixing providers (OpenAI + Gemini) for model capabilities leverage and cost-control.
+  Per-stage model selection mid-conversation, including mixing providers (OpenAI + Gemini) for  capabilities and cost-control.
 
 - **API-Level Control**  
   Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
@@ -141,13 +141,12 @@ Advanced Chat Orchestration is the control plane of the system — it governs wh
 - **Multiple LLM Provider Support**  
   A unified **LLM Adapter** framework that abstracts multiple provider surfaces behind a single contract. Currrently supports
   - OpenAI (Chat Completions API, Responses API)  
-  - Gemini (OpenAI-compatible adapter, native SDK)  
+  - Gemini (OpenAI-compatible Adapter, native Gemini SDK)  
 
   >**Provider-specific differences are normalized so the pipeline remains provider-agnostic.**
 
 - **Model Registry Centralization**  
-  All model definitions are centralized in a registry that abstracts provider- and model-specific nuances (capabilities, pricing, parameters).  
-  These definitions are consumed uniformly by the LLM handler and the application to drive routing, parameter normalization, validation, and cost tracking.
+  All model definitions are centralized in a registry that abstracts provider- and model-specific nuances (capabilities, pricing, parameters). These definitions are consumed uniformly by the LLM handler and the application to drive routing, parameter normalization, validation, and cost tracking.
 
 - **Prompt Registry (YAML-Driven Control)**  
   A centralized prompt control layer that decouples prompts from code, supports default system and user prompts, with  domain-specific augmentation. Injects application-derived context dynamically at runtime. 
@@ -155,19 +154,21 @@ Advanced Chat Orchestration is the control plane of the system — it governs wh
 
 
 
-#### 2. Context & Memory Management
+#### 🧠 2. Context & Memory Management
+*Maintains long-running conversational continuity while keeping context size bounded and cache-efficient.*
 
 Long-running conversations remain coherent and performant without exceeding context limits by combining a persistent conversation summary with a short, verbatim recent history. As the conversation grows, older turns are automatically **summarized and merged into the active context**, preserving continuity while maintaining stable context size and cache efficiency.
 
 
-#### 3. Query Intelligence & Rewrite
+#### ✏️ 3. Query Intelligence & Rewrite
+*Refines user intent before retrieval to improve recall, precision, and downstream reasoning quality.*
 
 Before retrieval, user queries may be expanded or clarified by a rewrite stage that improves recall and precision. Rewrite behavior is confidence-gated, ensuring rewritten queries only replace the original when confidence exceeds a threshold. The rewrite stage can draw from recent turns verbatim, summarized history, or be disabled entirely, allowing precise control over how user intent is refined.
 >Rewrite prompts are configurable via the prompt registry.
 
 
-#### 4. Retrieval, Inference & Tool Augmentation  
-*How answers are synthesized and verified*
+#### 🔍 4. Retrieval, Inference & Tool Augmentation
+*Synthesizes grounded answers by combining retrieved knowledge, tools, and model inference.*
 
 - **Retrieval Optimization**
   - Vector search via Qdrant with configurable Top-K and score thresholds
@@ -191,19 +192,17 @@ Before retrieval, user queries may be expanded or clarified by a rewrite stage t
   - All final answers include deep-linked citations to source documents
 
 
-#### 5. Observability & Cost Management
-*How the system provides transparency and control*
+#### 📊 5. Observability & Cost Management
+*Provides real-time visibility into pipeline execution, token usage, and per-stage costs.*
 
 - **Real-Time Observability**
-  - Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens
+Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens
 
 - **Granular Cost Tracking**
-  - Instant transparency with per-stage token usage and dollar-cost metrics for every request
+Instant transparency with per-stage token usage and dollar-cost metrics for every request
 
-- **Extensible Tooling**
-  - Built-in support for function calling to augment responses with live, real-time data
-
-#### 6. Postprocessing & Output Rendering
+#### 🎨 6. Postprocessing & Output Rendering
+*Transforms raw LLM output into presentation-ready responses without affecting core inference behavior.*
 
 After inference, responses can be post-processed to deliver a richer, presentation-ready experience in the chat UI.
 
@@ -219,7 +218,7 @@ See the **Embeddable Widget Configuration** section below for detailed implement
 
 
 
-##  Getting Started
+## 🚀 Getting Started
 
 > **Provider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. All supported and tested models are defined centrally in the **Model Registry**, which serves as the source of truth for provider routing, model capabilities, and cost tracking.
 
