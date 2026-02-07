@@ -42,26 +42,7 @@ Unified abstraction supporting OpenAI, Gemini, and extensible to additional prov
 
 
 
-<details>
-<summary><strong>Table of Contents</strong></summary>
 
-- [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
-- [Features](#-features)
-- [🚀 Getting Started](#-getting-started)
-  - [1. Prerequisites](#-1-prerequisites)
-  - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
-  - [2.1 Manual setup](#-21-manual-setup-step-by-step)
-  - [ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
-- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
-  - [Data Attribution](#-data-attribution)
-  - [Explore the Data](#-explore-the-data)
-  - [Managing Your Collections](#-managing-your-collections)
-- [Example Queries](#example-queries)
-- [Batch Ingestion](#batch-ingestion)
-- [Technical Overview](#technical-overview)
-- [Project Structure](#project-structure)
-- [License & Usage](#license--usage)
-</details>
 
 
 ## 🧠 High-Level RAG Pipeline Overview
@@ -105,6 +86,25 @@ This workspace is the **main entry point to the application**, combining navigat
 </p>
 
 *Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
+
+### Table of Contents
+
+- [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
+- [Features](#-features)
+- [🚀 Getting Started](#-getting-started)
+  - [1. Prerequisites](#-1-prerequisites)
+  - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
+  - [2.1 Manual setup](#-21-manual-setup-step-by-step)
+  - [ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
+- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
+  - [Data Attribution](#-data-attribution)
+  - [Explore the Data](#-explore-the-data)
+  - [Managing Your Collections](#-managing-your-collections)
+- [Example Queries](#example-queries)
+- [Batch Ingestion](#batch-ingestion)
+- [Technical Overview](#technical-overview)
+- [Project Structure](#project-structure)
+- [License & Usage](#license--usage)
 > **Auth & Security Note**
 
 This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional deployment recommendations.
