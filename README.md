@@ -153,10 +153,6 @@ Advanced Chat Orchestration is the control plane of the system — it governs wh
   A centralized prompt control layer that decouples prompts from code, supports default system and user prompts, with  domain-specific augmentation. Injects application-derived context dynamically at runtime. 
   >A `prompt_domain` parameter can be passed per request to alter pipeline behavior without code changes, enabling parallel chat sessions and **A/B testing** of prompt strategies.
 
-### 🌐 Embeddable Chat Widget
-- **Embeddable chat** for any website with full access to pipeline configuration controls.
-
-See the **Embeddable Widget Configuration** section below for detailed implementation examples and all available options.
 
 
 #### 2. Context & Memory Management
@@ -212,6 +208,12 @@ Before retrieval, user queries may be expanded or clarified by a rewrite stage t
 After inference, responses can be post-processed to deliver a richer, presentation-ready experience in the chat UI.
 
 > This post-processing stage is isolated from inference, ensuring output formatting can evolve independently without affecting core model behavior. In addition post processing can be extended to support custom workflows and transformations.
+
+### 🌐 Embeddable Chat Widget
+**Embeddable chat** for any website with full access to pipeline configuration controls.
+
+See the **Embeddable Widget Configuration** section below for detailed implementation examples and all available options.
+
 
 
 
