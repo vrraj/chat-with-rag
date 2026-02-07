@@ -42,7 +42,8 @@ Unified abstraction supporting OpenAI, Gemini, and extensible to additional prov
 
 
 
-## Table of Contents
+<details>
+<summary><strong>Table of Contents</strong></summary>
 
 - [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
 - [Features](#-features)
@@ -60,6 +61,7 @@ Unified abstraction supporting OpenAI, Gemini, and extensible to additional prov
 - [Technical Overview](#technical-overview)
 - [Project Structure](#project-structure)
 - [License & Usage](#license--usage)
+</details>
 
 
 ## 🧠 High-Level RAG Pipeline Overview
