@@ -158,6 +158,10 @@ else
   echo "✅ API keys already present in .env (not prompting)"
 fi
 
+set -a
+source .env
+set +a
+
 # -----------------------------------------------------------------------------
 # 2) Start services (Qdrant + app)
 # -----------------------------------------------------------------------------
