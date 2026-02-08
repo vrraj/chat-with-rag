@@ -90,7 +90,7 @@ The `/chat` route uses `backend.core.schemas.ChatRequest`:
 class ChatRequest(BaseModel):
     message: str
     context: List[Dict] = []
-    use_web_search: bool = False
+    use_web_search: Optional[bool] = None
     # Pass-through of UI parameters and chat bubbles history (stateless UI)
     params: Optional[Dict[str, Any]] = Field(default_factory=dict)
     history: Optional[List[Dict[str, str]]] = Field(default_factory=list)
@@ -103,7 +103,7 @@ class ChatRequest(BaseModel):
   Reserved for future use; not required for stateless path.
 
 - **`use_web_search`**  
-  Currently not used by the stateless HTML chat path (`chat.html` sets this to `false`).
+  Optional boolean for web search integration. Currently not used by the stateless HTML chat path (`chat.html` sets this to `null`).
 
 - **`params`**  
   Arbitrary dict of pipeline parameters, passed through to `run_pipeline`.
@@ -127,6 +127,7 @@ class ChatRequest(BaseModel):
 
 - `top_k: int | null`  
 - `score_threshold: float | null`
+- `namespace: str | null` - Domain/collection isolation
 
 #### Summarizer / history window
 
@@ -139,6 +140,7 @@ class ChatRequest(BaseModel):
 - `temperature: float | null`  
 - `top_p: float | null`  
 - `max_output_tokens: int | null`
+- `reasoning_effort: str | null` - Reasoning intensity for reasoning models ("minimal", "low", "medium", "high")
 
 #### Query rewrite
 
@@ -162,6 +164,7 @@ class ChatRequest(BaseModel):
 
 - `query_id: str`  
 - `conversation_id: str`
+- `show_sources: bool` - Source citation display control
 
 #### Processing-stage visibility
 
@@ -200,6 +203,7 @@ Typical response:
 {
   "answer": "Final answer text",
   "response": "Final answer text",
+  "answer_html": "<p>Final answer with HTML formatting</p>",
   "metrics": {
     "vectors_retrieved": 8
   },
@@ -217,7 +221,8 @@ Typical response:
     "ambiguous": false,
     "reason": "",
     "changed": true
-  }
+  },
+  "reasoning": "Step-by-step reasoning process..."  // Only for reasoning models
 }
 ```
 
@@ -239,11 +244,14 @@ curl -X POST http://localhost:8000/chat \
       "score_threshold": 0.35,
       "temperature": 0.4,
       "max_output_tokens": 300,
+      "reasoning_effort": "low",
       "enable_query_rewrite": true,
       "rewrite_confidence_threshold": 0.67,
       "rewrite_tail_turns": 1,
       "use_tools": false,
       "show_processing_steps": true,
+      "show_sources": true,
+      "namespace": "default",
       "query_id": "abcd1234",
       "conversation_id": "demo-convo-1"
     }
@@ -301,12 +309,15 @@ def call_chat(message: str, show_steps: bool = True):
             "temperature": 0.4,
             "top_p": 0.9,
             "max_output_tokens": 300,
+            "reasoning_effort": "minimal",
             "enable_query_rewrite": True,
             "rewrite_confidence_threshold": 0.67,
             "rewrite_tail_turns": 1,
             "rewrite_summary_turns": 3,
             "use_tools": False,
             "show_processing_steps": show_steps,
+            "show_sources": True,
+            "namespace": "default",
             "query_id": query_id,
             "conversation_id": conversation_id,
         },
@@ -316,11 +327,13 @@ def call_chat(message: str, show_steps: bool = True):
     resp.raise_for_status()
     data = resp.json()
     print("Answer:", data.get("answer") or data.get("response"))
+    print("Answer HTML:", data.get("answer_html"))  // When HTML rendering is enabled
     print("Metrics:", data.get("metrics"))
     print("Turn metrics:", data.get("turn_metrics"))
     print("Conversation totals:", data.get("conversation_totals"))
     print("Tools used:", data.get("tools_used"))
     print("Rewrite display:", data.get("rewrite_display"))
+    print("Reasoning:", data.get("reasoning"))  // For reasoning models
 
 if __name__ == "__main__":
     call_chat("Give me a short overview of how this RAG chat pipeline works.", show_steps=True)

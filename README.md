@@ -2,13 +2,12 @@
 
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
-A modular RAG framework that turns unstructured data into reliable answers using query rewriting, explicit retrieval, reranking, observability, and tool-augmented inference.
 
-This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
+A modular RAG framework for generating **grounded answers with citations** from unstructured documents using an explicit, multi-stage orchestration pipeline with **multi-LLM support**.
 
-**Project Scope & Intent**
+The system goes beyond basic vector search by making each step of retrieval and inference observable and configurable—covering high-fidelity ingestion (MediaWiki, PDFs, HTML), query rewriting, retrieval and reranking, tool-augmented inference, and verifiable source citations with live pipeline streaming.
 
-This project explores end-to-end RAG system design, prioritizing transparency and modularity over abstraction-heavy frameworks to make pipeline behavior explicit and observable.
+→ **Jump to Getting Started** to run the system locally.
 
 ### 🆕 What's New in v2.0
 
@@ -97,7 +96,9 @@ This workspace is the **main entry point to the application**, combining navigat
   - [Prompt Registry](#-prompt-registry-yaml)
 - [Getting Started](#-getting-started)
 - [Embeddable Chat Widget](#-embeddable-chat-widget)
-- [Technical Overview](#-technical-overview)
+- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
+- [Batch Ingestion](#-batch-ingestion)
+- [API Usage Examples](#-api-usage-examples)
 - [Security & Deployment](#-security--deployment)
 - [License & Usage](#-license--usage)
 
@@ -395,17 +396,6 @@ If you prefer Gemini over OpenAI:
    # Visit frontend/process-batch-docs.html → Import JSON
    ```
 
-##### Mixed Provider Setup
-Use OpenAI for embeddings (sample data compatibility) + Gemini for inference:
-
-```python
-# In config - no embedding change needed
-embedding_model = "openai:embed_small"  # Keep default
-
-# In UI or API calls - use Gemini models
-provider="gemini"
-model="models/gemini-2.5-flash-lite"
-```
 
 #### 2.1.7 Start Infrastructure
 
