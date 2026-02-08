@@ -38,12 +38,12 @@ Unified abstraction supporting OpenAI, Gemini, and extensible to additional prov
 - **Domain-Based Access Controls**  
   Isolation and authorization enforced consistently across APIs and embedded clients.
 
-> **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
+**For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
 
 
 > **Auth & Security Note**  
-This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **Security & Deployment** below for details and deployment guidance.
+This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** below for details and deployment guidance.
 
 
 
@@ -100,7 +100,8 @@ This workspace is the **main entry point to the application**, combining navigat
 - [Technical Overview](#-technical-overview)
 - [Security & Deployment](#-security--deployment)
 - [License & Usage](#-license--usage)
---
+
+---
 ## ✨ Features
 
 An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to synthesize raw documents into structured intelligence, featuring a high-fidelity ingestion engine and live observability for verifiable, context-grounded insights.
@@ -135,8 +136,8 @@ Advanced Chat Orchestration is the system’s control plane for intelligent retr
 
 - **Multiple LLM Provider Support**  
   A unified **LLM Adapter** framework that abstracts multiple provider surfaces behind a single contract. Currrently supports
-  - OpenAI (Chat Completions API, Responses API)  
-  - Gemini (OpenAI-compatible Adapter, native Gemini SDK)  
+  - **OpenAI** (Chat Completions API, Responses API)  
+  - **Gemini** (OpenAI-compatible Adapter, native Gemini SDK)  
 
   >**Provider-specific differences are normalized so the pipeline remains provider-agnostic.**
 
@@ -164,7 +165,6 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 
 - **Retrieval Optimization**
   - Vector search via Qdrant with configurable Top-K and score thresholds
-  - Secondary semantic reranking for relevance
 
 - **Inference Context Assembly**  
   Final LLM prompts are composed from:
@@ -178,10 +178,12 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 - **Tool Execution**
   - Native function/tool calling (currently get_weather and get_airports)
   - Tool outputs are merged into the final synthesis stage
+
+
   > Web search is supported via an optional automatic web context stage and via an LLM tool call.
 
 - **Verified Citations**
-  - All final answers include deep-linked citations to source documents
+  - All final answers include citations (URL and source document section / sub-section reference)
 
 
 #### 📊 5. Observability & Cost Management
@@ -191,7 +193,7 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens
 
 - **Granular Cost Tracking**
-Instant transparency with per-stage token usage and dollar-cost metrics for every request
+Instant transparency with per-stage token usage and dollar-cost metrics for every turn
 
 #### 🎨 6. Postprocessing & Output Rendering
 *Transforms raw LLM output into presentation-ready responses without affecting core inference behavior.*
@@ -203,7 +205,7 @@ After inference, responses can be post-processed to deliver a richer, presentati
 ### 🌐 Embeddable Chat Widget
 **Embeddable chat** for any website with full access to pipeline configuration controls.
 
-See the **Embeddable Widget Configuration** section below for detailed implementation examples and all available options.
+See the **[Embeddable Widget Configuration](#-embeddable-chat-widget)** section below for detailed implementation examples and all available options.
 
 
 
@@ -212,10 +214,10 @@ See the **Embeddable Widget Configuration** section below for detailed implement
 
 ## 🚀 Getting Started
 
-> **LLMProvider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. 
-All supported and tested models are defined centrally in the **Model Registry**, which serves as the source of truth for provider routing, model capabilities, and cost tracking.
-
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
+
+> **LLMProvider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. The tested models are defined centrally in the **Model Registry**
+
 
 ### 📋 1. Prerequisites
 Ensure your environment meets these requirements before proceeding:
@@ -560,26 +562,19 @@ Screenshot of Inline embed vs iFrame option:
 
 ---
 
-## 🌐 Web Search (Two Paths)
+## 🌐 Web Search 
 
-The system supports web search (DuckDuckGo Instant Answer API) in two distinct ways:
+The system supports web search (DuckDuckGo Instant Answer API) in two distinct modes, **Automatic Web Context** and **LLM Tool Call**:
 
-1. **Automatic Web Context (`web_context`)**
-   - Enabled by:
-     - `backend/core/config.py`: `use_web_search` (default toggle; default is `False`)
-     - Request override: `POST /chat` payload field `use_web_search` (when provided)
+1. **Automatic Web Context**
+   - Enabled in configuration with `use_web_search`
    - Behavior:
-     - Runs as part of the chat pipeline stage **Establish Web Context**.
-     - Adds a `WEB SEARCH RESULTS:` block to the inference prompt.
-     - Web results are cited as `[web-1]`, `[web-2]`, ... and can appear in the final `Sources:` block.
-
+     - Runs as part of the chat pipeline stage **Establish Web Context**. and adds <web_search>web search results</web_search> to the inference prompt.
+     
 2. **LLM Tool Call (`web_search` tool)**
    - Enabled when tools are enabled and the model chooses to call the tool.
-   - Behavior:
-     - Returns a formatted text block of results.
-     - Tool outputs are provided to the synthesis stage as `[SOURCE: TOOL - web_search] ...`.
+   - Returns as Tool Call output to the synthesis stage as `[SOURCE: TOOL - web_search] ...`.
 
-Both paths use the same underlying DuckDuckGo Instant Answer extraction logic (see `backend/chat/web_search.py`), but they are injected into the LLM context differently.
 
 ### 🧪 2.4 Developer Mode (Optional)
 
@@ -598,6 +593,8 @@ To enable **hot-reload** (Uvicorn reload) for active development:
 ## 📚 Knowledge Base and Sample Data
 
 When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **50 Wikipedia pages**. This focus on world-renowned mountains, national parks, and trails provides a rich environment to test the RAG pipeline's accuracy.
+
+> **Note:** Sample data is created in the `document_index` collection in qDrant and uses the `openai:embed_small` embedding key (text-embedding-3-small with 1536 dimensions).
 
 ### 📄 Data Attribution
 To demonstrate multi-source RAG capabilities, this project includes a sample knowledge base derived from Wikipedia.
@@ -627,7 +624,9 @@ The system supports **domain-based collection management** where each domain is 
 
 #### **Domain-Based Configuration (Recommended)**
 
-The new approach uses a single `active_domain` setting that automatically configures both the collection name and embedding model:
+A single `active_domain` setting configures both the collection name and embedding model. This helps prevent dimension drift and ensures consistency.
+The system comes with a default configuration for the `default` domain and two additional domains: `mountains` and `oceans`. You may modify /add to the configuration in `backend/core/config.py`.
+> *Only one domain can be active at a time, and that defines the Qdrant collection and embedding model.*
 
 ```python
 # In backend/core/config.py
@@ -647,58 +646,8 @@ DOMAIN_EMBEDDING_CONFIG = {
 }
 
 # Active domain selection (single change point)
-active_domain: str = "oceans"
-```
-
-**Benefits:**
-- 🎯 **Single Change Point**: Only change `active_domain` to switch both collection and model
-- 🔗 **Automatic Linking**: Collection and embedding model are always correctly paired
-- 📏 **Dynamic Vector Size**: Automatically computed from the embedding model's dimensions
-- 🌐 **Domain-Specific**: Each domain can use different providers (OpenAI, Gemini)
-- 🛡️ **Dimension Safety**: Prevents model/collection dimension mismatches
-
-**Usage Examples:**
-```python
-# Switch to oceans domain (Gemini embeddings)
-active_domain: str = "oceans"
-# → collection_name = "document_index_gemini"
-# → embedding_model_key = "gemini:native-embed" 
-# → vector_size = 1536 (auto-derived from model registry)
-
-# Switch to mountains domain (OpenAI embeddings)
 active_domain: str = "mountains"
-# → collection_name = "document_index"
-# → embedding_model_key = "openai:embed_small"
-# → vector_size = 1536 (auto-derived from model registry)
 ```
-
-#### **Creating New Collections**
-
-When creating a new collection in the UI or via API:
-1. **Choose Domain**: Select or create a domain configuration
-2. **Model Auto-Selected**: The compatible embedding model is automatically assigned
-3. **Dimensions Set**: Vector size is derived from the model registry
-4. **Ready to Use**: Collection is immediately ready for ingestion with the correct model
-
-This tight coupling ensures that you can never accidentally use incompatible embedding models with existing collections, preventing data corruption and search failures.
-
-#### **Legacy Manual Configuration**
-
-If you prefer manual configuration, you can still manage collections directly:
-
-1.  **Open `backend/core/config.py`**.
-2.  **Create a new domain entry** in `DOMAIN_EMBEDDING_CONFIG`:
-    ```python
-    "my_domain": {
-        "collection_name": "my_custom_knowledge_base",
-        "embedding_model_key": "openai:embed_small"
-    }
-    ```
-3.  **Set the active domain**:
-    ```python
-    active_domain: str = "my_domain"
-    ```
-4.  **Restart the app**. The system will automatically detect the missing collection and create a fresh one in Qdrant.
 
 > [!TIP]
 > This approach allows you to maintain multiple "knowledge bases" on the same server. You can swap between domains at any time just by changing the `active_domain` variable.
@@ -886,227 +835,83 @@ The effective behavior is roughly:
 
 ## 🧠 Reasoning vs Non-Reasoning Models
 
-This system supports both traditional LLMs and advanced reasoning models, with different behaviors and optimizations for each type.
+## 🧠 Reasoning Models Overview
 
-### Model Categories
+The system supports both reasoning and non-reasoning models with provider-specific behaviors.
 
-#### **Non-Reasoning Models (Traditional LLMs)**
-- **Examples**: `gpt-4o-mini`, `gpt-4`, `claude-3-haiku`, `gemini-1.5-flash`
-- **Characteristics**: Fast, direct response generation
-- **Use Case**: General Q&A, quick responses, cost-effective queries
+1. **Reasoning Control**
+The `reasoning_effort` parameter from the inference stage controls reasoning level. These are mapped to provider-specific parameters OpenAI (reasoning.effort) and Gemini (thinking_level/thinking_budget) :
 
-#### **Reasoning Models (Advanced LLMs)**
-- **Examples**: `gpt-5-mini`, `o3-mini`, `o3`, `gpt-5`
-- **Characteristics**: Slower, deeper analysis, step-by-step reasoning
-- **Use Case**: Complex queries, multi-step problems, analytical tasks
+2. **Provider Differences**
+- **OpenAI**: Reasoning tokens are **hidden** from user display
+- **Gemini**: Reasoning shown as `<thought>` tags and **displayed** in frontend. Max completion tokens includes reasoning token and requires padding of "max_inference_token parameter" to account for reasoning tokens. THe padding is calculated from the configurations in the model registry.
 
-### Key Differences
-
-#### **Query Rewrite**
-- **Non-Reasoning**: Uses reasoning models for query optimization
-- **Reasoning**: **Do NOT use reasoning models for query rewrite** - they're reserved for the final response generation
-
-#### **Tool Calls**
-- **Non-Reasoning**: Standard tool execution via ChatCompletions API
-- **Reasoning**: **Uses OpenAI Responses API format** with special handling:
-  ```python
-  # Non-Reasoning (ChatCompletions):
-  choices[0].message.tool_calls = [{"function": {...}}]
-  
-  # Reasoning (Responses API):
-  output = [
-      ResponseReasoningItem(type="reasoning", ...),
-      ResponseOutputMessage(type="message", content=[
-          ResponseOutputText(...),
-          ResponseToolCall(name="get_weather", arguments={...})
-      ])
-  ]
-  ```
-
-#### **Prompt Engineering**
-- **Non-Reasoning**: Standard RAG prompt with tool encouragement
-- **Reasoning**: **Modified prompts to encourage tool usage**:
-  ```python
-  # Before: "If context insufficient, reply exactly with: I couldn't find..."
-  # After:  "If context insufficient, USE THE AVAILABLE TOOLS to gather information"
-  ```
-
-#### **Response Format**
-- **Non-Reasoning**: Direct text response with citations
-- **Reasoning**: Structured response with reasoning steps:
-  ```python
-  output = [
-      ResponseReasoningItem(type="reasoning", summary=[...]),
-      ResponseOutputMessage(type="message", content=[...])
-  ]
-  ```
-
-### Performance Considerations
-
-#### **Speed**
-- **Non-Reasoning**: 1-3 seconds typical
-- **Reasoning**: 5-15 seconds typical (due to reasoning process)
-
-#### **Cost**
-- **Non-Reasoning**: Lower cost per query
-- **Reasoning**: Higher cost but higher accuracy for complex tasks
-
-#### **Token Usage**
-- **Non-Reasoning**: Input + Output tokens
-- **Reasoning**: Input + Output + **Reasoning tokens** (additional cost for thinking process)
+3. **System Resolution**
+- **Model Registry** (`model_registry.py`): Defines capabilities, parameters, and thinking tax rules
+- **LLM Handler** (`llm_handler.py`): Resolves parameters and applies provider-specific logic
+- **Frontend** (`chat.html`): Displays `<thought>` tags for Gemini, hides OpenAI reasoning tokens
 
 ---
 
 ## 📊 Metrics and Costs
 
-### Token Accounting
-
-The system tracks and costs tokens based on provider/model reporting. Current token accounting includes:
-
-#### **Tracked Token Types**
-- **Prompt Tokens** (Input): Tokens sent to the model (user message + context)
+1. **Token Accounting**
+The system tracks and costs tokens based on provider/model usage reporting. Current token accounting includes:
+  - **Prompt Tokens** (Input): Tokens sent to the model (user message + context)
 - **Cached Tokens**: Cached prompt tokens (lower cost)
 - **Completion Tokens** (Output): Tokens in the model's response to the user
+- **Reasoning Tokens**: provided by OpenAI and calculated for Gemini.
 
-#### **Reasoning Tokens Handling**
-- **Provider Reporting**: Most providers (OpenAI, Gemini) include reasoning/internal thinking tokens as part of the completion tokens count
-- **Costing**: Reasoning tokens are billed at the same rate as regular completion tokens
-- **No Separate Tracking**: Currently, reasoning tokens are not tracked separately from completion tokens in the metrics
 
-### Token Limit Configuration
-
-#### **max_completion_tokens Considerations**
-When setting `max_completion_tokens`, consider the following for reasoning models:
-
-- **Gemini Models**: `thinking_level` affects internal reasoning token allocation
-  - `thinking_level="minimal"`: More tokens available for actual response
-  - `thinking_level="low"`: Moderate reasoning, balanced response length
-  - `thinking_level="medium"`: More reasoning, shorter responses
-  - **Recommendation**: Increase `max_completion_tokens` for higher `thinking_level` values
-
-- **OpenAI Reasoning Models**: `reasoning_effort` affects internal token usage
-  - `reasoning_effort="low"`: Minimal reasoning, maximum response tokens
-  - `reasoning_effort="medium"`: Balanced reasoning and response
-  - `reasoning_effort="high"`: Maximum reasoning, shorter responses
-  - **Recommendation**: Adjust `max_completion_tokens` based on desired reasoning vs response balance
-
-#### **Configuration Examples**
-```python
-# Gemini with minimal thinking (max response tokens)
-max_completion_tokens = 800
-thinking_level = "minimal"
-
-# Gemini with medium thinking (balance reasoning and response)
-max_completion_tokens = 1200
-thinking_level = "medium"
-
-# OpenAI with high reasoning effort
-max_completion_tokens = 1000
-reasoning_effort = "high"
-```
-
-### Cost Calculation
-
-Costs are calculated per-stage using the following formula:
-```
-Total Cost = (Prompt Tokens × Input Rate) + 
-             (Completion Tokens × Output Rate) + 
-             (Cached Tokens × Cached Rate)
-```
-
-#### **Rate Sources**
+2 **Rate Sources**
 - **Model Registry** (`backend/llm/model_registry.py`): Provider-specific pricing per model
-- **Fallback Rates**: Default rates when model-specific pricing unavailable
 - **Currency**: All costs calculated in USD
 
-#### **Stage-Based Costing**
+3 **Stage-Based Costing**
 Costs are tracked separately for each pipeline stage:
 - **Embedding**: Vector generation costs
 - **Rewrite**: Query rewrite processing
+- **ReRanking**: Document re-ranking
+- **Summary**: Context Window summary processing
 - **Inference**: Primary response generation
-- **Tools Synthesis**: Tool call planning and execution
-
-### Monitoring
-
-The system provides real-time token usage and cost tracking through:
-- **Per-Turn Metrics**: Token counts and costs for each chat turn
-- **Conversation Totals**: Cumulative usage across entire conversation
-- **Stage Breakdown**: Detailed breakdown by pipeline stage
-- **Cost Attribution**: Clear cost attribution per model and provider
-
-### Configuration
-
-#### **Model Selection**
-```python
-# Non-Reasoning (fast, cost-effective)
-inf_spec = {"model": "openai:gpt-4o-mini"}
-
-# Reasoning (complex queries)
-inf_spec = {"model": "openai:gpt-5-mini"}
-```
-
-#### **Tool Integration**
-Both model types support the same tools:
-- `get_weather` - Weather information
-- `web_search` - Web search
-- `get_nearby_airports` - Airport finder
-
-#### **Best Practices**
-
-1. **Use Non-Reasoning for**:
-   - Simple factual questions
-   - Quick lookups
-   - Cost-sensitive applications
-   - High-volume queries
-
-2. **Use Reasoning for**:
-   - Complex analytical tasks
-   - Multi-step problems
-   - Queries requiring deep reasoning
-   - When accuracy is more important than speed
-
-3. **Avoid Reasoning for**:
-   - Query rewrite stage (use non-reasoning models)
-   - Simple retrieval tasks
-   - Real-time applications requiring sub-second responses
+- **Inference with Tools**: Final response if tools are used
 
 ---
 
-## 🤖 LLM Handler Architecture
+## 🤖 LLM Handler
 
-This system features a **unified LLM handler** that provides a consistent interface for multiple AI providers through a centralized architecture.
+This system features a **unified LLM handler** that provides a consistent interface for multiple AI providers and models through a centralized architecture.
 
 ### Core Components
 
-#### **LLM Handler** (`backend/llm/llm_handler.py`)
+1. **LLM Handler** (`backend/llm/llm_handler.py`)
 - **Unified Interface**: Single entry point for all LLM calls across providers
 - **Automatic Parameter Mapping**: Handles provider-specific parameter differences
 - **Capability Filtering**: Automatically filters unsupported parameters per model
 - **Error Handling**: Structured error responses with provider-specific context
 
-#### **Model Registry** (`backend/llm/model_registry.py`)
+2. **Model Registry** (`backend/llm/model_registry.py`)
 - **Centralized Metadata**: All model configurations in one place
 - **Provider Support**: Currently supports **OpenAI** and **Gemini** APIs
 - **Extensible Design**: Easy to add new providers and models
 - **Capability Definitions**: Feature support flags per model (tools, streaming, reasoning)
 
-### Supported Providers
+### Tested Providers and Models
 
-#### **OpenAI Integration**
-- **Native API Support**: Direct integration with OpenAI's Responses API
-- **Model Coverage**: GPT-4o, GPT-4o-mini, o1, o3, reasoning models
-- **Full Feature Set**: Tools, streaming, temperature control, reasoning parameters
+- **OpenAI**: Responses API and Chat Completions API
+  - **Model Coverage**: 
+    -  **Pipeline stages**: `gpt-4o-mini`, `gpt-4o` `o3-mini`, `gpt-5-mini`
+    - **Embeddings**: `text-embedding-3-small`, `text-embedding-3-large`
 
-#### **Gemini Integration**
-- **OpenAI-Compatible API**: Uses OpenAI adapter for Gemini models
-- **Current Approach**: Standardized interface via OpenAI client library
-- **Future Support**: Architecture ready for native Gemini SDK integration
-- **Model Coverage**: Gemini 2.5 Flash, Gemini 2.5 Pro, embedding models
+- **Gemini**: OpenAI-Compatible API and Gemini SDK
+  - **Model Coverage**:
+    - **Pipeline stages**: `gemini-2.5-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-3-flash`
+    - **Embeddings**: `gemini-embedding-001`
 
 ### Key Benefits
 
 ✅ **Provider Agnostic**: Same code works across OpenAI and Gemini  
-✅ **Automatic Adaptation**: Parameter differences handled automatically  
+✅ **Parameter Adaptation**: Parameter differences handled automatically  
 ✅ **Future Proof**: Easy to extend to additional providers  
 ✅ **Type Safety**: Structured responses and error handling  
 ✅ **Performance**: Optimized routing and capability caching  
@@ -1155,16 +960,21 @@ chat-with-rag/
 │   ├── db/               # Qdrant client + vector store layer
 │   ├── embeddings/       # Embedding manager + model abstraction
 │   ├── extractor/        # HTML/MediaWiki/PDF extractors + splitters
+│   ├── llm/              # LLM handler and model registry
+│   ├── tools/            # Tool implementations (weather, web search)
 │   ├── crawler/          # URL & PDF fetch utilities
 │   └── utils/            # Shared helpers and admin scripts
 ├── frontend/             # Browser UI
-│   ├── static/           # JS/CSS assets
+│   ├── static/           # JS/CSS assets (embed-loader.js, chat-embed.js)
 │   ├── index.html        # Landing page
-│   └── chat.html         # Chat interface
+│   ├── chat.html         # Chat interface
+│   ├── chat-embed.html   # Embeddable chat widget
+│   └── chat-embed-example.html  # Integration examples
 ├── scripts/              # Maintenance + ingestion scripts
 ├── qdrant_scripts/       # Qdrant maintenance scripts
+├── prompts/              # Prompt registry (YAML-driven control)
 ├── data/                 # Seed / demo datasets
-├── images/               # Images for system use
+├── images/               # Images for documentation
 ├── logs/                 # Rotating runtime logs
 └── qdrant_storage/       # Local Qdrant data volume
 ```
@@ -1182,75 +992,6 @@ This application includes a **domain-based access control framework** that provi
 #### **Domain-Based Access Controls**
 - **API Endpoint Protection**: All `/chat` and embedding endpoints enforce domain-based access controls
 - **Embeddable Widget Security**: `chat-embed.html` can only be embedded on authorized domains via `data-domain` attribute
-- **Collection Isolation**: Each domain has isolated collections and embedding models to prevent data cross-contamination
-- **Configuration-Based**: Security enforced through `DOMAIN_EMBEDDING_CONFIG` in `backend/core/config.py`
-
-#### **Domain Configuration Example**
-```python
-# In backend/core/config.py
-DOMAIN_EMBEDDING_CONFIG = {
-    "default": {
-        "collection_name": "document_index",
-        "embedding_model_key": "openai:embed_small"
-    },
-    "oceans": {
-        "collection_name": "document_index_gemini", 
-        "embedding_model_key": "gemini:native-embed"
-    }
-}
-
-# Active domain selection
-active_domain: str = "oceans"  # Switches both collection and model
-```
-
-#### **Embeddable Widget Security**
-```html
-<!-- Only works on authorized domains -->
-<div id="chat-embed" 
-     data-domain="oceans" 
-     data-api-url="https://your-server.com">
-</div>
-```
-
-### **Additional Security Recommendations**
-
-#### **Deployment Considerations**
-When deploying beyond local/dev environments, consider these additional protections:
-
-#### **Network Layer Security**
-- **Reverse Proxy**: Use nginx/Apache with SSL termination
-- **Firewall Rules**: Restrict access to API endpoints by IP/CIDR
-- **VPN/Private Networks**: Deploy within private networks when possible
-
-#### **Authentication & Authorization**
-- **API Keys**: Implement API key authentication for external access
-- **OAuth/JWT**: Add user authentication for multi-tenant scenarios  
-- **Role-Based Access**: Different permissions for different user types
-
-#### **Rate Limiting & Abuse Prevention**
-- **Request Rate Limiting**: Per-IP and per-user rate limits
-- **Request Size Limits**: Prevent large payload attacks
-- **Captcha Integration**: For public-facing deployments
-
-#### **Monitoring & Auditing**
-- **Access Logs**: Log all API access with timestamps and user identifiers
-- **Anomaly Detection**: Monitor for unusual usage patterns
-- **Security Headers**: Implement proper CORS, CSP, and security headers
-
-#### **Data Protection**
-- **Encryption at Rest**: Encrypt database storage
-- **Encryption in Transit**: Enforce HTTPS/TLS for all communications
-- **Data Retention Policies**: Automatic cleanup of old conversation data
-
-### **Security Architecture Benefits**
-
-✅ **Domain Isolation**: Each domain operates in its own security context  
-✅ **Collection Separation**: Data cannot leak between domains  
-✅ **Widget Lockdown**: Embedded widgets only work on authorized domains  
-✅ **Configuration-Driven**: Security enforced through config, not code changes  
-✅ **Scalable**: Easy to add new domains without security reconfiguration  
-
-This section serves as the canonical overview of auth/security for the application; feature-specific docs (such as `README_CHAT_EMBED.md`) refer back here.
 
 ---
 
