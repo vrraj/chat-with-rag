@@ -106,31 +106,7 @@
       </header>
 
       <section class="section">
-        <h2>Method 1: Direct iframe (Simple)</h2>
-        <ul>
-          <li>How to render a floating "Chat with us" button.</li>
-          <li>How to open/close a popup that contains the embeddable chat iframe.</li>
-          <li>
-            How to override RAG parameters via the iframe URL, for example:
-            <code>top_k</code>, <code>max_output_tokens</code>, and
-            <code>show_processing_steps</code>.
-          </li>
-        </ul>
-
-        <p style="margin-top: 8px; font-size: 0.85rem; color: #64748b;">
-          This example uses:
-          <code>?top_k=5&amp;max_output_tokens=256&amp;show_processing_steps=true&amp;show_sources=true&amp;namespace=example-popup</code>
-          in the iframe <code>src</code>. You can change these query parameters to
-          adjust retrieval depth, output length, or whether processing steps are streamed.
-        </p>
-
-        <button id="chat-toggle-btn" type="button">
-          <span>Chat with us</span>
-        </button>
-      </section>
-
-      <section class="section">
-        <h2>Method 2: Embed Loader Script (Flexible)</h2>
+        <h2>Method 1: Embed Loader Script (Flexible)</h2>
         <ul>
           <li>Uses embed-loader.js to dynamically create the iframe.</li>
           <li>Configuration via data attributes on the script tag.</li>
@@ -162,6 +138,30 @@
                 data-width="100%"
                 data-height="100%">
         </script>
+      </section>
+
+      <section class="section">
+        <h2>Method 2: Direct iframe (Simple)</h2>
+        <ul>
+          <li>How to render a floating "Chat with us" button.</li>
+          <li>How to open/close a popup that contains the embeddable chat iframe.</li>
+          <li>
+            How to override RAG parameters via the iframe URL, for example:
+            <code>top_k</code>, <code>max_output_tokens</code>, and
+            <code>show_processing_steps</code>.
+          </li>
+        </ul>
+
+        <p style="margin-top: 8px; font-size: 0.85rem; color: #64748b;">
+          This example uses:
+          <code>?top_k=5&amp;max_output_tokens=256&amp;show_processing_steps=true&amp;show_sources=true&amp;namespace=example-popup</code>
+          in the iframe <code>src</code>. You can change these query parameters to
+          adjust retrieval depth, output length, or whether processing steps are streamed.
+        </p>
+
+        <button id="chat-toggle-btn" type="button">
+          <span>Chat with us</span>
+        </button>
       </section>
     </div>
 

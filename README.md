@@ -42,6 +42,8 @@ Unified abstraction supporting OpenAI, Gemini, and extensible to additional prov
 
 
 
+> **Auth & Security Note**  
+This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **Security & Deployment** below for details and deployment guidance.
 
 
 
@@ -91,21 +93,14 @@ This workspace is the **main entry point to the application**, combining navigat
 
 - [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
 - [Features](#-features)
-- [🚀 Getting Started](#-getting-started)
-  - [1. Prerequisites](#-1-prerequisites)
-  - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
-  - [2.1 Manual setup](#-21-manual-setup-step-by-step)
-  - [ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
-- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
-  - [Data Attribution](#-data-attribution)
-  - [Explore the Data](#-explore-the-data)
-  - [Managing Your Collections](#-managing-your-collections)
-- [Example Queries](#example-queries)
-- [Batch Ingestion](#batch-ingestion)
-- [Technical Overview](#technical-overview)
-- [Project Structure](#project-structure)
-- [License & Usage](#license--usage)
-
+  - [Advanced Chat Orchestration](#-advanced-chat-orchestration)
+  - [Prompt Registry](#-prompt-registry-yaml)
+- [Getting Started](#-getting-started)
+- [Embeddable Chat Widget](#-embeddable-chat-widget)
+- [Technical Overview](#-technical-overview)
+- [Security & Deployment](#-security--deployment)
+- [License & Usage](#-license--usage)
+--
 ## ✨ Features
 
 An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to synthesize raw documents into structured intelligence, featuring a high-fidelity ingestion engine and live observability for verifiable, context-grounded insights.
@@ -121,7 +116,7 @@ An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to 
 
 ### 🧠 Advanced Chat Orchestration
 
-Advanced Chat Orchestration is the control plane of the system — it governs which models run, with which prompts, context, tools, LLM providers, and output formats for every request.
+Advanced Chat Orchestration is the system’s control plane for intelligent retrieval and response generation. It coordinates pipeline execution, prompt and model selection, context and memory handling, retrieval and tool augmentation, observability, and output rendering into a single deterministic, observable flow—making complex multi-stage LLM behavior explicit, configurable, and testable.
 
 #### 🔹 1. Pipeline Control & Execution Flow
 *Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
@@ -146,7 +141,7 @@ Advanced Chat Orchestration is the control plane of the system — it governs wh
   >**Provider-specific differences are normalized so the pipeline remains provider-agnostic.**
 
 - **Model Registry Centralization**  
-  All model definitions are centralized in a registry that abstracts provider- and model-specific nuances (capabilities, pricing, parameters). These definitions are consumed uniformly by the LLM handler and the application to drive routing, parameter normalization, validation, and cost tracking.
+  Models are selected via stable **registry keys** (e.g. `openai:fast`, `gemini:embed`) that abstract provider and model differences. The registry is the single source of truth for **capabilities, pricing, parameter semantics, and normalization**, enabling per-stage provider mixing, consistent routing, validation, and cost tracking without application changes.
 
 - **Prompt Registry (YAML-Driven Control)**  
   A centralized prompt control layer that decouples prompts from code, supports default system and user prompts, with  domain-specific augmentation. Injects application-derived context dynamically at runtime. 
@@ -161,10 +156,7 @@ Long-running conversations remain coherent and performant without exceeding cont
 
 
 #### ✏️ 3. Query Intelligence & Rewrite
-*Refines user intent before retrieval to improve recall, precision, and downstream reasoning quality.*
-
-Before retrieval, user queries may be expanded or clarified by a rewrite stage that improves recall and precision. Rewrite behavior is confidence-gated, ensuring rewritten queries only replace the original when confidence exceeds a threshold. The rewrite stage can draw from recent turns verbatim, summarized history, or be disabled entirely, allowing precise control over how user intent is refined.
->Rewrite prompts are configurable via the prompt registry.
+Improves retrieval accuracy by selectively refining user intent before search. Rewrites are confidence-gated, context-aware (verbatim turns or summaries), and fully configurable or disable-able per request.
 
 
 #### 🔍 4. Retrieval, Inference & Tool Augmentation
@@ -216,11 +208,12 @@ See the **Embeddable Widget Configuration** section below for detailed implement
 
 
 
-
+---
 
 ## 🚀 Getting Started
 
-> **Provider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. All supported and tested models are defined centrally in the **Model Registry**, which serves as the source of truth for provider routing, model capabilities, and cost tracking.
+> **LLMProvider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. 
+All supported and tested models are defined centrally in the **Model Registry**, which serves as the source of truth for provider routing, model capabilities, and cost tracking.
 
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
 
@@ -309,33 +302,18 @@ This application supports **multiple AI providers** with different capabilities:
 | **OpenAI** | ✅ Default provider | Standard models, reasoning models, native API | OpenAI Platform account |
 | **Gemini** | ✅ Optional provider | Thinking models, OpenAI-compatible API | Google AI Platform account |
 
-> **Note**: You can use **either** provider or **both** for different pipeline stages.
+> **Note**: You can use **either** provider or mix **the two** for different pipeline stages.
 
-### **Key Features by Provider:**
-
-#### **OpenAI Models**
-- **Standard Models**: gpt-4o, gpt-4o-mini
-- **Reasoning Models**: o1-mini, o3-mini
-- **Embeddings**: text-embedding-3-small, text-embedding-3-large
-- **Query Rewrite**: gpt-4o-mini (recommended for optimal performance)
-
-#### **Gemini Models**
-- **Standard Models**: gemini-2.5-flash-lite, gemini-2.5-pro
-- **Thinking Models**: gemini-2.5-flash-lite (thinking_budget), gemini-2.5-pro (thinking_level)
-- **Embeddings**: gemini-embedding-001
-
-### **Configuration Options:**
-- **OpenAI-only**: Use all features with default setup
-- **Gemini-only**: Requires embedding model change (see 2.1.4)
-- **Mixed**: Use different providers for different stages
+The following models are available for use in the model registry:
+**OpenAI**: gpt-4o, gpt-4o-mini, o1-mini, o3-mini, text-embedding-3-small/large
+**Gemini**: gemini-2.5-flash-lite, gemini-2.5-pro, gemini-embedding-001
 
 #### 2.1.4 Configure API Keys & Costs
 
-Choose your provider(s) and set up appropriate API keys:
+Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
+>The setup instructions in this section uses OpenAI for reference. You may follow the same steps for Gemini. 
 
-##### Option A: OpenAI (Recommended for Getting Started)
-> [!IMPORTANT]
-> Required for **default configuration** and sample data testing.
+##### Option A: OpenAI (Getting Started)
 
 | Recommendation | Action | Rationale |
 | :--- | :--- | :--- |
@@ -343,9 +321,8 @@ Choose your provider(s) and set up appropriate API keys:
 | **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
 | **Alerts** | Set a 50% notification. | Provides proactive cost control. |
 
-##### Option B: Gemini (Alternative Provider)
-> [!IMPORTANT]
-> Optional alternative to OpenAI. Requires configuration changes for full compatibility.
+##### Option B: Gemini 
+
 
 | Recommendation | Action | Rationale |
 | :--- | :--- | :--- |
@@ -356,78 +333,28 @@ Choose your provider(s) and set up appropriate API keys:
 > **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
 
 ##### Option C: Both Providers (Advanced)
-> Use different providers for different pipeline stages:
-> - OpenAI for embeddings (default sample data compatibility)
-> - Gemini for inference models (thinking capabilities)
+Use different providers for different pipeline stages via UI or API
+> Sample data collection uses OpenAI embeddings (text-embedding-3-small) with 1536 dimensions
 
-### 2.1.6 LLM Providers, Models, and Endpoints
+### 2.1.6 LLM Providers, Models, and Endpoints (Overview)
 
-The application uses a centralized **model registry** (`backend/llm/model_registry.py`) and **LLM handler** (`backend/llm/llm_handler.py`) to route requests to the correct provider, model, and API surface. You typically configure models via registry keys (e.g. `openai:fast`, `gemini:fast`, `gemini:embed`).
+The system uses a centralized **Model Registry** to define and manage all supported LLM providers, models, and API surfaces. The registry serves as the **single source of truth** for provider routing, model capabilities, and cost tracking, and is consumed uniformly by the application and LLM handler.
 
-#### OpenAI Provider
+Currently the system supports these LLM *endpoints** :
 
-Routed through the native OpenAI Python client using the **Responses API**:
+- **Open AI:** 
+  - chat-completions
+  - responses API
+  - embeddings
 
-- **Chat / Completions**
-  - Endpoint: `responses.create` (internally `_openai_call` in `LLMHandler`).
-  - Example registry profiles:
-    - `openai:fast` → `gpt-4o-mini` (chat/inference, tools, streaming).
-    - `openai:best` → `gpt-4o` (higher-quality chat/inference).
-    - `openai:reasoning` → `o3-mini` (reasoning tasks when enabled).
+- **Gemini:**
+  - chat-completions (OpenAI compatible adapter)
+  - gemini-sdk
+  - embeddings
 
-- **Embeddings**
-  - Endpoint: `client.embeddings.create(model=..., input=...)`.
-  - Example registry profiles:
-    - `openai:embed_small` → `text-embedding-3-small`.
-    - `openai:embed_large` → `text-embedding-3-large`.
 
-#### Gemini Provider (OpenAI-Compatible Adapter)
 
-Routed through an OpenAI-compatible Gemini endpoint (e.g. `GEMINI_OPENAI_BASE_URL`), but still surfaced via OpenAI-style clients in `LLMHandler`.
-
-- **Chat / Completions**
-  - Endpoint: `chat.completions.create` on the Gemini adapter client.
-  - Registry profiles:
-    - `gemini:fast` → `models/gemini-2.5-flash-lite`, endpoint=`"chat_completions"`.
-      - Capabilities: tools, streaming, temperature, top_p, etc.
-
-- **Embeddings (Adapter Path)**
-  - Endpoint: `embeddings.create(model=..., input=..., dimensions=...)` on the Gemini adapter client.
-  - Registry profiles:
-    - `gemini:embed` → `gemini-embedding-001`, endpoint=`"embeddings"`.
-      - Capabilities: `dimensions=1536`, `normalize_embedding=True`.
-  - `LLMHandler` wraps this in `_gemini_embedding_call`, adds a usage shim when missing, and can optionally L2-normalize vectors based on config.
-
-#### Gemini Provider (Native SDK)
-
-For some experimental and advanced use cases, the app can talk directly to Gemini via the native `google-genai` SDK, using a **separate endpoint type**.
-
-- **Chat / Generative Content**
-  - Endpoint: `client.models.generate_content(...)` wrapped by `_gemini_sdk_call` and `_GeminiSDKResponsesWrapper`.
-  - Exposes a Responses-like surface with `output_text`, `output`, and normalized `usage`.
-
-- **Embeddings (Native SDK Path)**
-  - Endpoint: `client.models.embed_content(model=..., contents=..., config=EmbedContentConfig(...))`.
-  - Registry profile:
-    - `gemini:native-embed` → `gemini-embedding-001`, endpoint=`"gemini_sdk"`.
-      - Capabilities:
-        - `dimensions`: 1536
-        - `task_type`: `RETRIEVAL_DOCUMENT`
-        - `output_dimensionality`: 1536
-        - `normalize_embedding`: True
-  - `LLMHandler._gemini_native_embedding_call` uses these capabilities to build `EmbedContentConfig` and returns an OpenAI-style embeddings response (`data[].embedding`, `usage`).
-
-#### Model Registry as Source of Truth
-
-All of the above profiles live in `backend/llm/model_registry.py` and are referenced from config via stable keys (e.g. `embedding_model_key`, `rewrite_model_key`, `inference_model_key`). The registry defines, for each key:
-
-- `provider`: `"openai"` or `"gemini"`.
-- `model`: provider-native model id (`gpt-4o-mini`, `models/gemini-2.5-flash-lite`, `gemini-embedding-001`, etc.).
-- `endpoint`: which code path `LLMHandler` should use (`"responses"`, `"chat_completions"`, `"embeddings"`, or `"gemini_sdk"`).
-- `pricing`: input/output token rates used for per-stage cost calculation.
-- `capabilities`: feature flags (tools, streaming, temperature, reasoning_effort, dimensions, normalize_embedding, etc.).
-
-When you change a registry profile or pick a different key in `backend/core/config.py`, the LLM handler and chat manager automatically route to the correct provider, model, and endpoint while keeping cost accounting and parameter handling consistent.
+> Detailed provider behavior, endpoint mappings, and capability flags are documented in **TECHNICAL_OVERVIEW.md** and the model registry itself.
 
 #### 2.1.5 Set up local environment variables
 
@@ -565,81 +492,49 @@ To log the full resolved prompt/template for debugging, set:
 
 - `PROMPT_REGISTRY_LOG_FULL=1`
 
----
-
----
-
-> **Auth & Security Note**
-
-This application includes a **domain-based access control framework** with built-in security for API endpoints and embedded widgets. Key features include domain isolation, collection separation, widget lockdown, and configuration-driven security. See the **Security & Deployment** section below for comprehensive implementation details and additional deployment recommendations.
-
----
 
 ---
 
 ## 🌐 Embeddable Chat Widget
 
-Embeddable chat for any website with comprehensive configuration options.
+A lightweight, secure widget that embeds the **full RAG pipeline** into any website.
 
-### **Basic Integration**
+It exposes the same multi-stage orchestration used by the main app—**retrieval, reranking, context management, tool calling, and post-processing**—while staying easy to deploy and easy to tune.
+> Supports application domain isolation for prompt selection.
+
+### **How you configure it**
+You can configure the widget via **URL query parameters** (direct iframe) or **HTML `data-*` attributes** (embed loader). Supports full parameter API contract and includes `top_k`, `score_threshold`, 'inference_model', `max_output_tokens`, `show_processing_steps`, `show_sources` etc
+
+Screenshot of Inline embed vs iFrame option:
+
+<p align="center">
+  <a href="images/chat-embedding-options.png">
+    <img
+      src="images/chat-embedding-options.png"
+      style="max-width: 100%; height: auto;"
+      alt="Chat embedding options iframe and inline page"
+    />
+  </a>
+</p>
+
+*Embeddable chat widget options (inline page or iFrame ).*
+
+### **Sample Configurations**
+
+#### **Simple Chat Widget (Direct iframe)**
+```html
+<iframe 
+  src="https://your-server.com/chat-embed.html?top_k=5&show_citations=true&namespace=simple-chat"
+  width="100%" 
+  height="400px"
+  style="border: 0; border-radius: 8px;"
+  title="Embedded Chat">
+</iframe>
+```
+
+#### **Advanced Configuration (Embed Loader Script)**
 ```html
 <!-- 1. Add target container -->
-<div id="support-chat"></div>
-
-<!-- 2. Add embed loader script -->
-<script src="https://your-server.com/static/embed-loader.js"
-        data-target="#support-chat"
-        data-top_k="8"
-        data-max_output_tokens="256"
-        data-show_processing_steps="true"
-        data-show_citations="true"
-        data-temperature="0.4"
-        data-namespace="docs-help">
-</script>
-```
-
-### **How It Works**
-The embed loader automatically creates an iframe pointing to:
-```
-/chat-embed.html?top_k=8&temperature=0.4&namespace=docs-help
-```
-
-### **Configurable via Data Attributes**
-- **`data-target`** - CSS selector for container (default: `#embed-chat-root`)
-- **`data-top_k`** - Retrieval configuration (number of documents to retrieve)
-- **`data-temperature`** - Response creativity control (0.0-1.0)
-- **`data-namespace`** - Custom knowledge base isolation
-- **`data-show_processing_steps`** - Enable streaming visualization of pipeline stages
-- **`data-show_citations`** - Source citation display toggle
-- **`data-width`** - Iframe width (default: `100%`)
-- **`data-height`** - Iframe height (default: `400px`)
-
-### **Advanced Controls**
-Full access to all pipeline tuning parameters:
-- **Rewrite context configuration** (tail turns, summary turns, confidence threshold)
-- **Inference context management** (history chunking, conversation limits)
-- **Model selection per stage** (rewrite, rerank, inference, summarization)
-- **Retrieval parameters** (top_k, distance thresholds, filters)
-
-### **Features**
-- **Easy integration** - Single script tag deployment
-- **Responsive iframe design** with isolated styling
-- **Real-time streaming** support for processing visualization
-- **Domain-based security** - Widget only works on authorized domains
-
-### **Example Configurations**
-
-#### **Simple Chat Widget**
-```html
-<div id="chat-embed" 
-     data-api-url="https://your-server.com"
-     data-top_k="5"
-     data-show_citations="true">
-</div>
-```
-
-#### **Advanced Configuration**
-```html
 <div id="chat-embed" 
      data-api-url="https://your-server.com"
      data-model_key="openai:gpt-4o-mini"
@@ -649,6 +544,18 @@ Full access to all pipeline tuning parameters:
      data-show_citations="true"
      data-namespace="oceans">
 </div>
+
+<!-- 2. Add embed loader script (REQUIRED!) -->
+<script src="https://your-server.com/static/embed-loader.js"
+        data-target="#chat-embed"
+        data-api-url="https://your-server.com"
+        data-model_key="openai:gpt-4o-mini"
+        data-temperature="0.7"
+        data-top_k="10"
+        data-show_processing_steps="true"
+        data-show_citations="true"
+        data-namespace="oceans">
+</script>
 ```
 
 ---
