@@ -2,7 +2,7 @@
 
 from typing import Any, ClassVar, Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -115,12 +115,18 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 1) Core API & frontend exposure
     # -------------------------------------------------------------------------
-    openai_api_key: str
+    openai_api_key: Optional[str] = None
     openai_api_base: str = "https://api.openai.com/v1"  # for future use
-    gemini_api_key: str
+    gemini_api_key: Optional[str] = None
     gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta/openai/"  # for future use
 
     frontend: FrontendConfig = FrontendConfig()  # Configuration for frontend forms and document indexing (HTML/PDF/MediaWiki)
+
+    @model_validator(mode='after')
+    def validate_at_least_one_api_key(self):
+        if not self.openai_api_key and not self.gemini_api_key:
+            raise ValueError("At least one API key (OPENAI_API_KEY or GEMINI_API_KEY) must be provided")
+        return self
 
     # -------------------------------------------------------------------------
     # 2) Vector search & retrieval (Qdrant)
