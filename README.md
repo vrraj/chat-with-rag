@@ -357,7 +357,7 @@ Currently the system supports these LLM *endpoints** :
 
 
 
-> Detailed provider behavior, endpoint mappings, and capability flags are documented in **TECHNICAL_OVERVIEW.md** and the model registry itself.
+> Detailed provider behavior, endpoint mappings, and capability flags are documented in **[docs/technical-overview.md](docs/technical-overview.md)** and the model registry itself.
 
 #### 2.1.5 Set up local environment variables
 
@@ -446,11 +446,11 @@ These commands are the recommended way to run and shut down the system locally.
 
 For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
 - the `Makefile` in the project root
-- **TECHNICAL_OVERVIEW.md**
+- **[docs/technical-overview.md](docs/technical-overview.md)**
 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter contract, see:
 
-👉 **[README_CHAT_API.md](README_CHAT_API.md)**
+👉 **[docs/api.md](docs/api.md)**
 
 ---
 
@@ -591,7 +591,7 @@ To demonstrate multi-source RAG capabilities, this project includes a sample kno
 * **Source:** 55 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
 * **Integrity:** Source URLs and author metadata are preserved within the vector payloads to enable **verified citations**.
 * **License:** Distributed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-* **Full Credits:** Detailed source links and compliance information can be found in [ATTRIBUTIONS.md](./ATTRIBUTIONS.md).
+* **Full Credits:** Detailed source links and compliance information can be found in [docs/attributions.md](docs/attributions.md).
 
 ### 🔍 Explore the Data
 
@@ -725,7 +725,7 @@ Tools Used: get_weather
 
 ## 📦 Batch Ingestion
 
-> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **TECHNICAL_OVERVIEW.md** for the recommended re-ingestion workflow.
+> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
 
 ### 📊 Embedding Provider Limits
 
@@ -925,7 +925,7 @@ response = llm_handler.create(
 
 For comprehensive documentation on the LLM handler architecture, provider-specific features, model compatibility, and extension guidelines, see:
 
-👉 **[README_LLM_HANDLER.md](README_LLM_HANDLER.md)**
+👉 **[docs/llm-handler.md](docs/llm-handler.md)**
 
 ---
 
@@ -933,7 +933,7 @@ For comprehensive documentation on the LLM handler architecture, provider-specif
 
 Technical details about the system architecture, pipelines, design decisions, and engineering approach are available here:
 
-👉 **[TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md)**
+👉 **[docs/technical-overview.md](docs/technical-overview.md)**
 
 This overview covers module structure, extraction pipeline, embedding flow, Qdrant indexing, batch ingestion (local PDFs + URLs with optional cost estimation), chat orchestration, SSE streaming, and frontend–backend integration.
 
