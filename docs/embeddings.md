@@ -46,7 +46,7 @@ The intent is to allow a host site to preconfigure behavior (retrieval, rewrite,
   - Helper that host sites can load with a `<script>` tag.
   - Automatically injects an `<iframe>` pointing at `chat-embed.html` with the configured query parameters.
 
-Backend files are **not modified** and are documented separately in `README_CHAT_API.md` and `TECHNICAL_OVERVIEW.md`.
+Backend files are **not modified** and are documented separately in `README_CHAT_API.md` and `technical-overview.md`.
 
 ---
 

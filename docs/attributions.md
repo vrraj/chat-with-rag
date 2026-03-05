@@ -16,4 +16,4 @@ In accordance with the **Share-Alike (SA)** provision of the CC BY-SA 4.0 licens
 3.  **Disclaimer:** This project is an independent educational tool and is not affiliated with, sponsored by, or endorsed by the Wikimedia Foundation.
 
 ---
-*For questions regarding the data processing pipeline, please refer to the [Technical Overview](./TECHNICAL_OVERVIEW.md).*
+*For questions regarding the data processing pipeline, please refer to the [Technical Overview](./technical-overview.md).*

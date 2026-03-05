@@ -450,7 +450,7 @@ For additional Make targets (logs, reset, reseed, maintenance utilities), refer 
 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter contract, see:
 
-👉 **[docs/api.md](docs/api.md)**
+👉 **[docs/api-reference.md](docs/api-reference.md)**
 
 ---
 

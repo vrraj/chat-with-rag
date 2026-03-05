@@ -1056,7 +1056,7 @@ At a high level, the repository is organized into the following areas:
   - `docker-compose.yml` – orchestrates the Webapp and Qdrant containers
   - `requirements.txt` – Python dependencies
   - `Makefile` – convenience targets for running, seeding, and tooling
-  - `README.md`, `TECHNICAL_OVERVIEW.md`, `SSE-stream.md`, `ATTRIBUTIONS.md`
+  - `README.md`, `technical-overview.md`, `server-sent-events.md`, `attributions.md`
   - `.env`, `.env.example`, `.python-version`, `.gitignore`
 
 - **backend/** – core server-side application
