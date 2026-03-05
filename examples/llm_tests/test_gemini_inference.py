@@ -33,21 +33,14 @@ try:
 except Exception:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
 
-# Optional: import the shared LLM handler so we can test the Gemini path via the same abstraction
-llm_handler = None
+# Optional: import the shared LLM client so we can test the Gemini path via the same abstraction
+llm_client_available = True
 _llm_import_error: Optional[BaseException] = None
 try:  # pragma: no cover
-    from llm.llm_handler import llm_handler as _handler
-    llm_handler = _handler
+    from backend.llm.llm_client import generate
 except Exception as e:  # pragma: no cover
     _llm_import_error = e
-    try:
-        from backend.llm.llm_handler import llm_handler as _handler  # type: ignore[assignment]
-        llm_handler = _handler
-        _llm_import_error = None
-    except Exception as e2:
-        _llm_import_error = e2
-        llm_handler = None  # type: ignore[assignment]
+    llm_client_available = False
 
 
 def get_prompt_from_argv() -> str:
@@ -123,36 +116,31 @@ def main() -> None:
             if val is not None:
                 print(f"{field}: {val}")
 
-    # --- Second test: call Gemini via shared llm_handler, if available ---
-    if llm_handler is not None:
+    # --- Second test: call Gemini via shared llm_client, if available ---
+    if llm_client_available:
         print("\n==============================")
-        print("Now calling Gemini via llm_handler.create(...) (provider='gemini')")
+        print("Now calling Gemini via llm_client.generate (model_key)")
         print("==============================\n")
 
         try:
-            # We treat model_name as the adapter-visible model identifier here as well.
-            handler_resp = llm_handler.create(
-                provider="gemini",
-                model=model_name,
+            # Use llm_client.generate with normalized response
+            client_resp = generate(
+                model_key="gemini:openai-2.5-flash-lite",
                 input=prompt,
                 stream=False,
             )
         except Exception as e:
-            print(f"[ERROR] llm_handler.create (provider='gemini') failed: {e}")
+            print(f"[ERROR] llm_client.generate failed: {e}")
         else:
-            # Try to extract text similarly to how chat_manager would (output_text or best-effort).
-            text2: str = ""
-            try:
-                text2 = getattr(handler_resp, "output_text", "") or ""
-            except Exception:
-                text2 = ""
+            # Extract text from normalized response
+            text2: str = client_resp.get("text", "") or ""
 
-            print("=== Gemini Response via llm_handler (provider='gemini') ===")
+            print("=== Gemini Response via llm_client (normalized) ===")
             print(text2 or "<no text returned>")
     else:
-        print("\n[INFO] llm_handler is not importable; skipping handler-based Gemini test.")
+        print("\n[INFO] llm_client is not importable; skipping client-based Gemini test.")
         if _llm_import_error is not None:
-            print(f"[DEBUG] Last llm_handler import error: {_llm_import_error}")
+            print(f"[DEBUG] Last llm_client import error: {_llm_import_error}")
 
 
 if __name__ == "__main__":

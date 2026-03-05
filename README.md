@@ -774,7 +774,7 @@ chat-with-rag/
 To reduce latency and API overhead, the ingestion pipeline batches **multiple chunks** into a single embeddings call wherever possible:
 
 - **Pre-chunked ingestion** (`/mediawiki/url`, `/index`, `frontend/process-batch-docs.html`)
-  - Uses `EmbeddingsManager.index_chunks`, which groups chunks into batches and calls `llm_handler.embeddings.create` once per batch.
+  - Uses `EmbeddingsManager.index_chunks`, which groups chunks into batches and calls `llm_client.embed` once per batch.
 - **Raw document ingestion** (HTML/PDF via `/index` and `/pdf`)
   - Uses `EmbeddingsManager.process_document`, which also batches chunk texts before calling the embedding provider.
 
@@ -837,8 +837,8 @@ The `reasoning_effort` parameter from the inference stage controls reasoning lev
 - **Gemini**: Reasoning shown as `<thought>` tags and **displayed** in frontend. Max completion tokens includes reasoning token and requires padding of "max_inference_token parameter" to account for reasoning tokens. THe padding is calculated from the configurations in the model registry.
 
 3. **System Resolution**
-- **Model Registry** (`model_registry.py`): Defines capabilities, parameters, and thinking tax rules
-- **LLM Handler** (`llm_handler.py`): Resolves parameters and applies provider-specific logic
+- **LLM Adapter** (`llm-adapter` package): Defines capabilities, parameters, and tool handling
+- **LLM Client** (`llm_client.py`): Clean interface to llm-adapter package
 - **Frontend** (`chat.html`): Displays `<thought>` tags for Gemini, hides OpenAI reasoning tokens
 
 ---
@@ -854,7 +854,7 @@ The system tracks and costs tokens based on provider/model usage reporting. Curr
 
 
 2 **Rate Sources**
-- **Model Registry** (`backend/llm/model_registry.py`): Provider-specific pricing per model
+- **Model Registry** (`llm-adapter` package): Provider-specific pricing per model
 - **Currency**: All costs calculated in USD
 
 3 **Stage-Based Costing**
@@ -868,23 +868,24 @@ Costs are tracked separately for each pipeline stage:
 
 ---
 
-## 🤖 LLM Handler
+## 🤖 LLM Integration
 
-This system features a **unified LLM handler** that provides a consistent interface for multiple AI providers and models through a centralized architecture.
+This system features a **unified LLM client** that provides a consistent interface for multiple AI providers and models through the llm-adapter package.
 
 ### Core Components
 
-1. **LLM Handler** (`backend/llm/llm_handler.py`)
+1. **LLM Client** (`backend/llm/llm_client.py`)
 - **Unified Interface**: Single entry point for all LLM calls across providers
 - **Automatic Parameter Mapping**: Handles provider-specific parameter differences
 - **Capability Filtering**: Automatically filters unsupported parameters per model
 - **Error Handling**: Structured error responses with provider-specific context
 
-2. **Model Registry** (`backend/llm/model_registry.py`)
+2. **LLM Adapter** (`llm-adapter` package)
 - **Centralized Metadata**: All model configurations in one place
 - **Provider Support**: Currently supports **OpenAI** and **Gemini** APIs
 - **Extensible Design**: Easy to add new providers and models
 - **Capability Definitions**: Feature support flags per model (tools, streaming, reasoning)
+- **Tool Sanitization**: Automatic tool format conversion for all providers
 
 ### Tested Providers and Models
 
@@ -909,23 +910,16 @@ This system features a **unified LLM handler** that provides a consistent interf
 ### Usage Example
 
 ```python
-from backend.llm.llm_handler import llm_handler
+from backend.llm.llm_client import generate
 
 # Works across providers with same interface
-response = llm_handler.create(
-    provider="openai",     # or "gemini"
-    model="gpt-4o-mini",   # or "models/gemini-2.5-flash-lite"
+response = generate(
+    model_key="openai:gpt-4o-mini",     # or "gemini:openai-2.5-flash-lite"
     input="Explain quantum computing",
     temperature=0.7,
     max_output_tokens=1000
 )
 ```
-
-### Detailed Documentation
-
-For comprehensive documentation on the LLM handler architecture, provider-specific features, model compatibility, and extension guidelines, see:
-
-👉 **[docs/llm-handler.md](docs/llm-handler.md)**
 
 ---
 

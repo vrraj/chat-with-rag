@@ -10,37 +10,25 @@ def main() -> int:
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
 
-    # Import module so we can monkeypatch its llm_handler binding.
+    # Import module so we can monkeypatch its llm_client binding.
     import backend.chat.chunked_history_manager as chm
 
-    # --- Fake LLM handler (no API calls) ---
-    class _FakeResponses:
-        def create(self, *, model: str, input: Any, stream: bool = False, **kwargs: Any):
-            # Return an object that build_llm_result_from_response can consume via our fake.
-            return {"_fake": True, "model": model, "input": input, "kwargs": kwargs}
-
-    class _FakeLLMHandler:
-        def __init__(self):
-            self.responses = _FakeResponses()
-
-        def build_llm_result_from_response(self, resp: Any, *, provider: str = "openai"):
+    # --- Fake LLM client (no API calls) ---
+    class _FakeLLMClient:
+        def generate(self, *, model_key: str, input: str, **kwargs):
             # Produce deterministic summary text.
             # Include the number of messages in the recent chunk to prove rollover was called.
             try:
-                inp = (resp or {}).get("input") or []
-                # count user+assistant lines in user payload (best-effort)
-                user_msg = ""
-                for m in inp:
-                    if isinstance(m, dict) and m.get("role") == "user":
-                        user_msg = str(m.get("content") or "")
-                        break
-                msg_count = user_msg.count("\n") + 1 if user_msg.strip() else 0
+                if isinstance(input, str):
+                    msg_count = input.count("\n") + 1 if input.strip() else 0
+                else:
+                    msg_count = 0
             except Exception:
                 msg_count = 0
             return {"text": f"UPDATED_SUMMARY(msg_lines={msg_count})", "usage": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0}}
 
-    # Patch the module-level llm_handler used by ChunkedHistoryManager.
-    chm.llm_handler = _FakeLLMHandler()
+    # Patch the module-level llm_client used by ChunkedHistoryManager.
+    chm.llm_client = _FakeLLMClient()
 
     # --- Minimal settings stub ---
     class _Settings:

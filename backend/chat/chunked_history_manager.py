@@ -8,7 +8,7 @@ with accumulated summaries.
 
 import logging
 from typing import List, Dict, Any, Optional
-from backend.llm.llm_handler import llm_handler, LLMError
+from backend.llm.llm_client import generate, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -174,24 +174,21 @@ class ChunkedHistoryManager:
             
             logger.debug(f"[CHUNKED] Updating summary with {len(new_conversation)} messages for session {self.session_id}")
 
-            # NOTE: llm_handler is an LLMHandler instance (not callable).
-            # Use the OpenAI Responses API surface (and adapter-compatible wrappers)
-            # for a consistent non-streaming call shape.
-            resp = llm_handler.responses.create(
-                model=model,
+            # Use the generate function for consistent normalized response
+            resp = generate(
+                model_key=model,
                 input=[
                     {"role": "system", "content": sum_spec.system_instruction},
                     {"role": "user", "content": payload},
                 ],
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-                stream=False,
             )
 
             updated_summary = ""
             try:
-                llm_result = llm_handler.build_llm_result_from_response(resp)
-                updated_summary = str(llm_result.get("text") or "").strip()
+                # generate() returns normalized response
+                updated_summary = str(resp.get("text") or "").strip()
             except Exception:
                 updated_summary = ""
             

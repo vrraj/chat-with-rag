@@ -37,7 +37,7 @@ from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
-from backend.llm.llm_handler import llm_handler
+from backend.llm.llm_client import generate, embed, get_pricing_for_model
 
 
 class ClearChatRequest(BaseModel):
@@ -82,7 +82,7 @@ def _get_embedding_rate_per_mm_tokens() -> float:
         if not embedding_key:
             return default_rate
 
-        pricing = llm_handler.get_pricing_for_model_key(embedding_key)
+        pricing = get_pricing_for_model(model_key=embedding_key)
         if pricing is None:
             return default_rate
 

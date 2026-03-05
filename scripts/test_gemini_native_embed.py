@@ -10,7 +10,7 @@ if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 try:
-    from llm.llm_handler import LLMHandler
+    from backend.llm.llm_client import embed
     from core.config import settings
 except ImportError as e:
     print(f"Import error: {e}")
@@ -20,8 +20,7 @@ except ImportError as e:
 def test_gemini_native_embed():
     """Test gemini:native-embed and inspect response for usage."""
     
-    # Initialize LLM handler
-    llm_handler = LLMHandler()
+    # Test using llm_client.embed
     
     # Test texts
     test_inputs = [
@@ -38,10 +37,10 @@ def test_gemini_native_embed():
         print("-" * 30)
         
         try:
-            # Call the native embedding method directly
-            resp = llm_handler._gemini_native_embedding_call(
-                model="gemini:native-embed",
-                input=test_input
+            # Use llm_client.embed for native embedding
+            resp = embed(
+                model_key="gemini:native-embed",
+                texts=test_input
             )
             
             # Inspect response structure

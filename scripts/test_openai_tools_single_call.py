@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Single-call OpenAI Responses+tools test.
 
-This script sends ONE OpenAI Responses API-style request via the shared
-`llm_handler` facade, including:
+This script sends ONE OpenAI Responses API-style request via the llm-adapter package, including:
 
 - your natural-language question as the input
 - the full list of registered tools from `backend.tools.list_tools()`
@@ -39,7 +38,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from backend.llm.llm_handler import llm_handler  # type: ignore
+from backend.llm.llm_client import generate
 from backend.tools import list_tools  # type: ignore
 
 
@@ -124,26 +123,22 @@ def main() -> int:
         desc = t.get("description") or t.get("function", {}).get("description")
         print(f"  - {name}: {desc}")
 
-    print("\nCalling OpenAI via llm_handler.responses.create(...) in ONE request...\n")
+    print("\nCalling OpenAI via llm_client.generate(...) in ONE request...\n")
 
-    # NOTE: We intentionally go through the Responses facade for OpenAI, so this
-    # uses the Responses API rather than Chat Completions. The `tools` payload is
-    # passed through as-is in the request body.
-    resp = llm_handler.responses.create(
-        model=model,
+    # Use llm_client.generate for normalized response
+    resp = generate(
+        model_key=model,
         input=input_payload,
         tools=tools,
         max_output_tokens=int(args.max_output_tokens),
         temperature=float(args.temperature),
     )
 
-    # Use LLMHandler's normalization helper to extract text, usage, and tool calls.
-    llm_result = llm_handler.build_llm_result_from_response(resp, provider="openai")
-
-    text = str(llm_result.get("text") or "")
-    finish_reason = llm_result.get("finish_reason")
-    usage = llm_result.get("usage") or {}
-    tool_calls = llm_result.get("tool_calls") or []
+    # generate() already returns normalized response
+    text = str(resp.get("text") or "")
+    finish_reason = resp.get("finish_reason")
+    usage = resp.get("usage") or {}
+    tool_calls = resp.get("tool_calls") or []
 
     print("================ MODEL ANSWER ================\n")
     print(text)

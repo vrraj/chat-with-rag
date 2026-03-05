@@ -7,7 +7,7 @@ def resolve_embedding_spec(settings_obj: Any = settings) -> Dict[str, Any]:
     """Return embedding spec from model registry using embedding_model_key.
 
     Uses embedding_model_key to resolve provider, model, and dimensions
-    from the centralized model registry.
+    from the pip-installable llm-adapter model registry.
 
     Output shape:
         {
@@ -16,10 +16,10 @@ def resolve_embedding_spec(settings_obj: Any = settings) -> Dict[str, Any]:
           "dimensions": int | None,
         }
     """
-    from backend.llm.model_registry import get_model_info
+    from backend.llm.llm_client import get_model_info
     
     model_key = getattr(settings_obj, "embedding_model_key", "openai:embed_small")
-    model_info = get_model_info(model_key)
+    model_info = get_model_info(model_key=model_key)
     
     return {
         "provider": model_info.provider,

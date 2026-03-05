@@ -13,7 +13,7 @@ sys.path.insert(0, project_root)
 
 
 
-from backend.llm.llm_handler import LLMHandler
+from backend.llm.llm_client import generate
 
 def test_openai_token_parameters():
     """Test OpenAI token parameters and response structure."""

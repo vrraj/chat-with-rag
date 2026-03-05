@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from jinja2 import Template
 
-from backend.llm.llm_handler import LLMError
+from backend.llm.llm_client import LLMError
 
 
 @dataclass(frozen=True)

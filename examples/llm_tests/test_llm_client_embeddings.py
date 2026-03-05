@@ -4,39 +4,25 @@ import logging
 
 # Make the project root importable so we can resolve `llm` and `backend` when
 # this file is executed as a script from any working directory.
-# __file__ -> examples/llm_tests/test_llm_handler_embeddings.py
+# __file__ -> examples/llm_tests/test_llm_client_embeddings.py
 # Going up three levels lands at the repo root: chat-with-rag
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# Try both import layouts for the shared handler, mirroring test_openai_handler.py.
-llm_handler = None
-try:  # pragma: no cover
-    from llm.llm_handler import llm_handler as _handler
-    llm_handler = _handler
-except Exception:  # pragma: no cover
-    try:
-        from backend.llm.llm_handler import llm_handler as _handler  # type: ignore[assignment]
-        llm_handler = _handler
-    except Exception:
-        llm_handler = None  # type: ignore[assignment]
-
+from backend.llm.llm_client import embed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def main():
-    """Simple smoke test for llm_handler.embeddings.create using OpenAI.
+    """Simple smoke test for llm_client.embed using OpenAI.
 
     Requirements:
       - OPENAI_API_KEY must be set in the environment.
       - The specified embedding model must be available to your key.
     """
-    if llm_handler is None:
-        logger.error("Could not import llm_handler from llm.llm_handler or backend.llm.llm_handler.")
-        return
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -45,15 +31,14 @@ def main():
 
     # Default to a common OpenAI embedding model; override via env if desired.
     model = os.getenv("TEST_EMBEDDING_MODEL", "text-embedding-3-small")
-    text = os.getenv("TEST_EMBEDDING_TEXT", "Hello from llm_handler.embeddings test")
+    text = os.getenv("TEST_EMBEDDING_TEXT", "Hello from llm_client.embed test")
 
-    logger.info("Testing llm_handler.embeddings.create with model=%s", model)
+    logger.info("Testing llm_client.embed with model=%s", model)
 
     try:
-        resp = llm_handler.embeddings.create(
-            provider="openai",  # explicit for clarity; also the default
-            model=model,
-            input=text,
+        resp = embed(
+            model_key="openai:embed_small",
+            texts=text
         )
     except Exception as e:
         logger.exception("Embedding call failed: %s", e)
@@ -96,7 +81,7 @@ def main():
         logger.exception("Failed to inspect embedding response: %s", e)
         return
 
-    logger.info("llm_handler.embeddings.create OpenAI smoke test completed successfully")
+    logger.info("llm_client.embed OpenAI smoke test completed successfully")
 
 
 if __name__ == "__main__":

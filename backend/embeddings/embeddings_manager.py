@@ -9,7 +9,7 @@ from qdrant_client import models
 from backend.embeddings.collection_manager import CollectionManager
 from backend.db import QdrantDB
 from backend.embeddings.specs import resolve_embedding_spec
-from backend.llm.llm_handler import llm_handler
+from backend.llm.llm_client import embed
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,8 @@ class EmbeddingsManager:
 
         Uses gemini_embed_type_documents config for optimal indexing performance.
         Backward-compatible behavior:
-        - All embeddings now route through `llm_handler.embeddings.create()` regardless of model type.
-        - The handler automatically handles both legacy OpenAI model ids and provider keys.
+        - All embeddings now route through `embed()` regardless of model type.
+        - The function automatically handles both legacy OpenAI model ids and provider keys.
         Args:
             text: Text to embed, or a list of texts for batched embeddings.
         Returns:
@@ -89,9 +89,7 @@ class EmbeddingsManager:
                     model = "text-embedding-3-small"
                     dims = 1536
 
-                if llm_handler is None:
-                    raise ValueError("llm_handler is not available for embeddings generation")
-                # Always use llm_handler for embeddings. Support both single-text
+                # Always use embed() for embeddings. Support both single-text
                 # and batched (list-of-texts) inputs.
                 is_batch = isinstance(text, list)
                 kwargs: Dict[str, Any] = {
@@ -127,7 +125,10 @@ class EmbeddingsManager:
                 except Exception:
                     pass
 
-                response = llm_handler.embeddings.create(**kwargs)
+                # Remove provider from kwargs since it's inferred from model_key
+                kwargs_for_embed = {k: v for k, v in kwargs.items() if k != "provider"}
+                
+                response = embed(model_key=model, texts=text, **kwargs_for_embed)
                 # Normalize embeddings into a list for simpler handling.
                 embeddings_list = [d.embedding for d in response.data]
                 

@@ -16,15 +16,12 @@ project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
 # Now we can import from backend
-from backend.llm.llm_handler import LLMHandler
+from backend.llm.llm_client import generate
 
 def test_gemini_token_parameters():
     """Test what max tokens parameters Gemini API actually accepts."""
     
     print("🔍 Testing Gemini Token Parameters...")
-    
-    # Initialize handler
-    handler = LLMHandler()
     
     # Test models
     models_to_test = [
@@ -39,9 +36,8 @@ def test_gemini_token_parameters():
         # Test with max_output_tokens parameter- long prompt
         try:
             print("  🔹 Testing with max_output_tokens and a long prompt...")
-            result = handler.create(
-                provider="gemini",
-                model=model,
+            result = generate(
+                model_key="gemini:openai-2.5-flash-lite",
                 input="write me a funny 3 line joke with a punchline. Return exactly 3 lines. Each line must be at least 12 words. No bullets. The joke should be really funny and be related to mountains and hikimg but should only include mountan ranges in the apls and italy and andes. do not mention anything about people and cultures that might cause issues with diversity. Joke should nota winter time joke and not a summer time joke . Use words that are eacy to understand and not too complicated . In the  answer and please make a joke that should really tickle the funny bone in every individual across all continents in the world",
                 max_output_tokens=300,  # Test with max_output_tokens
                 reasoning_effort="medium",
@@ -50,11 +46,11 @@ def test_gemini_token_parameters():
                 top_p=1
             )
             print("  ✅ max_output_tokens: SUCCESS model name  %s ", model)
-            print(f"  📝 Response: {result.output_text}")
-            print(f"  📏 Response length: {len(result.output_text)} chars")
-            print(f"  🔢 Token usage: {result.usage}")
-            usage = result.usage or {}
-            print(f"  📊 Completion tokens: {usage.get('completion_tokens') if isinstance(usage, dict) else getattr(usage, 'completion_tokens', None)}")
+            print(f"  📝 Response: {result.get('text')}")
+            print(f"  📏 Response length: {len(result.get('text', ''))} chars")
+            print(f"  🔢 Token usage: {result.get('usage')}")
+            usage = result.get('usage') or {}
+            print(f"  📊 Completion tokens: {usage.get('output_tokens')}")
             print(f"  🏁 Finish reason: {getattr(result, 'finish_reason', 'N/A')}")
             print(f"  📄 Raw response: {result.__dict__}")
         except Exception as e:

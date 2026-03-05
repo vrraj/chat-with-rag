@@ -1,12 +1,12 @@
-"""Test script for LLMHandler OpenAI route.
+"""Test script for llm_client OpenAI route.
 
 Usage:
     python scripts/test_openai_handler.py "Your prompt here"
 
 This exercises the exact call shape:
 
-    llm_handler.responses.create(
-        model="gpt-4o-mini",
+    llm_client.generate(
+        model_key="openai:gpt-4o-mini",
         input=prompt_or_messages,
         temperature=0.2,
         max_output_tokens=800,
@@ -16,7 +16,7 @@ This exercises the exact call shape:
 
 It assumes:
     - OPENAI_API_KEY is available in the environment (optionally via .env)
-    - backend.llm.llm_handler or llm.llm_handler is importable
+    - backend.llm.llm_client is importable
 """
 
 import os
@@ -37,27 +37,27 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None  # type: ignore[assignment]
 
-# Try both import layouts for the shared handler.
-llm_handler = None
+# Try both import layouts for the shared client.
+llm_client = None
 _llm_import_error: Any = None
 try:  # pragma: no cover
-    from llm.llm_handler import llm_handler as _handler
-    llm_handler = _handler
+    from backend.llm.llm_client import generate, embed, get_pricing_for_model as _client
+    llm_client = _client
 except Exception as e:  # pragma: no cover
     _llm_import_error = e
     try:
-        from backend.llm.llm_handler import llm_handler as _handler  # type: ignore[assignment]
-        llm_handler = _handler
+        from backend.llm.llm_client import generate, embed as _client  # type: ignore[assignment]
+        llm_client = _client
         _llm_import_error = None
     except Exception as e2:
         _llm_import_error = e2
-        llm_handler = None  # type: ignore[assignment]
+        llm_client = None  # type: ignore[assignment]
 
 
 def get_prompt_from_argv() -> str:
     if len(sys.argv) > 1:
         return " ".join(sys.argv[1:])
-    return input("Enter a prompt for OpenAI via llm_handler: ")
+    return input("Enter a prompt for OpenAI via llm_client: ")
 
 
 def main() -> None:
@@ -65,16 +65,16 @@ def main() -> None:
     if load_dotenv is not None:
         load_dotenv()
 
-    if llm_handler is None:
-        print("[ERROR] Could not import llm_handler from llm.llm_handler or backend.llm.llm_handler.")
+    if llm_client is None:
+        print("[ERROR] Could not import llm_client from backend.llm.llm_client.")
         if _llm_import_error is not None:
-            print(f"[DEBUG] Last llm_handler import error: {_llm_import_error}")
+            print(f"[DEBUG] Last llm_client import error: {_llm_import_error}")
         sys.exit(1)
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         print("[WARNING] OPENAI_API_KEY is not set in the environment.")
-        print("llm_handler._get_openai() may still succeed if your app loads config elsewhere,")
+        print("llm_client.generate() may still succeed if your app loads config elsewhere,")
         print("but for this standalone test it is recommended to export OPENAI_API_KEY or use .env.")
 
     prompt = get_prompt_from_argv().strip()
@@ -88,29 +88,29 @@ def main() -> None:
     # No tools by default; you can edit this list to test tools wiring.
     tools: List[Dict[str, Any]] = []
 
-    print("=== Test 1: llm_handler.responses.create (OpenAI route, stream=False) ===")
-    print("Model: gpt-4o-mini")
+    print("=== Test 1: llm_client.generate (OpenAI route, stream=False) ===")
+    print("Model: openai:gpt-4o-mini")
     print("Temperature: 0.2")
     print("Max output tokens: 800")
     print(f"Prompt: {prompt}")
     print("------------------------------------------------------------")
 
     try:
-        resp = llm_handler.responses.create(
-            model="gpt-4o-mini",
-            input=prompt_or_messages,
+        resp = generate(
+            model_key="openai:gpt-4o-mini",
+            input=prompt,
             temperature=0.2,
             max_output_tokens=800,
             tools=tools,
             stream=False,
         )
     except Exception as e:
-        print(f"[ERROR] llm_handler.responses.create failed: {e}")
+        print(f"[ERROR] llm_client.generate failed: {e}")
         sys.exit(1)
 
     # Best-effort extraction of text and usage from a Responses-style object.
-    text = getattr(resp, "output_text", "") or ""
-    print("\n=== OpenAI Response via llm_handler.responses.create ===")
+    text = getattr(resp, "text", "") or ""
+    print("\n=== OpenAI Response via llm_client.generate ===")
     print(text or "<no text returned>")
 
     usage = getattr(resp, "usage", None)

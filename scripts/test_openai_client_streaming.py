@@ -15,7 +15,7 @@ project_root = script_dir.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    from backend.llm.llm_handler import LLMHandler
+    from backend.llm.llm_client import generate
 except ImportError as e:
     print(f"❌ Import error: {e}")
     print(f"📁 Script directory: {script_dir}")
@@ -23,16 +23,14 @@ except ImportError as e:
     print(f"📁 Project root exists: {project_root.exists()}")
     print(f"📁 Backend directory: {project_root / 'backend'}")
     print(f"📁 Backend exists: {(project_root / 'backend').exists()}")
-    print(f"📁 LLM handler exists: {(project_root / 'backend' / 'llm' / 'llm_handler.py').exists()}")
+    print(f"📁 LLM client exists: {(project_root / 'backend' / 'llm' / 'llm_client.py').exists()}")
     print(f"🐍 Python path: {sys.path[:3]}...")  # Show first 3 paths
     
     # Try alternative import
     try:
         print("\n🔄 Trying alternative import...")
         sys.path.insert(0, str(project_root / 'backend'))
-        import llm.llm_handler as llm_handler_module
-        LLMHandler = llm_handler_module.LLMHandler
-        print("✅ Alternative import successful!")
+        from llm.llm_client import generate
     except ImportError as e2:
         print(f"❌ Alternative import also failed: {e2}")
         sys.exit(1)
@@ -44,29 +42,23 @@ def test_openai_streaming():
     print("🚀 Testing OpenAI Streaming")
     print("=" * 50)
     
-    # Initialize LLMHandler
-    handler = LLMHandler()
-    
     # Test cases
     test_cases = [
         {
             "name": "OpenAI Fast Model (gpt-4o-mini)",
-            "provider": "openai",
-            "model": "openai:fast",  # Registry key
+            "model_key": "openai:gpt-4o-mini",
             "prompt": "Write a short poem about artificial intelligence",
             "expected_tokens": 150
         },
         {
             "name": "OpenAI Direct Model (gpt-4o-mini)",
-            "provider": "openai", 
-            "model": "gpt-4o-mini",  # Direct model name
+            "model_key": "openai:gpt-4o-mini", 
             "prompt": "Explain quantum computing in simple terms",
             "expected_tokens": 200
         },
         {
             "name": "OpenAI Reasoning Model (o1-mini)",
-            "provider": "openai",
-            "model": "openai:reasoning_mini_small",  # Registry key
+            "model_key": "openai:o1-mini",
             "prompt": "Solve this step by step: If a train travels 120 km in 2 hours, and another train travels 180 km in 3 hours, which train is faster and by how much?",
             "expected_tokens": 300
         }
@@ -82,29 +74,32 @@ def test_openai_streaming():
         
         try:
             # Create streaming request
-            stream = handler.create(
-                provider=test_case["provider"],
-                model=test_case["model"],
+            response = generate(
+                model_key=test_case["model_key"],
                 input=test_case["prompt"],
                 stream=True,
                 max_output_tokens=test_case["expected_tokens"],
                 temperature=0.7
             )
             
-            # Process stream
+            # Process stream (llm-adapter returns different format)
             full_text = ""
             chunk_count = 0
             
-            for event in stream:
-                if event.type == "response.output_text.delta":
-                    chunk_text = event.delta or ""
-                    print(chunk_text, end="", flush=True)
-                    full_text += chunk_text
-                    chunk_count += 1
-                    
-                elif event.type == "response.output_text.done":
-                    print("\n\n✅ Stream completed!")
-                    break
+            if hasattr(response, 'text'):
+                # Non-streaming response
+                print(response.text)
+                full_text = response.text
+            else:
+                # Streaming response
+                for chunk in response:
+                    if hasattr(chunk, 'choices') and chunk.choices:
+                        delta = chunk.choices[0].delta
+                        if hasattr(delta, 'content'):
+                            chunk_text = delta.content or ""
+                            print(chunk_text, end="", flush=True)
+                            full_text += chunk_text
+                            chunk_count += 1
             
             print(f"\n📊 Stats:")
             print(f"   - Total chunks: {chunk_count}")

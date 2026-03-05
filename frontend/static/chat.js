@@ -132,7 +132,8 @@
         registry[key] = {
           provider: m.provider,
           model: m.model,
-          display: `${key} (${m.provider}/${m.model})`,
+          endpoint: m.endpoint,
+          display: `${key} → ${m.model} (${m.provider}, ${m.endpoint})`,
           capabilities: m.capabilities || {},
         };
 

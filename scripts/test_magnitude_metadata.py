@@ -9,7 +9,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'backend'))
 
 from embeddings.embeddings_manager import EmbeddingsManager
-from llm.llm_handler import llm_handler
+from backend.llm.llm_client import embed
 
 def test_magnitude_metadata():
     print("Testing magnitude metadata...")
@@ -17,11 +17,7 @@ def test_magnitude_metadata():
     # Test 1: Single embedding
     print("\n1. Testing single embedding...")
     try:
-        result = llm_handler.embeddings.create(
-            provider="gemini",
-            model="gemini:embed",
-            input="Test text for magnitude metadata"
-        )
+        result = embed(model_key="gemini:native-embed", texts="Test text for magnitude metadata")
         
         if result.data:
             item = result.data[0]
@@ -39,11 +35,7 @@ def test_magnitude_metadata():
     # Test 2: Batch embeddings
     print("\n2. Testing batch embeddings...")
     try:
-        result = llm_handler.embeddings.create(
-            provider="gemini", 
-            model="gemini:embed",
-            input=["Text 1", "Text 2", "Text 3"]
-        )
+        result = embed(model_key="gemini:native-embed", texts=["Text 1", "Text 2", "Text 3"])
         
         for i, item in enumerate(result.data):
             print(f"   Item {i}:")

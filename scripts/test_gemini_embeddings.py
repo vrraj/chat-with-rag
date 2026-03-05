@@ -1,13 +1,11 @@
-"""Simple manual test for Gemini embeddings via LLMHandler.
+"""Simple manual test for Gemini embeddings via llm-adapter.
 
 Usage (from project root, with venv active):
 
     GEMINI_API_KEY=... \
-    GEMINI_OPENAI_BASE_URL=... \
     python scripts/test_gemini_embeddings.py
 
-This uses the OpenAI-compatible Gemini adapter path, not the native
-`gemini_sdk` client.
+This uses the llm-adapter package for Gemini embeddings.
 """
 
 from __future__ import annotations
@@ -24,11 +22,11 @@ _PROJECT_ROOT = _THIS_FILE.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from backend.llm.llm_handler import llm_handler
+from backend.llm.llm_client import embed
 
 
 def test_adapter_embedding() -> None:
-    """Test Gemini embeddings via the OpenAI-compatible adapter (llm_handler)."""
+    """Test Gemini embeddings via the llm-adapter package."""
 
     # Adjust these as needed for your environment / registry
     model = "gemini-embedding-001"  # adapter model or registry key
@@ -37,10 +35,9 @@ def test_adapter_embedding() -> None:
 
     print(f"Requesting Gemini embedding (adapter, no normalization): model={model!r}, dimensions={dimensions}, text={text!r}")
 
-    resp_no: Any = llm_handler.create_embedding(
-        provider="gemini",
-        model=model,
-        input=text,
+    resp_no: Any = embed(
+        model_key="gemini:openai-2.5-flash-lite",
+        texts=text,
         dimensions=dimensions,
         normalize_embedding=False,
     )
@@ -48,10 +45,9 @@ def test_adapter_embedding() -> None:
     print("Raw embedding response type (no_norm):", type(resp_no))
 
     print(f"\nRequesting Gemini embedding (adapter, with normalization): model={model!r}, dimensions={dimensions}, text={text!r}")
-    resp_yes: Any = llm_handler.create_embedding(
-        provider="gemini",
-        model=model,
-        input=text,
+    resp_yes: Any = embed(
+        model_key="gemini:openai-2.5-flash-lite",
+        texts=text,
         dimensions=dimensions,
         normalize_embedding=True,
     )
@@ -116,29 +112,28 @@ def test_adapter_embedding() -> None:
         print("Error while inspecting adapter embedding responses:", e)
 
 
-def test_native_via_llm_handler() -> None:
-    """Test native Gemini SDK embeddings via llm_handler (gemini_native provider).
+def test_native_via_llm_adapter() -> None:
+    """Test native Gemini SDK embeddings via llm-adapter (gemini_native provider).
 
-    This exercises the self-contained native embedding route in LLMHandler while
+    This exercises the native embedding route in llm-adapter while
     preserving the OpenAI-style embeddings response shape (data[].embedding, usage).
     """
 
     # Use the registry key for the native embedding profile so routing can
     # consult endpoint and capabilities (task_type, output_dimensionality).
     model = "gemini:native-embed"
-    text = "Hello from Gemini native embeddings via llm_handler"
-    # These match the defaults in model_registry for gemini:native-embed but
+    text = "Hello from Gemini native embeddings via llm-adapter"
+    # These match the defaults in llm-adapter for gemini:native-embed but
     # are provided explicitly here to exercise call-time overrides.
     task_type = "RETRIEVAL_DOCUMENT"
     output_dimensionality = 1536
 
-    print(f"\nRequesting Gemini native embedding via llm_handler (no normalization): model={model!r}, text={text!r}")
+    print(f"\nRequesting Gemini native embedding via llm-adapter (no normalization): model={model!r}, text={text!r}")
 
     # First call: no normalization
-    resp_no_norm: Any = llm_handler.create_embedding(
-        provider="gemini",  # endpoint=="gemini_sdk" for this key routes to native SDK
-        model=model,
-        input=text,
+    resp_no_norm: Any = embed(
+        model_key=model,
+        texts=text,
         task_type=task_type,
         output_dimensionality=output_dimensionality,
         normalize_embedding=False,
@@ -147,11 +142,10 @@ def test_native_via_llm_handler() -> None:
     print("Raw native-embedding response type (no_norm):", type(resp_no_norm))
 
     # Second call: with normalize_embedding=True
-    print(f"\nRequesting Gemini native embedding via llm_handler (with normalization): model={model!r}, text={text!r}")
-    resp_norm: Any = llm_handler.create_embedding(
-        provider="gemini",
-        model=model,
-        input=text,
+    print(f"\nRequesting Gemini native embedding via llm-adapter (with normalization): model={model!r}, text={text!r}")
+    resp_norm: Any = embed(
+        model_key=model,
+        texts=text,
         task_type=task_type,
         output_dimensionality=output_dimensionality,
         normalize_embedding=True,
@@ -174,7 +168,7 @@ def test_native_via_llm_handler() -> None:
         v_no = _get_first_embedding_vec(resp_no_norm)
         v_yes = _get_first_embedding_vec(resp_norm)
 
-        print("\n=== Native via llm_handler: top-level attributes (no_norm) ===")
+        print("\n=== Native via llm-adapter: top-level attributes (no_norm) ===")
         top_level_no = {
             "has_data": hasattr(resp_no_norm, "data"),
             "has_usage": hasattr(resp_no_norm, "usage"),
@@ -182,7 +176,7 @@ def test_native_via_llm_handler() -> None:
         }
         pprint(top_level_no)
 
-        print("\n=== Native via llm_handler: usage details (no_norm) ===")
+        print("\n=== Native via llm-adapter: usage details (no_norm) ===")
         print(f"Raw response (no_norm): {resp_no_norm}")
         if hasattr(resp_no_norm, "usage") and resp_no_norm.usage:
             usage_no = resp_no_norm.usage
@@ -195,7 +189,7 @@ def test_native_via_llm_handler() -> None:
         else:
             print("No usage found in no_norm response")
 
-        print("\n=== Native via llm_handler: top-level attributes (norm) ===")
+        print("\n=== Native via llm-adapter: top-level attributes (norm) ===")
         top_level_yes = {
             "has_data": hasattr(resp_norm, "data"),
             "has_usage": hasattr(resp_norm, "usage"),
@@ -203,7 +197,7 @@ def test_native_via_llm_handler() -> None:
         }
         pprint(top_level_yes)
 
-        print("\n=== Native via llm_handler: usage details (norm) ===")
+        print("\n=== Native via llm-adapter: usage details (norm) ===")
         print(f"Raw response (norm): {resp_norm}")
         if hasattr(resp_norm, "usage") and resp_norm.usage:
             usage_yes = resp_norm.usage
@@ -250,7 +244,7 @@ def test_native_via_llm_handler() -> None:
             print("No embedding found in norm response")
 
     except Exception as e:  # pragma: no cover - debug helper
-        print("Error while inspecting native llm_handler embedding responses:", e)
+        print("Error while inspecting native llm-adapter embedding responses:", e)
 
 
 def test_native_count_tokens() -> None:
@@ -348,7 +342,7 @@ def test_native_embedding() -> None:
 
 def main() -> None:
     test_adapter_embedding()  # Test OpenAI compatible adapter
-    test_native_via_llm_handler()  # Test native SDK
+    test_native_via_llm_adapter()  # Test native SDK
     # test_native_count_tokens() # enable to test native count_tokens
     test_native_embedding()  # Test raw native SDK response
 

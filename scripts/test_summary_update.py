@@ -48,10 +48,10 @@ def main() -> int:
         except Exception:
             settings = None
 
-    llm_handler = None
+    llm_client = None
     if args.call:
-        from backend.llm.llm_handler import llm_handler as _llm_handler
-        llm_handler = _llm_handler
+        from backend.llm.llm_client import generate as _llm_client
+        llm_client = _llm_client
 
     prior = _read_text_arg(args.prior).strip()
     recent = _read_text_arg(args.recent).strip()
@@ -102,8 +102,8 @@ def main() -> int:
             print(json.dumps(out_obj, indent=2, ensure_ascii=False))
         return 0
 
-    if llm_handler is None:
-        raise RuntimeError("--call was provided but llm_handler could not be imported")
+    if llm_client is None:
+        raise RuntimeError("--call was provided but llm_client could not be imported")
 
     _default_model = "gpt-4o-mini"
     if settings is not None:
@@ -116,9 +116,9 @@ def main() -> int:
     temperature = args.temperature if args.temperature is not None else float(getattr(settings, "summarizer_temperature", 0.3) if settings is not None else 0.3)
     max_output_tokens = args.max_output_tokens if args.max_output_tokens is not None else int(getattr(settings, "summarizer_max_output_tokens", 128) if settings is not None else 128)
 
-    resp = llm_handler(
-        model=model,
-        messages=messages_payload,
+    resp = llm_client(
+        model_key=f"openai:{model}",
+        input=messages_payload,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         stream=False,
@@ -126,7 +126,7 @@ def main() -> int:
 
     updated = ""
     try:
-        updated = str((resp or {}).get("answer") or "").strip()
+        updated = str((resp or {}).get("text") or "").strip()
     except Exception:
         updated = ""
 

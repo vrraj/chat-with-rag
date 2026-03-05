@@ -6,7 +6,7 @@ from backend.core.schemas import PayloadUpdateRequest
 import logging
 from backend.core.config import settings
 from backend.embeddings.specs import resolve_embedding_spec
-from backend.llm.llm_handler import llm_handler
+from backend.llm.llm_client import embed
 import math
 
 logger = logging.getLogger(__name__)
@@ -138,15 +138,7 @@ class QdrantDB:
             provider = spec.get("provider", "openai")
             model = spec.get("model")
 
-            # Route via llm_handler for all embedding providers
-            if llm_handler is None:
-                raise ValueError("llm_handler is not available for embeddings")
-            
-            # For provider-aware embeddings, pass the registry model key so
-            # llm_handler can route based on endpoint (e.g., gemini_sdk vs
-            # embeddings). The configured embedding_model_key in Settings
-            # should match the desired registry profile (openai:embed_small,
-            # gemini:native-embed, etc.).
+            # Route via embed() for all embedding providers
             try:
                 from backend.core.config import settings as _settings  # type: ignore
                 model_key = getattr(_settings, "embedding_model_key", model)
@@ -178,7 +170,10 @@ class QdrantDB:
                     kwargs["normalize_embedding"] = bool(getattr(_settings, "gemini_embedding_normalize", False))
                 except Exception:
                     pass
-            response = llm_handler.embeddings.create(**kwargs)
+            # Remove provider from kwargs since it's inferred from model_key
+            kwargs_for_embed = {k: v for k, v in kwargs.items() if k != "provider"}
+            
+            response = embed(model_key=model_key, texts=text, **kwargs_for_embed)
             # Record token usage if the SDK returns it
             try:
                 usage = getattr(response, "usage", None)
@@ -202,7 +197,14 @@ class QdrantDB:
                 # If anything goes wrong reading usage, fall back to zeros
                 self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}
 
-            return response.data[0].embedding
+            # Handle different response structures
+            embedding_data = response.data[0]
+            if hasattr(embedding_data, 'embedding'):
+                return embedding_data.embedding
+            elif isinstance(embedding_data, list):
+                return embedding_data
+            else:
+                raise ValueError(f"Unexpected embedding response structure: {type(embedding_data)}")
         except Exception as e:
             logger.exception("Error generating embeddings: %s", e)
             self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}

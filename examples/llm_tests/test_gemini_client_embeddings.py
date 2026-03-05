@@ -1,18 +1,16 @@
-"""Test script for LLMHandler Gemini embeddings route.
+"""Test script for llm_client Gemini embeddings route.
 
 Usage:
     python examples/llm_tests/test_gemini_embeddings.py "Your text here"
 
 Requirements:
     - GEMINI_API_KEY must be set (e.g., via .env)
-    - GEMINI_OPENAI_BASE_URL must point to your Gemini OpenAI adapter base URL
-    - The adapter must expose an OpenAI-compatible embeddings endpoint
-      (client.embeddings.create) and support the model "gemini-embedding-001".
+    - The adapter must support Gemini embeddings
 
 This exercises the call shape:
 
-    llm_handler.embeddings.create(
-        provider="gemini",
+    llm_client.embed(
+        model_key="gemini:openai-2.5-flash-lite",
         model="gemini-embedding-001",
         input=text,
         # dimensions defaults to 1536 if not provided
@@ -32,18 +30,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# Try both import layouts for the shared handler, mirroring other scripts.
-llm_handler = None
-try:  # pragma: no cover
-    from llm.llm_handler import llm_handler as _handler
-    llm_handler = _handler
-except Exception:  # pragma: no cover
-    try:
-        from backend.llm.llm_handler import llm_handler as _handler  # type: ignore[assignment]
-        llm_handler = _handler
-    except Exception:
-        llm_handler = None  # type: ignore[assignment]
-
+from backend.llm.llm_client import embed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,9 +43,12 @@ def get_text_from_argv() -> str:
 
 
 def main() -> None:
-    if llm_handler is None:
-        logger.error("Could not import llm_handler from llm.llm_handler or backend.llm.llm_handler.")
-        return
+    """Simple smoke test for llm_client.embed using Gemini.
+
+    Requirements:
+      - GEMINI_API_KEY must be set in the environment.
+      - The specified embedding model must be available to your key.
+    """
 
     api_key = os.getenv("GEMINI_API_KEY")
     base_url = os.getenv("GEMINI_OPENAI_BASE_URL")
@@ -71,14 +61,14 @@ def main() -> None:
 
     # Model and dimensions: align with backend/core/config.py defaults.
     model = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
-    # Optional override for dimensions; if unset, llm_handler defaults to 1536.
+    # Optional override for dimensions; if unset, llm_client defaults to 1536.
     dim_env = os.getenv("GEMINI_EMBEDDING_DIMENSIONS", "")
     dimensions: Any
     if dim_env.strip():
         try:
             dimensions = int(dim_env)
         except ValueError:
-            logger.warning("Invalid GEMINI_EMBEDDING_DIMENSIONS=%r; falling back to handler default", dim_env)
+            logger.warning("Invalid GEMINI_EMBEDDING_DIMENSIONS=%r; falling back to client default", dim_env)
             dimensions = None
     else:
         dimensions = None
@@ -88,7 +78,7 @@ def main() -> None:
         logger.error("Empty text; nothing to embed")
         return
 
-    logger.info("Testing llm_handler.embeddings.create with provider='gemini', model=%s", model)
+    logger.info("Testing llm_client.embed with provider='gemini', model=%s", model)
 
     kwargs: dict[str, Any] = {
         "provider": "gemini",
@@ -99,7 +89,11 @@ def main() -> None:
         kwargs["dimensions"] = dimensions
 
     try:
-        resp = llm_handler.embeddings.create(**kwargs)
+        resp = embed(
+            model_key="gemini:native-embed",
+            texts=text,
+            dimensions=dimensions
+        )
     except Exception as e:
         logger.exception("Gemini embedding call failed: %s", e)
         return
@@ -133,7 +127,7 @@ def main() -> None:
         except Exception as e:
             logger.warning("Failed to log Gemini embedding usage: %s", e)
 
-    logger.info("llm_handler.embeddings.create Gemini smoke test completed successfully")
+    logger.info("llm_client.embed Gemini smoke test completed successfully")
 
 
 if __name__ == "__main__":

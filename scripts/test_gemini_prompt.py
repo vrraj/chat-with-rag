@@ -33,7 +33,7 @@ except ImportError as e:
     sys.exit(1)
 
 def test_current_flattened_approach():
-    """Test the current flattened approach (like llm_handler.py does)."""
+    """Test the current flattened approach (like llm-adapter does)."""
     print("=" * 60)
     print("TEST 1: Current Flattened Approach")
     print("=" * 60)
@@ -121,13 +121,15 @@ def test_proper_system_instruction():
         print(f"Error with system instruction approach: {e}\n")
 
 def test_messages_to_text_conversion():
-    """Test the _messages_to_text function from llm_handler.py."""
+    """Test the _messages_to_text function (similar to llm-adapter)."""
     print("=" * 60)
     print("TEST 3: Messages-to-Text Conversion")
     print("=" * 60)
     
+    from backend.llm.llm_client import generate
+    
     def _messages_to_text(messages):
-        """Replicate the function from llm_handler.py"""
+        """Replicate the function (similar to llm-adapter)"""
         if not isinstance(messages, list):
             return str(messages)
         parts = []
@@ -192,11 +194,11 @@ def test_with_responses_create_signature():
         
         if isinstance(inp, list):
             print(f"Input messages: {inp}")
-            # Show how this would be processed by llm_handler
-            print("→ This would go to llm_handler.create() with messages list")
+            # Show how this would be processed by llm_client
+            print("→ This would go to llm_client.generate() with messages list")
         else:
             print(f"Input string: {inp[:100]}...")
-            print("→ This would go to llm_handler.create() with flattened string")
+            print("→ This would go to llm_client.generate() with flattened string")
         
         return {"mock": "response"}
     
@@ -245,7 +247,7 @@ def test_proposed_responses_create_fix():
         
         if provider is None or prov == "openai":
             # OpenAI path - no changes needed
-            return "OpenAI: Would call llm_handler.responses.create(**kwargs)"
+            return "OpenAI: Would call llm_client.generate(**kwargs)"
         
         # Enhanced Gemini path
         model = kwargs.pop("model", None)
@@ -274,7 +276,7 @@ def test_proposed_responses_create_fix():
                 # Replace input with only user content
                 inp = "\n\n".join(user_parts) if user_parts else ""
         
-        return f"Gemini: Would call llm_handler.create(provider={prov}, model={model}, input={type(inp)}, system_instruction={'✓' if 'system_instruction' in kwargs else '✗'}, **kwargs)"
+        return f"Gemini: Would call llm_client.generate(provider={prov}, model={model}, input={type(inp)}, system_instruction={'✓' if 'system_instruction' in kwargs else '✗'}, **kwargs)"
     
     # Test the improved version
     messages_input = [
@@ -294,10 +296,10 @@ def test_proposed_responses_create_fix():
     print(f"Improved call result: {result}\n")
     print("✓ Proposed _responses_create fix completed\n")
 
-def test_proposed_llm_handler_fix():
+def test_proposed_llm_client_fix():
     """Test how the proposed fix would work."""
     print("=" * 60)
-    print("TEST 4: Proposed LLM Handler Fix")
+    print("TEST 4: Proposed LLM Client Fix")
     print("=" * 60)
     
     api_key = os.getenv("GEMINI_API_KEY")
@@ -361,7 +363,7 @@ def test_gemini_openai_adapter_path():
     print("TEST 7: Gemini OpenAI Adapter Path")
     print("=" * 60)
     
-    # This simulates the current llm_handler.py Gemini adapter path
+    # This simulates the current llm-adapter Gemini path
     # which uses OpenAI client pointed at Gemini OpenAI adapter endpoint
     
     api_key = os.getenv("GEMINI_API_KEY")
@@ -379,7 +381,7 @@ def test_gemini_openai_adapter_path():
     try:
         from openai import OpenAI
         
-        # Create OpenAI client pointed at Gemini adapter (like llm_handler.py does)
+        # Create OpenAI client pointed at Gemini adapter (like llm-adapter does)
         client = OpenAI(api_key=api_key, base_url=base_url)
         
         system_prompt = (
@@ -527,7 +529,7 @@ def main():
     #test_current_flattened_approach()
     #test_proper_system_instruction()
     #test_messages_to_text_conversion()
-    test_proposed_llm_handler_fix()
+    test_proposed_llm_client_fix()
     #test_with_responses_create_signature()
     test_proposed_responses_create_fix()
     test_gemini_openai_adapter_path()

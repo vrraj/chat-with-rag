@@ -19,7 +19,7 @@ This release transforms the application from a single-provider system into a **m
 ## 🚀 Major Features
 
 ### **🏗️ Central Model Registry Architecture**
-- **NEW `model_registry.py`** - Single source of truth for all model configurations
+- **NEW `llm-adapter` package** - Single source of truth for all model configurations
 - **Complete abstraction** of model nuances, capabilities, and costs
 - **Centralized model management** - eliminated scattered model configurations
 - **Massive code reduction** through registry-based approach
@@ -265,14 +265,14 @@ def enforce_origin_host(request: Request) -> None:
 ## 🧪 Testing & Documentation
 
 ### **Comprehensive Test Suite**
-- Gemini embeddings testing (`test_gemini_embeddings.py`)
-- OpenAI handler tests (`test_openai_handler.py`)
+- Gemini embeddings testing (`test_gemini_client_embeddings.py`)
+- OpenAI client tests (`test_openai_client.py`)
 - Token counting and normalization tests
 - API smoke tests for both providers
 - Magnitude metadata validation
 
 ### **New Documentation**
-- `README_LLM_HANDLER.md` with comprehensive handler documentation
+- `docs/technical-overview.md` with comprehensive technical documentation
 - Enhanced API integration specs
 - Registry usage examples
 - Embed integration guide
@@ -282,13 +282,13 @@ def enforce_origin_host(request: Request) -> None:
 ## 🔄 Migration Guide
 
 ### **Configuration Changes**
-- **Model configurations moved** from `config.py` to `model_registry.py`
+- **Model configurations moved** from `config.py` to `llm-adapter` package
 - **Registry key references** replace direct model configurations
 - **Simplified config structure** with cleaner separation of concerns
 - **Security configuration** added for domain controls
 
 ### **Breaking Changes**
-- Updated LLM handler call signatures
+- Updated LLM client call signatures (now using llm-adapter package)
 - Refactored configuration structure
 - Removed OpenAI client dependencies from core chat
 - **Security enforcement** now active on all endpoints

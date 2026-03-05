@@ -301,7 +301,7 @@ def embedding_model_key(self) -> str:
 @property
 def vector_size(self) -> int:
     """Vector size from embedding_model_key registry capabilities"""
-    from backend.llm.model_registry import get_model_info
+    from llm_adapter import get_model_info
     model_info = get_model_info(self.embedding_model_key)
     return int(model_info.capabilities["dimensions"])
 ```
@@ -894,12 +894,13 @@ Configuration is centralized across multiple components, with model-specific con
 
 ### Model Registry Architecture
 
-The **Model Registry** (`backend/llm/model_registry.py`) serves as the single source of truth for all model configurations:
+The **Model Registry** is provided by the `llm-adapter` package and serves as the single source of truth for all model configurations:
 
 - **Model Definitions**: Complete model specifications including provider, model ID, endpoint, pricing, and capabilities
 - **Capability Mapping**: Feature support flags (tools, streaming, reasoning, temperature, dimensions, etc.)
 - **Cost Information**: Input/output token rates for budget tracking and cost management
 - **Parameter Standardization**: Consistent parameter names and defaults across providers
+- **Tool Sanitization**: Automatic tool format conversion for all providers
 
 ### Stage-Specific Configuration
 

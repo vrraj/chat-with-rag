@@ -46,7 +46,7 @@ from backend.chat.web_search import WebSearchClient
 from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
-from backend.llm.llm_handler import llm_handler, LLMError
+from backend.llm.llm_client import generate, embed, get_pricing_for_model, LLMError
 from backend.chat.simple_history_processor import SimpleHistoryProcessor
 from backend.chat.utils import _get_param_int, split_history_for_prompt
 from backend.chat.chunked_history_manager import ChunkedHistoryManager
@@ -130,35 +130,24 @@ _SUMMARY_NS_INDEX: Dict[str, Set[str]] = defaultdict(set)
 _SUMMARY_NS_LAST_SEEN: Dict[str, float] = {}
 
 
-# --- LLM call helper (OpenAI-first, via llm_handler facade) ---
-# NOTE: This is a compatibility shim only. It preserves existing behavior by routing to
-# `llm_handler.responses.create(**kwargs)`. This avoids relying on environment variables
-# inside llm_handler.
+# --- LLM call helper ---
 
 
 def _responses_create(provider: str | None = None, **kwargs: Any):
-    """Compatibility shim for LLM calls.
-
-    Default behavior (no provider provided):
-      - Preserve existing behavior by routing to `llm_handler.responses.create(**kwargs)`
-
-    Optional behavior (provider provided):
-      - Route via `llm_handler.create(provider=..., model=..., input=..., stream=..., **kwargs)`
-      - This enables stage-level provider selection later without changing call sites.
-
-    """
-
-    prov = (provider or "openai").strip().lower() # default llm provider to openai
-
-    # Preserve existing Responses API path when provider is not explicitly set (or is openai).
-    if provider is None or prov == "openai":
-        return llm_handler.responses.create(**kwargs)
-
-    # Provider-aware path (used in later steps when stage selection is enabled).
-    model = kwargs.pop("model", None)
-    inp = kwargs.pop("input", None)
-    stream = bool(kwargs.pop("stream", False))
-    return llm_handler.create(provider=prov, model=model, input=inp, stream=stream, **kwargs)
+    """Compatibility shim for LLM calls."""
+    # Extract model from kwargs to use as model_key
+    model = kwargs.get("model")
+    if not model:
+        raise ValueError("model is required for LLM calls")
+    
+    # DEBUG: Log what model is being used
+    logger.info(f"[DEBUG] _responses_create called with model={model}, provider={provider}")
+    
+    # Filter out conflicting parameters
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['model', 'model_key']}
+    
+    # Use generate() - provider inferred from model
+    return generate(model_key=model, **filtered_kwargs)
 
 
 # --- Stage resolver (read-only; mirrors existing fields as-is) ---
@@ -204,11 +193,19 @@ def resolve_stage_specs(
     # select registry entries like "openai:chat_fast" while keeping
     # provider settings/backwards compatibility intact.
     model_keys = p.get("model_keys") or {}
+    
+    # DEBUG: Log model_keys received from frontend
+    logger.info(f"[DEBUG] model_keys from frontend: {model_keys}")
+    
     try:
         inference_model_key_override = str(model_keys.get("inference") or "").strip()
         rewrite_model_key_override = str(model_keys.get("rewrite") or "").strip()
         summary_model_key_override = str(model_keys.get("summary") or "").strip()
         rerank_model_key_override = str(model_keys.get("rerank") or "").strip()
+        
+        # DEBUG: Log extracted overrides
+        logger.info(f"[DEBUG] extracted overrides: inference={inference_model_key_override}, rewrite={rewrite_model_key_override}, summary={summary_model_key_override}, rerank={rerank_model_key_override}")
+        
     except Exception:
         inference_model_key_override = ""
         rewrite_model_key_override = ""
@@ -221,7 +218,7 @@ def resolve_stage_specs(
     rerank_model = getattr(settings_obj, "re_ranker_model", getattr(settings_obj, "inference_model", ""))
 
     # Inference model: allow per-request override to affect downstream defaults.
-    inference_model = getattr(settings_obj, "inference_model", "")
+    inference_model_key = getattr(settings_obj, "inference_model_key", "llm-adapter")
     # Prefer explicit model_key override when present, then legacy name override,
     # then settings default. This lets callers opt into registry keys such as
     # "openai:chat_fast" without breaking existing configs.
@@ -471,38 +468,39 @@ def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
 
 
 def _extract_text_from_responses(resp: Any) -> str:
-    """Return response text from a Responses-like object.
+    """Return response text from a Responses-like object."""
 
-    Delegates to llm_handler.build_llm_result_from_response so that 
-    provider-specific parsing (Responses vs ChatCompletions vs adapters)
-    is centralized in one place.
-    """
-
-    # Prefer adapter_response surface when present (e.g., Gemini
-    # _GeminiResponsesWrapper); otherwise, use the response as-is.
-    base = getattr(resp, "adapter_response", resp)
-
-    try:
-        llm_result = llm_handler.build_llm_result_from_response(base)
-    except Exception:
+    # If it's already a normalized response (has 'text' field), extract directly
+    if isinstance(resp, dict) and resp.get("text"):
         try:
-            logger.exception("[RESP DEBUG] failed to build LLMResult for text extraction")
+            return str(resp.get("text") or "")
         except Exception:
             pass
-        return ""
+    
+    # Handle raw responses - prefer adapter_response surface when present
+    base = getattr(resp, "adapter_response", resp)
 
-    text = ""
+    # Try to extract text from the response
     try:
-        text = str(llm_result.get("text") or "")
-    except Exception:
-        text = ""
-
-    try:
-        logger.debug("[RESP DEBUG] extracted text %s and length=%d", text  , len(text))
+        if hasattr(base, "output_text"):
+            return str(base.output_text or "")
+        elif hasattr(base, "text"):
+            return str(base.text or "")
+        elif isinstance(base, dict):
+            return str(base.get("text") or base.get("output_text") or "")
     except Exception:
         pass
 
-    return text
+    # Fallback - try common response attributes
+    for attr in ["output_text", "text", "content"]:
+        try:
+            val = getattr(resp, attr, None)
+            if val:
+                return str(val)
+        except Exception:
+            pass
+    
+    return ""
 
 
 def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, int] | None:
@@ -526,13 +524,22 @@ def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, i
     # _GeminiResponsesWrapper); otherwise, use the response as-is.
     base = getattr(resp, "adapter_response", resp)
 
-    # Delegate to LLMHandler for provider-specific normalization.
+    # Try to extract usage from normalized response or raw response
     try:
-        result = llm_handler.build_llm_result_from_response(base, provider=provider)
-        usage = result.get("usage") or {}
+        # If it's already a normalized response
+        if isinstance(resp, dict) and resp.get("usage"):
+            usage = resp.get("usage") or {}
+        else:
+            # For raw responses, try to extract usage directly
+            if hasattr(base, "usage"):
+                usage = base.usage or {}
+            elif isinstance(base, dict):
+                usage = base.get("usage") or {}
+            else:
+                usage = {}
     except Exception:
         try:
-            logger.exception("[USAGE DEBUG] failed to build LLMResult for usage extraction")
+            logger.exception("[USAGE DEBUG] failed to extract usage")
         except Exception:
             pass
         usage = {}
@@ -856,6 +863,9 @@ def _summarize_messages_with_cache(
             # Best-effort; if filtering fails, fall back to original kwargs.
             pass
 
+        # DEBUG: Log summary stage details
+        logger.info(f"[DEBUG] SUMMARY stage: provider={_provider}, model={_model}")
+
         resp = _responses_create(
             provider=_provider,
             model=_model,
@@ -1004,7 +1014,6 @@ def _compute_stage_cost(
       * ``cached_tokens`` is a subset of ``prompt_tokens`` and priced separately when a
         distinct cached-input rate is available in the model registry.
 
-    Pricing is resolved **exclusively** from ``backend.llm.model_registry``:
 
       * When a matching ``ModelInfo`` is found, per-million rates are taken from its
         ``pricing`` field and costs are computed by splitting input into non-cached and
@@ -1017,8 +1026,8 @@ def _compute_stage_cost(
     control flow or LLM behavior.
     """
 
-    # --- 1) Model-registry pricing (preferred) ---
-    pricing = llm_handler.get_pricing_for_model(provider=provider, model=model, model_key=model_key)
+    # Use model_key as primary identifier, provider is inferred
+    pricing = get_pricing_for_model(model_key=model_key or model)
 
     if pricing is not None:
         try:
@@ -1705,6 +1714,15 @@ def rewrite_query(
                 "temperature": float(settings.rewrite_temperature),
             }
 
+        # DEBUG: Log rewrite stage details with endpoint info
+        try:
+            from backend.llm.llm_client import get_model_info
+            model_info = get_model_info(model_key=_model)
+            endpoint = getattr(model_info, 'endpoint', 'unknown')
+            logger.info(f"[DEBUG] REWRITE stage: provider={_provider}, model={_model}, endpoint={endpoint}, stage_spec={stage_spec}")
+        except Exception as e:
+            logger.info(f"[DEBUG] REWRITE stage: provider={_provider}, model={_model}, endpoint=unknown (error: {e}), stage_spec={stage_spec}")
+
         resp = _responses_create(
             provider=_provider,
             model=_model,
@@ -2022,7 +2040,7 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     """Extract tool/function calls from a Responses API object or dict.
     Returns a list of {name, args, id}.
     """
-    # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_handler)
+    # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_adapter)
     # so we always inspect the provider-native object for tool_calls.
     base = getattr(resp, "adapter_response", resp)
 
@@ -2056,11 +2074,17 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
         return out
 
     try:
-        # Prefer adapter_response surface when present (e.g., Gemini
-        # _GeminiResponsesWrapper); otherwise, pass the response as-is.
-        llm_base = getattr(resp, "adapter_response", resp)
-        llm_result = llm_handler.build_llm_result_from_response(llm_base)
-        calls = list(llm_result.get("tool_calls") or [])
+        # If it's already a normalized response, extract tool_calls directly
+        if isinstance(resp, dict) and resp.get("tool_calls"):
+            calls = list(resp.get("tool_calls") or [])
+        else:
+            # For raw responses, try to extract tool_calls directly
+            if hasattr(base, "tool_calls"):
+                calls = list(base.tool_calls or [])
+            elif isinstance(base, dict):
+                calls = list(base.get("tool_calls") or [])
+            else:
+                calls = []
     except Exception:
         calls = []
 
@@ -2887,6 +2911,9 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 _kwargs,
             )
 
+            # DEBUG: Log rerank stage details
+            logger.info(f"[DEBUG] RERANK stage: provider={_provider}, model={_model}")
+
             resp_rerank = _responses_create(
                 provider=_provider,
                 model=_model,
@@ -3178,6 +3205,18 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             _kwargs_inf["tools"] = []
 
     logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
+    
+    # DEBUG: Log inference stage details with endpoint info
+    try:
+        from backend.llm.llm_client import get_model_info
+        model_info = get_model_info(model_key=_inf_model)
+        endpoint = getattr(model_info, 'endpoint', 'unknown')
+        logger.info(f"[DEBUG] INFERENCE stage: provider={_inf_provider}, model={_inf_model}, endpoint={endpoint}")
+    except Exception as e:
+        logger.info(f"[DEBUG] INFERENCE stage: provider={_inf_provider}, model={_inf_model}, endpoint=unknown (error: {e})")
+    
+    resp_inf = None  # Initialize to fix variable scope issue
+    
     try:
         resp_inf = _responses_create(
             provider=_inf_provider,
@@ -3256,11 +3295,12 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Note: LLMError exceptions are now handled in the first except block above
     try:
         # Log the provider-native response object for debugging tool-calls behavior.
-        _raw = getattr(resp_inf, "raw", resp_inf)
-        logger.debug("[INFERENCE] (%s) raw response: %r", log_origin, _raw)
+        if resp_inf is not None:
+            _raw = getattr(resp_inf, "raw", resp_inf)
+            logger.debug("[INFERENCE] (%s) raw response: %r", log_origin, _raw)
     except Exception:
         pass
-    usage_inf = _extract_usage_from_responses(resp_inf, provider=_inf_provider)
+    usage_inf = _extract_usage_from_responses(resp_inf, provider=_inf_provider) if resp_inf is not None else None
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
         m.record_stage(
@@ -3419,6 +3459,10 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             try:
                 if show_processing_steps:
                     emit_stage(req_id, "Generating Responses with Tools")
+                
+                # DEBUG: Log tools synthesis stage details
+                logger.info(f"[DEBUG] TOOLS SYNTHESIS stage: provider={_ts_provider}, model={_ts_model}")
+                
                 resp_synth = _responses_create(
                     provider=_ts_provider,
                     model=_ts_model,
