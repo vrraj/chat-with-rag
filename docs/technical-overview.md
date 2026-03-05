@@ -1071,7 +1071,7 @@ At a high level, the repository is organized into the following areas:
   - `tools/` – tool-call implementations (weather, nearby airports, web search)
   - `utils/` – helper scripts such as Qdrant collection creation and prompt utilities
   - `scripts/` – backend-side ingestion helpers (e.g., URL processing)
-  - `qdrant_scripts/` – Qdrant management scripts (e.g., collection creation, deletion, listing)
+  - `scripts/qdrant_scripts/` – Qdrant management scripts (e.g., collection creation, deletion, listing)
   - `stream_registry.py`, `stream_stages.py`, `stream_emit.py` – SSE stream coordination
   - `dump_vector.py` – debugging and inspection of stored vectors
 
@@ -1086,7 +1086,7 @@ At a high level, the repository is organized into the following areas:
   - `seed_qdrant.py`, `embedding_compare.py`
   - `batch/process_docs.py` and sample batch input under `batch/input/`
 
-- **qdrant_scripts/** – additional Qdrant administrative operations
+- **scripts/qdrant_scripts/** – additional Qdrant administrative operations
 
 - **data/** – seed data and sample datasets
   - `docs-index.seed.jsonl` – initial documents for indexing
@@ -1149,7 +1149,7 @@ These targets automatically connect to Qdrant using the configured `QDRANT_HOST`
 
 ## 🧱 Qdrant Operations CLI
 
-In addition to the Makefile targets, the repository includes a Python-based Qdrant operations CLI located at `qdrant_scripts/qdrant_ops.py`. This utility provides a simple administrative surface over the active collection and is useful for inspection, backup, and safe maintenance.
+In addition to the Makefile targets, the repository includes a Python-based Qdrant operations CLI located at `scripts/qdrant_scripts/qdrant_ops.py`. This utility provides a simple administrative surface over the active collection and is useful for inspection, backup, and safe maintenance.
 
 Supported operations include:
 
@@ -1165,25 +1165,25 @@ Example invocations:
 
 ```bash
 # List distinct payload fields
-python qdrant_scripts/qdrant_ops.py list-fields
+python scripts/qdrant_scripts/qdrant_ops.py list-fields
 
 # List document titles (with an optional limit)
-python qdrant_scripts/qdrant_ops.py list-titles --limit 50
+python scripts/qdrant_scripts/qdrant_ops.py list-titles --limit 50
 
 # Count chunks for a specific base URL
-python qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://en.wikipedia.org/wiki/Mont_Blanc"
+python scripts/qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://en.wikipedia.org/wiki/Mont_Blanc"
 
 # Export the active collection to a JSONL file under data/
-python qdrant_scripts/qdrant_ops.py export -f docs-index-export.jsonl
+python scripts/qdrant_scripts/qdrant_ops.py export -f docs-index-export.jsonl
 
 # Safely truncate the active collection (interactive confirmation)
-python qdrant_scripts/qdrant_ops.py truncate
+python scripts/qdrant_scripts/qdrant_ops.py truncate
 
 # Inspect vector configuration (dimensions + distance)
-python qdrant_scripts/qdrant_ops.py vector-dims
+python scripts/qdrant_scripts/qdrant_ops.py vector-dims
 
 # Explicitly target a different collection (e.g., Gemini-backed index)
-python qdrant_scripts/qdrant_ops.py --collection document_index_gemini vector-dims
+python scripts/qdrant_scripts/qdrant_ops.py --collection document_index_gemini vector-dims
 ```
 
 The `vector-dims` command is especially useful when:
@@ -1224,7 +1224,7 @@ The repository includes a lightweight Continuous Integration (CI) workflow to pr
 - **Dependency caching:** Caches the pip directory based on the hash of `requirements.txt` to speed up repeated runs.
 - **Checks performed:**
   - Installs dependencies via `pip install -r requirements.txt`.
-  - Runs `python -m compileall backend scripts qdrant_scripts` to perform a syntax-level compile of all project Python code.
+  - Runs `python -m compileall backend scripts scripts/qdrant_scripts` to perform a syntax-level compile of all project Python code.
 
 This CI workflow is intentionally minimal: it validates that dependencies install and that all Python modules compile successfully, while keeping runs fast and avoiding the need to start Docker, Qdrant, or external services. It serves as a basic quality gate and a foundation that teams can extend with additional tests, type checking, or linting as needed.
 

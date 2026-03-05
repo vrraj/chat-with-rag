@@ -34,7 +34,7 @@ The script defaults to the host, port, and collection name defined in `backend/c
 **List Document Titles**: Displays unique URLs and their titles currently in the index (limited to 30 chars).
 
 ```bash
-python qdrant_scripts/qdrant_ops.py list-titles --limit 50
+python scripts/qdrant_scripts/qdrant_ops.py list-titles --limit 50
 ```
 
 **Count Chunks by URL**: Returns the number of individual text fragments indexed for a specific base URL.
@@ -46,7 +46,7 @@ python qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://example.com
 **Introspect Schema**: Lists all payload field names available in the first point of the collection.
 
 ```bash
-python qdrant_scripts/qdrant_ops.py list-fields
+python scripts/qdrant_scripts/qdrant_ops.py list-fields
 ```
 
 #### 2. Data Export & Backups
@@ -62,7 +62,7 @@ python qdrant_scripts/qdrant_ops.py export -f custom-backup.jsonl
 **Delete by Payload**: Removes points where a specific field matches a value (e.g., deleting all chunks from one source).
 
 ```bash
-python qdrant_scripts/qdrant_ops.py delete --field source --value wikipedia
+python scripts/qdrant_scripts/qdrant_ops.py delete --field source --value wikipedia
 ```
 
 **Truncate Collection**: Deletes all points while preserving the collection's configuration (distance metric, vector size, etc.). This requires interactive confirmation.

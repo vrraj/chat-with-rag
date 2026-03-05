@@ -20,31 +20,31 @@ fallbacks to localhost:6333 and collection "document_index" if import fails.
 
 Examples:
   # 1) Retrieve by payload field/value
-  python qdrant_scripts/qdrant_ops.py get --field source --value wikipedia --limit 50
+  python scripts/qdrant_scripts/qdrant_ops.py get --field source --value wikipedia --limit 50
 
   # 1b) Retrieve all points (optionally with a limit)
-  python qdrant_scripts/qdrant_ops.py get --limit 100
+  python scripts/qdrant_scripts/qdrant_ops.py get --limit 100
 
   # 2) List payload field names (from first point)
-  python qdrant_scripts/qdrant_ops.py list-fields
+  python scripts/qdrant_scripts/qdrant_ops.py list-fields
 
   # 2b) List unique URLs with titles (30-char max)
-  python qdrant_scripts/qdrant_ops.py list-titles --limit 100
+  python scripts/qdrant_scripts/qdrant_ops.py list-titles --limit 100
 
   # 3) Count chunks for a specific base URL
-  python qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://example.com"
+  python scripts/qdrant_scripts/qdrant_ops.py count-chunks --base-url "https://example.com"
 
   # 4a) Delete by payload field/value (asks for confirmation)
-  python qdrant_scripts/qdrant_ops.py delete --field doc_id --value 123
+  python scripts/qdrant_scripts/qdrant_ops.py delete --field doc_id --value 123
 
   # 4b) Delete by payload field/value (skip confirmation)
-  python qdrant_scripts/qdrant_ops.py delete --field doc_id --value 123 --yes
+  python scripts/qdrant_scripts/qdrant_ops.py delete --field doc_id --value 123 --yes
 
   # 4c) Delete by explicit point IDs (skip confirmation)
-  python qdrant_scripts/qdrant_ops.py delete --ids 10 11 12 --yes
+  python scripts/qdrant_scripts/qdrant_ops.py delete --ids 10 11 12 --yes
 
   # 4d) Delete all points from a given source (interactive confirmation)
-  python qdrant_scripts/qdrant_ops.py delete --field source --value wikipedia
+  python scripts/qdrant_scripts/qdrant_ops.py delete --field source --value wikipedia
 """
 from __future__ import annotations
 import argparse
@@ -300,13 +300,13 @@ def cmd_export(args) -> int:
 
     Example usage:
       # Export default collection to default file (docs-index-seed.jsonl)
-      python qdrant_scripts/qdrant_ops.py --export
+      python scripts/qdrant_scripts/qdrant_ops.py --export
 
       # Export specific collection to default file
-      python qdrant_scripts/qdrant_ops.py --export --collection my_collection
+      python scripts/qdrant_scripts/qdrant_ops.py --export --collection my_collection
 
       # Export specific collection to custom filename (saved under ./data)
-      python qdrant_scripts/qdrant_ops.py --export --collection my_collection -f my-export.jsonl
+      python scripts/qdrant_scripts/qdrant_ops.py --export --collection my_collection -f my-export.jsonl
     """
     client = build_client(args.host, args.port)
 
@@ -360,10 +360,10 @@ def cmd_truncate(args) -> int:
 
     Example usage:
       # Truncate default collection (from backend/core/config.py)
-      python qdrant_scripts/qdrant_ops.py --truncate
+      python scripts/qdrant_scripts/qdrant_ops.py --truncate
 
       # Truncate a specific collection
-      python qdrant_scripts/qdrant_ops.py --truncate --collection my_collection
+      python scripts/qdrant_scripts/qdrant_ops.py --truncate --collection my_collection
 
       # Expected prompt:
       #   All <N> point(s) will be deleted from the '<collection>' collection.

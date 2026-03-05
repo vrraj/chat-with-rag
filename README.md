@@ -604,7 +604,7 @@ You can verify the indexed documents through the web interface or the command li
 
 ```bash
 source venv/bin/activate
-python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
+python scripts/qdrant_scripts/qdrant_ops.py --list-titles --limit 100
 
 ```
 
@@ -656,14 +656,8 @@ Use this if you want to completely clear a collection but keep using the same na
 ```bash
 # Activate your environment
 source .venv/bin/activate
-
-# Delete specific collection
-python qdrant_scripts/qdrant_ops.py --delete-collection document_index_gemini
-
-# Or delete the current active collection
-python qdrant_scripts/qdrant_ops.py --delete-collection $(python -c "from backend.core.config import settings; print(settings.collection_name)")
+python scripts/qdrant_scripts/qdrant_ops.py --delete-collection $(python -c "from backend.core.config import settings; print(settings.collection_name)")
 ```
-
 
 ### 💬 Example Queries
 The following examples are based on the seed data.
@@ -955,7 +949,8 @@ chat-with-rag/
 │   ├── chat-embed.html   # Embeddable chat widget
 │   └── chat-embed-example.html  # Integration examples
 ├── scripts/              # Maintenance + ingestion scripts
-├── qdrant_scripts/       # Qdrant maintenance scripts
+│   ├── qdrant_scripts/   # Qdrant maintenance scripts
+│   └── batch/            # Batch processing scripts
 ├── prompts/              # Prompt registry (YAML-driven control)
 ├── data/                 # Seed / demo datasets
 ├── images/               # Images for documentation

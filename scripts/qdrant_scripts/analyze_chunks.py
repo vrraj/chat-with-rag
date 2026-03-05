@@ -3,7 +3,7 @@
 Analyze chunks for a specific base URL in Qdrant.
 
 Example usage:
-    python qdrant_scripts/analyze_chunks.py --base-url "https://en.wikipedia.org/wiki/mount_everest"
+    python scripts/qdrant_scripts/analyze_chunks.py --base-url "https://en.wikipedia.org/wiki/mount_everest"
 """
 import argparse
 from qdrant_client import QdrantClient
