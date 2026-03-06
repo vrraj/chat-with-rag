@@ -12,7 +12,8 @@ Functions:
 - get_model_info(): Model information from registry
 """
 
-from llm_adapter import llm_adapter, LLMError
+from llm_adapter import llm_adapter, LLMAdapter, LLMError
+from backend.api.endpoints.model_keys import _get_adapter
 
 
 def generate(*, model_key: str, input: str, tools=None, **kwargs):
@@ -29,17 +30,34 @@ def generate(*, model_key: str, input: str, tools=None, **kwargs):
         Normalized LLMResult dict with standardized fields
     """
     try:
+        # Use custom adapter if model is in custom registry, otherwise default
+        adapter = _get_adapter_for_model(model_key)
+        
         # Filter out conflicting parameters that might be in kwargs
         filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['model', 'input', 'model_key']}
-        response = llm_adapter.create(
+        response = adapter.create(
             model=model_key,
             input=input,
             tools=tools,
             **filtered_kwargs
         )
-        return llm_adapter.normalize_adapter_response(response)
+        return adapter.normalize_adapter_response(response)
     except LLMError:
         raise
+
+
+def _get_adapter_for_model(model_key: str) -> LLMAdapter:
+    """Get the appropriate adapter for the given model key."""
+    # Try custom adapter first (with merged registry)
+    try:
+        custom_adapter = _get_adapter(merge_custom_registry=True)
+        if custom_adapter._lookup_model_info_from_registry(model_key) is not None:
+            return custom_adapter
+    except Exception:
+        pass
+    
+    # Fall back to default adapter
+    return llm_adapter
 
 
 def generate_raw(*, model_key: str, input: str, tools=None, **kwargs):

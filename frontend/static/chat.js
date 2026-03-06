@@ -114,7 +114,7 @@
   // Fetch live model registry from backend and hydrate MODEL_REGISTRY / MODELS_BY_STAGE
   async function fetchModelRegistry() {
     try {
-      const resp = await fetch('/api/models');
+      const resp = await fetch('/api/models?merge_custom_registry=true');
       if (!resp.ok) return; // keep defaults
       const data = await resp.json();
 

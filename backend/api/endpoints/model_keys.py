@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
 import sys
@@ -9,10 +10,17 @@ from fastapi import APIRouter
 from llm_adapter import llm_adapter, model_registry, LLMAdapter
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Custom registry configuration - can be overridden via environment variable
-DEFAULT_CUSTOM_REGISTRY_PATH = Path(__file__).resolve().parents[4] / "examples" / "custom_registry.py"
-CUSTOM_REGISTRY_PATH = Path(os.getenv("CUSTOM_REGISTRY_PATH", str(DEFAULT_CUSTOM_REGISTRY_PATH)))
+# In Docker, the working directory is /app, so we use that as the base
+DEFAULT_CUSTOM_REGISTRY_PATH = Path("/app/examples/custom_registry.py")
+env_path = os.getenv("CUSTOM_REGISTRY_PATH")
+CUSTOM_REGISTRY_PATH = Path(env_path) if env_path else DEFAULT_CUSTOM_REGISTRY_PATH
+
+logger.info(f"DEBUG: DEFAULT_CUSTOM_REGISTRY_PATH = {DEFAULT_CUSTOM_REGISTRY_PATH}")
+logger.info(f"DEBUG: CUSTOM_REGISTRY_PATH = {CUSTOM_REGISTRY_PATH}")
+logger.info(f"DEBUG: Current working directory = {Path.cwd()}")
 
 
 def _get_adapter(merge_custom_registry: bool = False) -> LLMAdapter:
@@ -21,6 +29,10 @@ def _get_adapter(merge_custom_registry: bool = False) -> LLMAdapter:
         return llm_adapter
     
     try:
+        logger.info(f"DEBUG: Attempting to load custom registry from {CUSTOM_REGISTRY_PATH}")
+        logger.info(f"DEBUG: File exists: {CUSTOM_REGISTRY_PATH.exists()}")
+        logger.info(f"DEBUG: File stem: '{CUSTOM_REGISTRY_PATH.stem}'")
+        
         # Import custom registry from configured path
         examples_dir = CUSTOM_REGISTRY_PATH.parent
         if str(examples_dir) not in sys.path:
@@ -28,11 +40,25 @@ def _get_adapter(merge_custom_registry: bool = False) -> LLMAdapter:
         
         # Import the registry module (filename without .py)
         module_name = CUSTOM_REGISTRY_PATH.stem
+        logger.info(f"DEBUG: Importing module '{module_name}' from {examples_dir}")
+        
+        if not module_name:
+            raise ValueError(f"Empty module name from path {CUSTOM_REGISTRY_PATH}")
+        
         registry_module = __import__(module_name)
+        
+        # Hot reload: reload the module to pick up changes
+        import importlib
+        importlib.reload(registry_module)
+        
         USER_REGISTRY = getattr(registry_module, 'REGISTRY')
         
-        # Create new adapter with merged registry
+        logger.info(f"DEBUG: Loaded custom registry with {len(USER_REGISTRY)} models: {list(USER_REGISTRY.keys())}")
+        
+        # Create new adapter with custom registry (LLMAdapter will auto-merge with defaults)
         custom_adapter = LLMAdapter(model_registry=USER_REGISTRY)
+        
+        logger.info(f"DEBUG: Custom adapter created with merged registry")
         
         # Copy API keys from default adapter
         if hasattr(llm_adapter, 'openai_api_key'):
@@ -43,7 +69,9 @@ def _get_adapter(merge_custom_registry: bool = False) -> LLMAdapter:
         return custom_adapter
     except Exception as e:
         # Fall back to default adapter if custom registry fails
-        print(f"Failed to load custom registry from {CUSTOM_REGISTRY_PATH}: {e}")
+        logger.error(f"ERROR: Failed to load custom registry from {CUSTOM_REGISTRY_PATH}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return llm_adapter
 
 
@@ -102,10 +130,15 @@ async def get_models(merge_custom_registry: bool = False) -> Dict[str, Dict[str,
     Returns a JSON mapping of model_key -> lightweight model info
     suitable for building the frontend MODEL_REGISTRY.
     """
+    logger.info(f"DEBUG: get_models called with merge_custom_registry={merge_custom_registry}")
+    logger.info(f"DEBUG: Request URL parameters received")
+    
     if merge_custom_registry:
+        logger.info("DEBUG: Merging custom registry...")
         # Get adapter with custom registry merged
         custom_adapter = _get_adapter(merge_custom_registry=True)
         return get_model_options(adapter=custom_adapter)
     else:
+        logger.info("DEBUG: Using default registry only")
         # Use default registry
         return get_model_options()
