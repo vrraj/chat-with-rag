@@ -3,11 +3,31 @@
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
 
-A modular RAG framework for generating **grounded answers with citations** from unstructured documents using an explicit, multi-stage orchestration pipeline with **multi-LLM support**.
+A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate **grounded answers with citations** from unstructured documents.
 
-The system goes beyond basic vector search by making each step of retrieval and inference observable and configurable—covering high-fidelity ingestion (MediaWiki, PDFs, HTML), query rewriting, retrieval and reranking, tool-augmented inference, and verifiable source citations with live pipeline streaming.
+The system implements an explicit, multi-stage orchestration pipeline covering **high-fidelity ingestion, retrieval, reasoning, tool execution, and response synthesis**, with **multi-LLM support (OpenAI + Gemini)**.
 
-→ **Jump to Getting Started** to run the system locally.
+Unlike simple vector-search demos, this project exposes each stage of the RAG pipeline as a **configurable and observable component**, enabling experimentation with retrieval strategies, prompt design, model selection, and cost control.
+
+All LLM interactions are handled through the standalone Python library  
+**[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
+
+➡️ **Quick Start:** See [Getting Started](#-getting-started) to run the system locally.
+
+## Why This Project Exists
+
+Many RAG implementations start simple but quickly become difficult to manage as capabilities expand.
+
+Typical challenges include:
+
+- managing multiple LLM providers
+- handling provider-specific API differences
+- controlling prompt behavior across stages
+- maintaining stable context windows
+- tracking token usage and costs
+- keeping ingestion pipelines reliable
+
+This project explores a **structured approach to RAG architecture**, where each stage of the pipeline is explicit, configurable, and observable.
 
 ### 🆕 What's New in v2.0
 
@@ -21,6 +41,7 @@ Unified abstraction supporting OpenAI, Gemini, and extensible to additional prov
   Centralized prompt control layer that decouples prompts from code. Supports per-request `prompt_domain` switching for **A/B testing** without code changes.
 
 - **Advanced Context Window Management**  
+  Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage.
 
 - **Per-Stage Model Configuration**  
   Runtime model selection per pipeline stage via UI or API.
@@ -88,6 +109,14 @@ This workspace is the **main entry point to the application**, combining navigat
 
 *Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 
+## Documentation
+
+Additional technical documentation is available in the `/docs` directory:
+
+- **Technical Architecture:** `docs/technical-overview.md`
+- **API Reference:** `docs/api-reference.md`
+- **Data Attribution:** `docs/attributions.md`
+
 ### Table of Contents
 
 - [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
@@ -105,7 +134,7 @@ This workspace is the **main entry point to the application**, combining navigat
 ---
 ## ✨ Features
 
-An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to synthesize raw documents into structured intelligence, featuring a high-fidelity ingestion engine and live observability for verifiable, context-grounded insights.
+An end-to-end modular RAG system that transforms raw documents into grounded answers using a configurable multi-stage pipeline with high-fidelity ingestion and live observability.
 
 ### 📥 High-Fidelity Ingestion
 * **Multi-Source Extraction**: Native support for high-fidelity parsing of **PDFs**, **MediaWiki**, and **HTML**.
@@ -135,8 +164,8 @@ Advanced Chat Orchestration is the system’s control plane for intelligent retr
 - **API-Level Control**  
   Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
 
-- **Multiple LLM Provider Support**  
-  A unified **LLM Adapter** framework that abstracts multiple provider surfaces behind a single contract. Currrently supports
+  - **Multiple LLM Provider Support**  
+  A unified **LLM Adapter** framework that abstracts multiple provider surfaces behind a single contract. Currently supports
   - **OpenAI** (Chat Completions API, Responses API)  
   - **Gemini** (OpenAI-compatible Adapter, native Gemini SDK)  
 
