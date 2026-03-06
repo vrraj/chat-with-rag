@@ -9,54 +9,38 @@ The system implements an explicit, multi-stage orchestration pipeline covering *
 
 Unlike simple vector-search demos, this project exposes each stage of the RAG pipeline as a **configurable and observable component**, enabling experimentation with retrieval strategies, prompt design, model selection, and cost control.
 
-All LLM interactions are handled through the standalone Python library  
-**[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
+All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
 ➡️ **Quick Start:** See [Getting Started](#-getting-started) to run the system locally.
 
-## Why This Project Exists
-
-Many RAG implementations start simple but quickly become difficult to manage as capabilities expand.
-
-Typical challenges include:
-
-- managing multiple LLM providers
-- handling provider-specific API differences
-- controlling prompt behavior across stages
-- maintaining stable context windows
-- tracking token usage and costs
-- keeping ingestion pipelines reliable
-
-This project explores a **structured approach to RAG architecture**, where each stage of the pipeline is explicit, configurable, and observable.
-
 ### 🆕 What's New in v2.0
 
-- **Multi-Provider LLM Framework**  
-Unified abstraction supporting OpenAI, Gemini, and extensible to additional providers.
-
-- **Centralized Model Registry**  
-  Single source of truth for model capabilities, pricing, API, parameter normalization and provider-specific nuances.
-
-- **Prompt Registry (YAML-Driven)**  
-  Centralized prompt control layer that decouples prompts from code. Supports per-request `prompt_domain` switching for **A/B testing** without code changes.
-
-- **Advanced Context Window Management**  
-  Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage.
+- **Multi‑LLM Pipeline Support**  
+The application supports multiple LLM providers through the **vrraj‑llm‑adapter**.
 
 - **Per-Stage Model Configuration**  
-  Runtime model selection per pipeline stage via UI or API.
+Runtime model selection per pipeline stage (rewrite, rerank, summarization, inference) via UI or API.
+
+- **Extensible Model Registry**  
+Model configuration, pricing metadata, and parameter policies are referenced from the adapter’s registry. You may extend or override these defaults using a **custom registry** - no application code changes needed. 
+
+- **Prompt Registry**  
+  Centralized prompt control layer that decouples prompts from application code. Prompts for each pipeline stage are defined in a **YAML-driven registry** (`prompts/prompt_registry.yaml`) and can be switched dynamically using `prompt_domain`, enabling rapid prompt experimentation and domain‑specific pipeline behavior without redeploying the system.
+
+- **Advanced Context Window Management**  
+Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
 
 - **Performance & Cost Controls**  
-  Configurable controls for all pipeline stages with cost tracking.
+Configurable controls for all pipeline stages with cost tracking.
 
 - **Postprocessing LLM Response**  
-  Currently Markdown to scoped HTML conversion - can be extended for additional actions to support workflows.
+Currently supports Markdown → scoped HTML conversion and can be extended for additional post-processing workflows.
 
 - **Embeddable Chat Widget**  
-  Drop-in widget with comprehensive configuration via API params.
+Drop-in widget with comprehensive configuration via API params.
 
 - **Domain-Based Access Controls**  
-  Isolation and authorization enforced consistently across APIs and embedded clients.
+Isolation and authorization enforced consistently across APIs and embedded clients.
 
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
@@ -72,11 +56,15 @@ This app enforces **domain-based access controls** across APIs and embedded widg
 The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
 **Ingestion Pipeline (Data → Enriched Vectors)**
-> Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process & normalize (chunking) ⟹ Metadata augmentation ⟹ Embeddings ⟹ Vector storage
+Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process & normalize (chunking) ⟹ Metadata augmentation ⟹ Embeddings ⟹ Vector storage
 
 **Chat Orchestration Pipeline (Prompt → Answer)**
-> User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
+User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
 
+| Pipeline | Flow |
+|---|---|
+| **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
+| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Summarization` → `Context Assembly` → `Inference Prompt` → `LLM Inference` → `Tool Execution` → `Post-Processing` → `Final Response` |
 
 ### Inference Pipeline in Action 
 
@@ -491,6 +479,7 @@ This repo uses a YAML-based prompt registry to keep prompts centralized and avoi
 
 - **Path:** `prompts/prompt_registry.yaml`
 - **Role:** Source of truth for stage prompt text and templates.
+- **Implementation Detail:** All default prompts and domain-specific overrides are defined in `prompts/prompt_registry.yaml`, which acts as the single source of truth for prompt behavior across the pipeline.
 - **Current coverage:** Inference and query rewrite are registry-driven; rerank and summarization use the registry for their fixed instructions/templates.
 
 ### Prompt domains (`params.prompt_domain`)
@@ -848,37 +837,29 @@ The effective behavior is roughly:
 
 ## 🧠 Reasoning vs Non-Reasoning Models
 
-## 🧠 Reasoning Models Overview
-
 The system supports both reasoning and non-reasoning models with provider-specific behaviors.
 
-1. **Reasoning Control**
+**Reasoning Control**
 The `reasoning_effort` parameter from the inference stage controls reasoning level. These are mapped to provider-specific parameters OpenAI (reasoning.effort) and Gemini (thinking_level/thinking_budget) :
 
-2. **Provider Differences**
-- **OpenAI**: Reasoning tokens are **hidden** from user display
-- **Gemini**: Reasoning shown as `<thought>` tags and **displayed** in frontend. Max completion tokens includes reasoning token and requires padding of "max_inference_token parameter" to account for reasoning tokens. THe padding is calculated from the configurations in the model registry.
+**Reasoning Display**
+When available (`LLMResult.reasoning`), the UI will display it under `Show Reasoning` section. **Gemini** includes reasoning tokens as part of the final answer and requires padding of "max_inference_token parameter" to account for reasoning tokens. The padding is calculated from the configurations in the model registry. 
 
-3. **System Resolution**
-- **LLM Adapter** (`llm-adapter` package): Defines capabilities, parameters, and tool handling
-- **LLM Client** (`llm_client.py`): Clean interface to llm-adapter package
-- **Frontend** (`chat.html`): Displays `<thought>` tags for Gemini, hides OpenAI reasoning tokens
 
 ---
 
 ## 📊 Metrics and Costs
 
 1. **Token Accounting**
-The system tracks and costs tokens based on provider/model usage reporting. Current token accounting includes:
+The system tracks and costs tokens based on provider/model usage reporting:
   - **Prompt Tokens** (Input): Tokens sent to the model (user message + context)
 - **Cached Tokens**: Cached prompt tokens (lower cost)
 - **Completion Tokens** (Output): Tokens in the model's response to the user
 - **Reasoning Tokens**: provided by OpenAI and calculated for Gemini.
 
 
-2 **Rate Sources**
-- **Model Registry** (`llm-adapter` package): Provider-specific pricing per model
-- **Currency**: All costs calculated in USD
+2 **Pricing Sources**
+- **Model Registry** (`llm-adapter` package): Provider-specific pricing per model. You could pass custom  model configurations for any changes to pricing.
 
 3 **Stage-Based Costing**
 Costs are tracked separately for each pipeline stage:
@@ -903,12 +884,11 @@ This system features a **unified LLM client** that provides a consistent interfa
 - **Capability Filtering**: Automatically filters unsupported parameters per model
 - **Error Handling**: Structured error responses with provider-specific context
 
-2. **LLM Adapter** (`llm-adapter` package)
-- **Centralized Metadata**: All model configurations in one place
-- **Provider Support**: Currently supports **OpenAI** and **Gemini** APIs
-- **Extensible Design**: Easy to add new providers and models
-- **Capability Definitions**: Feature support flags per model (tools, streaming, reasoning)
-- **Tool Sanitization**: Automatic tool format conversion for all providers
+2.**LLM Adapter** ([`vrraj-llm-adapter`](https://pypi.org/project/vrraj-llm-adapter/))  
+- **Centralized Model Registry**: Maintains model capabilities, pricing metadata, and parameter policies in a single registry.  
+- **Multi-Provider Support**: Provides a unified interface across **OpenAI** and **Gemini** APIs.  
+- **Extensible Architecture**: Supports custom model registries, allowing users to add or override models and provider configurations at runtime.
+
 
 ### Tested Providers and Models
 
@@ -924,96 +904,36 @@ This system features a **unified LLM client** that provides a consistent interfa
 
 ### Key Benefits
 
-✅ **Provider Agnostic**: Same code works across OpenAI and Gemini  
-✅ **Parameter Adaptation**: Parameter differences handled automatically  
-✅ **Custom Registry Support**: Extend with your own models and configurations  
-✅ **Cost Tracking**: Built-in pricing metadata for all models  
+**Provider Agnostic**: Same code works across OpenAI and Gemini  
+**Parameter Adaptation**: Parameter differences handled automatically  
+**Custom Registry Support**: Extend with your own models and configurations  
+**Cost Tracking**: Built-in pricing metadata for all models  
 
 ### Custom Model Registry
 
 The chat-with-rag application supports custom model registries that extend or override the default `llm-adapter` registry. This allows you to add custom models, override pricing, and configure provider-specific parameters.
 
-### How It Works
-
-The system uses the `llm-adapter` package's built-in registry merging. When you provide a custom registry:
+**Example Custom Registry**
 
 ```python
-# LLMAdapter automatically merges: defaults + custom_registry
-merged_registry = {**dict(defaults), **dict(custom_registry)}
-```
-
-- **Default models**: All standard `llm-adapter` models remain available
-- **Custom models**: Your models are added to the registry
-- **Overrides**: Custom models can override default models by using the same key
-- **Smart routing**: Chat pipeline automatically uses the appropriate adapter
-
-### Implementation
-
-1. **Create custom registry** at `examples/custom_registry.py`:
-
-```python
+from llm_adapter import LLMAdapter
 from llm_adapter.model_registry import ModelInfo, Pricing
 
-REGISTRY = {
-    # Override existing model with custom pricing
-    "openai:gpt-4o": ModelInfo(
-        provider="openai",
-        model="gpt-4o",
-        endpoint="chat_completions",  # or "responses"
-        pricing=Pricing(
-            input_per_mm=0.005,  # Custom pricing
-            output_per_mm=0.015,
-            cached_input_per_mm=0.0025
-        ),
-        capabilities={"reasoning": True, "tools": True},
-        param_policy={
-            "allowed": {"max_output_tokens", "temperature", "top_p", "tools", "tool_choice"},
-            "disabled": set()
-        }
-    ),
-    
-    # Add completely new custom model
-    "custom:experimental": ModelInfo(
+custom_registry = {
+    "my-openai-model": ModelInfo(
         provider="openai",
         model="gpt-4o-mini",
         endpoint="chat_completions",
-        pricing=Pricing(
-            input_per_mm=0.01,
-            output_per_mm=0.03
-        ),
-        capabilities={
-            "experimental": True,
-            "max_tokens": 4096
-        },
-        param_policy={
-            "allowed": {"max_output_tokens", "temperature", "top_p"},
-            "disabled": {"tools"}  # Disable tools for this model
-        }
-    ),
-    
-    # Add Gemini model with custom reasoning
-    "gemini:custom-reasoning": ModelInfo(
-        provider="gemini",
-        model="models/gemini-3-flash-preview",
-        endpoint="gemini_sdk",
-        pricing=Pricing(
-            input_per_mm=0.001,
-            output_per_mm=0.004,
-            cached_input_per_mm=0.0005
-        ),
-        reasoning_policy={
-            "mode": "gemini_level",
-            "effort_map": {
-                "minimal": {"thinking_level": 1},
-                "low": {"thinking_level": 2},
-                "medium": {"thinking_level": 3},
-                "high": {"thinking_level": 4}
-            }
-        }
-    ),
-    # Add more custom models...
+        pricing=Pricing(input_per_mm=0.05, output_per_mm=0.15),
+        param_policy={"allowed": {"temperature", "max_tokens"}},
+        limits={"max_output_tokens": 1000}
+    )
 }
+
+adapter = LLMAdapter(model_registry=custom_registry)
 ```
+>See the [Model Registry](https://vrraj.github.io/llm-adapter/model-registry.html) for the default model definitions and guidance on extending the registry with custom models.
+
 
 2. **Configure environment** (optional):
 ```bash
