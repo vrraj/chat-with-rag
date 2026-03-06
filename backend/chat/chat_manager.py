@@ -503,6 +503,34 @@ def _extract_text_from_responses(resp: Any) -> str:
     return ""
 
 
+def _extract_reasoning_from_responses(resp: Any) -> str | None:
+    """Return reasoning text from a Responses-like object."""
+    
+    # If it's already a normalized response (has 'reasoning' field), extract directly
+    if isinstance(resp, dict) and resp.get("reasoning"):
+        try:
+            reasoning = str(resp.get("reasoning") or "")
+            return reasoning if reasoning.strip() else None
+        except Exception:
+            pass
+    
+    # Handle raw responses - prefer adapter_response surface when present
+    base = getattr(resp, "adapter_response", resp)
+
+    # Try to extract reasoning from the response
+    try:
+        if hasattr(base, "reasoning"):
+            reasoning = str(base.reasoning or "")
+            return reasoning if reasoning.strip() else None
+        elif isinstance(base, dict):
+            reasoning = str(base.get("reasoning") or "")
+            return reasoning if reasoning.strip() else None
+    except Exception:
+        pass
+
+    return None
+
+
 def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, int] | None:
     """Extract canonical usage fields from a response object.
 
@@ -3689,6 +3717,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     final_answer = answer.rstrip("\n") + sources_section
     final_answer = re.sub(r"<sources>Sources</sources>:", "Sources:", final_answer)
     
+    # Extract reasoning from the inference response if available
+    reasoning = None
+    try:
+        if resp_inf is not None:
+            reasoning = _extract_reasoning_from_responses(resp_inf)
+    except Exception:
+        reasoning = None
+    
     return {
         "answer": final_answer,
         "sources": sources,
@@ -3697,6 +3733,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         "metrics": legacy_metrics,
         "tools_used": tools_out,
         "rewrite_display": rewrite_display,
+        "reasoning": reasoning,
     }
 
 # --- end orchestrator ---
