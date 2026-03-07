@@ -475,17 +475,20 @@ For detailed configuration options, see the [Configuration Reference](docs/confi
 
 ---
 
-## 🌐 Embeddable Chat Widget
+## 🪟 Embeddable Chat Widget
 
-A lightweight, secure widget that embeds the **full RAG pipeline** into any website.
+A lightweight widget that embeds the **full RAG pipeline** into any website.
 
-It exposes the same multi-stage orchestration used by the main app—**retrieval, reranking, context management, tool calling, and post-processing**—while staying easy to deploy and easy to tune.
-> Supports application domain isolation for prompt selection.
+The widget exposes the same orchestration used by the main application — **retrieval, reranking, context management, tool calling, and response post‑processing** — while remaining easy to deploy and configure.
 
-### **How you configure it**
-You can configure the widget via **URL query parameters** (direct iframe) or **HTML `data-*` attributes** (embed loader). Supports full parameter API contract and includes `top_k`, `score_threshold`, 'inference_model', `max_output_tokens`, `show_processing_steps`, `show_sources` etc
+> Supports **domain isolation** so different websites can use different knowledge bases and prompt domains.
 
-Screenshot of Inline embed vs iFrame option:
+### Configuration Options
+
+The widget can be configured in two ways:
+
+- **Direct iframe embedding** (simplest)
+- **Embed loader script** using HTML `data-*` attributes (advanced configuration)
 
 <p align="center">
   <a href="images/chat-embedding-options.png">
@@ -497,11 +500,12 @@ Screenshot of Inline embed vs iFrame option:
   </a>
 </p>
 
-*Embeddable chat widget options (inline page or iFrame ).*
+*Embeddable chat widget options (inline page or iframe).* 
 
-### **Sample Configurations**
+---
 
-#### **Simple Chat Widget (Direct iframe)**
+### Simple Example (iframe)
+
 ```html
 <iframe 
   src="https://your-server.com/chat-embed.html?top_k=5&show_citations=true&namespace=simple-chat"
@@ -512,9 +516,12 @@ Screenshot of Inline embed vs iFrame option:
 </iframe>
 ```
 
-#### **Advanced Configuration (Embed Loader Script)**
+---
+
+### Advanced Example (Embed Loader)
+
 ```html
-<!-- 1. Add target container -->
+<!-- 1. Target container -->
 <div id="chat-embed" 
      data-api-url="https://your-server.com"
      data-model_key="openai:gpt-4o-mini"
@@ -525,7 +532,7 @@ Screenshot of Inline embed vs iFrame option:
      data-namespace="oceans">
 </div>
 
-<!-- 2. Add embed loader script (REQUIRED!) -->
+<!-- 2. Embed loader script -->
 <script src="https://your-server.com/static/embed-loader.js"
         data-target="#chat-embed"
         data-api-url="https://your-server.com"
@@ -536,27 +543,21 @@ Screenshot of Inline embed vs iFrame option:
         data-show_citations="true"
         data-namespace="oceans">
 </script>
+```
 
----
+The embed loader automatically initializes the widget and connects it to the configured backend API.
 
-## �️ Tools Included in This Package
+## 🛠️ Tools Included
 
-The system includes several built-in tools that can be invoked during chat conversations:
+The chat pipeline supports optional tool use during inference.
 
-### Web Search
-- **Provider:** DuckDuckGo Instant Answer API
-- **Usage:** Enabled via configuration (`use_web_search`) and called with explicit prompt (use web search)
-- **Output:** Web search results are added to the inference context
+Current built-in tools include:
 
-### Weather Information
-- **Usage:** Automatically called when current weather is requested in queries
-- **Output:** Current weather conditions and forecasts for specified locations
+- **Web Search** — Adds external web results to the inference context when enabled
+- **Weather** — Returns current weather and forecast data for requested locations
+- **Airport Lookup** — Returns nearby airport information for travel- and location-based queries
 
-### Airport Lookup
-- **Usage:** Called when airports or travel-related queries are detected
-- **Output:** Information about nearest airports to specified locations
-
-Tools can be configured per request using the `use_tools` parameter and are integrated seamlessly into the chat pipeline.
+Tool usage can be enabled per request via the application configuration and is integrated into the final response synthesis stage.
 
 ---
 
@@ -699,87 +700,61 @@ Tools Used: get_weather
 
 ## 📦 Batch Ingestion
 
+Batch ingestion is the recommended way to build or refresh a **knowledge base** from multiple sources at once. It supports local documents, remote URLs, and mixed source sets, with optional estimation before indexing.
+
 > **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
 
-### 📊 Embedding Provider Limits
+### What It Does
 
-When configuring chunk sizes and batch processing, be aware of provider-specific limits:
+Each source in the batch is processed through the same ingestion pipeline used elsewhere in the application:
 
-| Feature | OpenAI (text-embedding-3-small/large) | Gemini (gemini-embedding-001) |
-|---------|----------------------------------------|-------------------------------|
-| **Max Inputs per Request** | 2,048 texts | 250 texts |
-| **Max Tokens per Request** | Variable (often restrict ed by Tier) | 20,000 tokens |
-| **Max Tokens per Text** | 8,191 tokens | 2,048 (or 8,000 on newer models) |
-| **Truncation Behavior** | Manual (must be handled by user) | Silent (automatic) by default |
-| **Batch API Support** | Yes (up to 50,000 requests/file) | No (synchronous only via API) |
+`load` → `extract` → `chunk` → `augment metadata` → `embed` → `store`
 
-> **Note**: These limits affect how you should configure `chunk_size` and `embedding_batch_size` in `backend/core/config.py`. Always check current provider documentation for the latest limits.
+This makes it the easiest way to populate or refresh Qdrant collections consistently at scale.
 
-The system supports batch processing of multiple documents (PDFs, web pages, MediaWiki) with the following directory structure and requirements:
+### How to Organize Documents
 
-### Directory Structure for Local PDFs
-When using local file paths in batch processing, the backend expects the following structure:
+A practical pattern is to organize source files by topic or domain before ingestion.
 
-```
-chat-with-rag/
-├── data/
-│   └── pdf-files-for-upload/  # Recommended directory for PDFs
-│       ├── document1.pdf
-│       ├── document2.pdf
-│       └── document3.pdf
+```text
+data/
+├── mountains/
+│   ├── everest.pdf
+│   ├── kilimanjaro.pdf
+│   └── whitney.html
+├── oceans/
+│   ├── pacific.html
+│   └── atlantic.html
+└── travel/
+    ├── italy-guide.pdf
+    └── rome.html
 ```
 
-### Path Handling for batch processing 
-- **Relative Paths (Recommended)**: Use paths relative to the project root
-  - Example: For batch processing documents (Front End: /process-batch-docs.html) from a folder: /app/data/pdf-files-for-upload 
-  - Example direct file reference: `./data/pdf-files-for-upload/document1.pdf`
+This makes it easier to:
 
-- **Absolute Paths**: Must be accessible within the Docker container
-  - Example: `/app/data/pdf-files-for-upload/document1.pdf`
+- build domain-specific collections
+- keep metadata consistent
+- re-index a single topic area without rebuilding everything
 
-### Batch Processing Features
-- Process multiple PDFs, web pages, or MediaWiki articles in a single operation
-- Skip common sections (References, External links, etc.)
-- Set global or per-document chunking and processing options
-- Preview and edit configuration before processing
+### Typical Uses
 
-### Embedding Batch Indexing
-
-To reduce latency and API overhead, the ingestion pipeline batches **multiple chunks** into a single embeddings call wherever possible:
-
-- **Pre-chunked ingestion** (`/mediawiki/url`, `/index`, `frontend/process-batch-docs.html`)
-  - Uses `EmbeddingsManager.index_chunks`, which groups chunks into batches and calls `llm_client.embed` once per batch.
-- **Raw document ingestion** (HTML/PDF via `/index` and `/pdf`)
-  - Uses `EmbeddingsManager.process_document`, which also batches chunk texts before calling the embedding provider.
-
-Batch size is provider-aware and configurable in `backend/core/config.py`:
-
-```python
-embedding_batch_size_default: int = 25
-embedding_batch_size_openai: int = 25
-embedding_batch_size_gemini: int = 25
-```
-
-- For **OpenAI embeddings**, the system uses `embedding_batch_size_openai`.
-- For **Gemini embeddings**, the system uses `embedding_batch_size_gemini`.
-- Any future providers fall back to `embedding_batch_size_default`.
-
-The effective behavior is roughly:
-
-- `num_chunks = 40`, `embedding_batch_size_gemini = 25` → 2 embedding calls (25 + 15 chunks).
-- Token usage and cost accounting remain accurate because each batched call returns aggregate usage, which is tracked per document.
+- ingest a folder of PDFs
+- index a curated list of webpages
+- process mixed source sets in a single batch
+- rebuild a collection after changing chunking or embedding settings
 
 ### Example Batch Configuration
+
 ```json
 {
   "items": [
     {
-      "url": "file:///app/data/pdf-files-for-upload/document1.pdf",
+      "url": "file:///app/data/mountains/everest.pdf",
       "doc_type": "pdf",
       "skip_sections": ["References", "External links"]
     },
     {
-      "url": "https://en.wikipedia.org/wiki/Example",
+      "url": "https://en.wikipedia.org/wiki/Mount_Whitney",
       "doc_type": "mediawiki"
     }
   ],
@@ -789,53 +764,11 @@ The effective behavior is roughly:
 }
 ```
 
-### Best Practices
-1. Place all PDFs in the `data/pdf-files-for-upload` directory
-2. Use relative paths when possible for better portability
-3. Start with `"estimate": true` to preview processing before actual ingestion
-4. Check the web interface's "View Documents" page to verify successful ingestion
+>Start with **`"estimate": true`** to preview cost and processing behavior **before committing** a batch to storage.
 
----
+See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#-2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
 
-## 🧠 Reasoning vs Non-Reasoning Models
-
-The system supports both reasoning and non-reasoning models with provider-specific behaviors.
-
-**Reasoning Control**
-The `reasoning_effort` parameter from the inference stage controls reasoning level. These are mapped to provider-specific parameters OpenAI (reasoning.effort) and Gemini (thinking_level/thinking_budget) :
-
-**Reasoning Display**
-When available (`LLMResult.reasoning`), the UI will display it under `Show Reasoning` section. **Gemini** includes reasoning tokens as part of the final answer and requires padding of "max_inference_token parameter" to account for reasoning tokens. The padding is calculated from the configurations in the model registry. 
-
-
----
-
-## 📊 Metrics and Costs
-
-1. **Token Accounting**
-The system tracks and costs tokens based on provider/model usage reporting:
-  - **Prompt Tokens** (Input): Tokens sent to the model (user message + context)
-- **Cached Tokens**: Cached prompt tokens (lower cost)
-- **Completion Tokens** (Output): Tokens in the model's response to the user
-- **Reasoning Tokens**: provided by OpenAI and calculated for Gemini.
-
-
-2 **Pricing Sources**
-- **Model Registry** (`llm-adapter` package): Provider-specific pricing per model. You could pass custom  model configurations for any changes to pricing.
-
-3 **Stage-Based Costing**
-Costs are tracked separately for each pipeline stage:
-- **Embedding**: Vector generation costs
-- **Rewrite**: Query rewrite processing
-- **ReRanking**: Document re-ranking
-- **Summary**: Context Window summary processing
-- **Inference**: Primary response generation
-- **Inference with Tools**: Final response if tools are used
-
----
-
-
-## 🤖 LLM Integration
+##  LLM Integration
 
 This system uses the Python package **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** to provide a unified interface across multiple LLM providers.
 
@@ -856,7 +789,7 @@ To load a user-defined custom model registry, set:
 export CUSTOM_REGISTRY_PATH=/path/to/your/custom_registry.py
 ```
 
-See the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)** for the models supported, default model definitions, and guidance on extending the adapter with custom models.
+See the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)** for the models supported, default model definitions, reasoning model configurations, and guidance on extending the adapter with custom models.
 
 ---
 
