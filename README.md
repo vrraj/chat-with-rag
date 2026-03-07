@@ -263,7 +263,7 @@ The script will:
 - create a Python virtual environment, install dependencies, and seed sample data (`make seed`)
 
 > [!IMPORTANT]
-> Before running the script, create an **OpenAI API key** and set a **hard usage limit** in your OpenAI Dashboard.  See [2.1.4 Configure OpenAI API & Costs](#214-configure-openai-api--costs)
+> Before running the script, create an **OpenAI API key** and set a **hard usage limit** in your OpenAI Dashboard.  See [2.1.4 Configure API Keys and Budget Controls](#214-configure-api-keys-and-budget-controls)
 
 
 **Step 1 — Clone repo and run setup script**
@@ -385,7 +385,7 @@ make start
 
 #### 2.1.8 Initialize environment and seed data
 
-To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
+To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). By default, `make seed` uses the sample collection configured for **OpenAI embeddings**. This requires a local Python environment.
 
 ```bash
 # Create and activate virtual environment
@@ -398,10 +398,12 @@ deactivate
 
 ```
 
+> **Note for Gemini users:** The seeded sample data is built with the default OpenAI embedding configuration. If you switch the embedding model to Gemini, you should re-index the dataset after changing `embedding_model` so the stored vector dimensions remain consistent.
+
 #### 2.1.9 Provider-Specific Configuration
 
 ##### Using Gemini as Primary Provider
-If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index your data so the stored vector dimensions remain consistent.
+If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index the seeded dataset (or your own collection) so the stored vector dimensions remain consistent.
 
 ```python
 embedding_model = "gemini:embed"  # Change from "openai:embed_small"
@@ -554,7 +556,7 @@ Tool usage can be enabled per request via the application configuration and is i
 
 When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **50 Wikipedia pages**. This focus on world-renowned mountains, national parks, and trails provides a rich environment to test the RAG pipeline's accuracy.
 
-> **Note:** Sample data is created in the `document_index` collection in qDrant and uses the `openai:embed_small` embedding key (text-embedding-3-small with 1536 dimensions).
+> **Note:** The sample data created by `make seed` is indexed into the `document_index` collection using the default OpenAI embedding key `openai:embed_small` (`text-embedding-3-small`, 1536 dimensions). If you switch to Gemini embeddings, re-index the data after updating the embedding model.
 
 ### 📄 Data Attribution
 To demonstrate multi-source RAG capabilities, this project includes a sample knowledge base derived from Wikipedia.
@@ -757,7 +759,7 @@ This makes it easier to:
 
 See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#-2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
 
-##  LLM Integration
+## LLM Integration
 
 This system uses the Python package **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** to provide a unified interface across multiple LLM providers.
 
