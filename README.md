@@ -246,22 +246,19 @@ Ensure your environment meets these requirements before proceeding:
 - **Git** – required to clone the repository. Install: https://git-scm.com/downloads
 - **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
 - **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
-- **LLM Provider API Key(s):** Required for embeddings and chat inference. You can use **OpenAI**, **Gemini**, or both. [OpenAI API keys](https://platform.openai.com/api-keys)
+- **LLM Provider API Key(s):** Required for embeddings and chat inference. Supports **OpenAI** and **Gemini**.
 
 
+### ⚡ 2.0 Automated Setup (macOS/Linux)
 
-### ⚡ 2.0 One-Command Setup (macOS/Linux)
-
-To get the system running quickly, use the setup script below.
-
-The script will:
+To get the system running quickly, use the setup script below. The script will:
 
 - create `.env` if needed and prompt for `OPENAI_API_KEY`
 - start Docker services (`make start`)
 - create a Python virtual environment, install dependencies, and seed sample data (`make seed`)
 
-> [!IMPORTANT]
-> Before running the script, create an **OpenAI API key** and set a **hard usage limit** in your OpenAI Dashboard.  See [2.1.4 Configure API Keys and Budget Controls](#214-configure-api-keys-and-budget-controls)
+> [!TIP]
+> Before running the script, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure usage limits or alerts, especially when testing a new system. See [2.1.4 Configure API Keys and Budget Controls](#214-configure-api-keys-and-budget-controls).
 
 
 **Step 1 — Clone repo and run setup script**
@@ -355,7 +352,6 @@ vi .env   # or use 'nano .env' / your preferred text editor
 OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
-
 
 
 #### 2.1.6 LLM Providers, Models, and Endpoints (Overview)
