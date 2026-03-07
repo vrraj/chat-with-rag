@@ -2,8 +2,6 @@
 
 *An open-source reference architecture for building production-style Retrieval-Augmented Generation (RAG) systems with multi-LLM support, configurable pipelines, and document-grounded answers.*
 
-![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
-
 
 A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate **grounded answers with citations** from unstructured documents.
 
@@ -13,7 +11,7 @@ Unlike simple vector-search demos, this project exposes each stage of the RAG pi
 
 >All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
-➡️ **Get Started:** See [Getting Started](#-getting-started) to run the system locally.
+**Get Started:** See [Getting Started](#-getting-started) to run the system locally.
 
 ### 🆕 What's New in v2.0
 
@@ -53,7 +51,7 @@ This app enforces **domain-based access controls** across APIs and embedded widg
 
 
 
-## ⚙️ High-Level RAG Pipeline Overview
+## High-Level RAG Pipeline Overview
 
 The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
@@ -116,7 +114,7 @@ This project serves as a **reference architecture for production-style Retrieval
 - **Domain-specific knowledge bases** (e.g., travel, healthcare, finance) with separate collections, embeddings, and prompt domains
 - **Observability-focused RAG development** where each stage of the pipeline can be inspected, tuned, and cost-tracked
 
-### Inference Pipeline in Action 
+### 📸 Inference Pipeline in Action 
 
 The screenshot below shows the **chat orchestration pipeline in action** during a live conversation. It demonstrates key capabilities of the system:
 
@@ -139,7 +137,7 @@ The screenshot below shows the **chat orchestration pipeline in action** during 
 
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
-### Application Workspace
+### 🖥️ Application Workspace
 This workspace provides a **simple navigation menu** to access the main parts of the application. From here you can open the chat interface, manage documents, inspect the vector store, run batch ingestion, and generate embeddable chat experiences.
 
 <p align="center">
@@ -157,7 +155,7 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 ---
 
-## ✨ Features
+## Features
 
 ### 📥 High-Fidelity Ingestion
 - **Multi-Source Extraction** — High-fidelity parsing for **PDFs**, **MediaWiki**, and **HTML**.
@@ -168,7 +166,7 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 Advanced Chat Orchestration coordinates retrieval, context management, prompt selection, model execution, tool integration, observability, and output rendering into a deterministic multi-stage pipeline.
 
-#### 🔹 1. Pipeline Control & Execution Flow
+#### 🔧 1. Pipeline Control & Execution Flow
 *Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
 
 - **Multi-Stage LLM Pipeline Orchestration**  
@@ -445,14 +443,14 @@ For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html
 
 This repo uses a YAML-based prompt registry to keep prompts centralized and avoid drift between code paths.
 
-### Registry file
+### 📝 Registry file
 
 - **Path:** `prompts/prompt_registry.yaml`
 - **Role:** Source of truth for stage prompt text and templates.
 - **Implementation Detail:** All default prompts and domain-specific overrides are defined in `prompts/prompt_registry.yaml`, which acts as the single source of truth for prompt behavior across the pipeline.
 - **Current coverage:** Inference and query rewrite are registry-driven; rerank and summarization use the registry for their fixed instructions/templates.
 
-### Prompt domains (`params.prompt_domain`)
+### 🎯 Prompt domains (`params.prompt_domain`)
 
 You can select a prompt domain per request using `params.prompt_domain`.
 
@@ -474,7 +472,7 @@ The widget exposes the same orchestration used by the main application — **ret
 
 > Supports **domain isolation** so different websites can use different knowledge bases and prompt domains.
 
-### Configuration Options
+### ⚙️ Configuration Options
 
 The widget can be configured in two ways:
 
@@ -495,7 +493,7 @@ The widget can be configured in two ways:
 
 ---
 
-### Simple Example (iframe)
+### 🖼️ Simple Example (iframe)
 
 ```html
 <iframe 
@@ -509,7 +507,7 @@ The widget can be configured in two ways:
 
 ---
 
-### Advanced Example (Embed Loader)
+### 🔧 Advanced Example (Embed Loader)
 
 ```html
 <!-- 1. Target container -->
@@ -695,7 +693,7 @@ Batch ingestion is the recommended way to build or refresh a **knowledge base** 
 
 > **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
 
-### What It Does
+### 🎯 What It Does
 
 Each source in the batch is processed through the same ingestion pipeline used elsewhere in the application:
 
@@ -703,7 +701,7 @@ Each source in the batch is processed through the same ingestion pipeline used e
 
 This makes it the easiest way to populate or refresh Qdrant collections consistently at scale.
 
-### How to Organize Documents
+### 📁 How to Organize Documents
 
 A practical pattern is to organize source files by topic or domain before ingestion.
 
@@ -727,14 +725,14 @@ This makes it easier to:
 - keep metadata consistent
 - re-index a single topic area without rebuilding everything
 
-### Typical Uses
+### 💡 Typical Uses
 
 - ingest a folder of PDFs
 - index a curated list of webpages
 - process mixed source sets in a single batch
 - rebuild a collection after changing chunking or embedding settings
 
-### Example Batch Configuration
+### 📄 Example Batch Configuration
 
 ```json
 {
@@ -765,14 +763,14 @@ This system uses the Python package **[vrraj-llm-adapter](https://pypi.org/proje
 
 The adapter normalizes model configuration, requests, responses, tool calls, and usage metrics across providers while allowing different models to be used across pipeline stages.
 
-### Key Capabilities
+### 🔑 Key Capabilities
 
 - **Multi-Provider Support** — Works with OpenAI and Gemini models
 - **Registry-Driven Model Configuration** — Model capabilities, pricing, and parameter policies are defined in a centralized model registry
 - **Provider-Agnostic Calls** — The same application code works across providers
 - **Custom Model Registries** — Users can extend or override models without changing application code
 
-### Custom Registry Path
+### ⚙️ Custom Registry Path
 
 To load a user-defined custom model registry, set:
 
@@ -817,7 +815,7 @@ See **docs/technical-overview.md** for a deeper architectural breakdown of the s
 
 This application includes a **domain-based access control framework** for APIs and embedded widgets.
 
-### Included Security Controls
+### 🛡️ Included Security Controls
 
 - **Domain-Based API Access** — Chat and embedding endpoints can enforce domain-level access rules
 - **Embeddable Widget Restrictions** — `chat-embed.html` can be restricted to authorized domains
