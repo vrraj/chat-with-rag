@@ -13,7 +13,7 @@ Unlike simple vector-search demos, this project exposes each stage of the RAG pi
 
 >All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
-➡️ **Quick Start:** See [Getting Started](#-getting-started) to run the system locally.
+➡️ **Get Started:** See [Getting Started](#-getting-started) to run the system locally.
 
 ### 🆕 What's New in v2.0
 
@@ -62,6 +62,48 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 |---|---|
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
 | **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Summarization` → `Context Assembly` → `Inference Prompt` → `LLM Inference` → `Tool Execution` → `Post-Processing` → `Final Response` |
+
+```mermaid
+%%{init: {'themeVariables': { 'fontSize': '18px', 'subgraphFontSize': '22px'}}}%%
+graph LR
+    %% Global Styling
+    classDef default stroke-width:2px,rect:round;
+    classDef highlight fill:#f96,stroke:#333,stroke-width:3px,font-weight:bold;
+    classDef storage fill:#69f,color:#fff,stroke:#333;
+    classDef logic fill:#dfd,stroke:#333;
+
+    subgraph "CHAT ORCHESTRATION"
+        direction LR
+        U[User] --> QR{Rewrite}
+        %% The 'Search' node acts as the transition point
+        QR -- "Request" --> Search[Search]
+        
+        %% Return path from Ingestion back to Chat
+        R[Rerank] --> Sum[Summary] --> Inf[Inference]
+        
+        Inf --> Tools{Tools?}
+        Tools -- "Yes" --> API[Tool Calls] --> Inf2[Inference-with-Tools] --> Post[Post-Proc]
+        Tools -- "No" --> Post
+        Post --> Out[Final Answer]
+    end
+
+    subgraph "INGESTION PIPELINE"
+        direction LR
+        S[Sources] --> P[Parse] --> C[Chunk] --> D[Add Metadata] --> E[Embed] --> DB[(Vector DB)]
+    end
+
+    %% PHYSICAL CONNECTIONS (Crossing Subgraphs)
+    %% 1. Search logic enters Ingestion to hit the DB
+    Search -- "Query" --> DB
+    
+    %% 2. DB returns results back to the Search node or directly to Rerank
+    DB -- "Results" --> R
+
+    %% Apply Classes to match v2.0 features
+    class Inf,Inf2 highlight;
+    class DB storage;
+    class QR,Search logic;
+```
 
 ## Example Use Cases
 
@@ -213,7 +255,7 @@ See the **[Embeddable Widget Configuration](#-embeddable-chat-widget)** section 
 
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
 
-> **LLMProvider Note:** The system supports multiple LLM providers, including **OpenAI** and **Gemini**, and is designed to be extensible to additional providers. Providers can be switched or mixed **per pipeline stage** after setup. The tested models are defined centrally in the **Model Registry**
+> **Provider Note:** The system supports both **OpenAI** and **Gemini**, and providers can be switched or mixed **per pipeline stage** after setup.
 
 
 ### 📋 1. Prerequisites
@@ -222,7 +264,7 @@ Ensure your environment meets these requirements before proceeding:
 - **Git** – required to clone the repository. Install: https://git-scm.com/downloads
 - **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
 - **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
-- **LLM Provider API Keys:** Required for embeddings and chat pipeline. Default setup uses OpenAI. [Get one here](https://platform.openai.com/api-keys)
+- **LLM Provider API Key(s):** Required for embeddings and chat inference. You can use **OpenAI**, **Gemini**, or both. [OpenAI API keys](https://platform.openai.com/api-keys)
 
 
 
@@ -292,7 +334,7 @@ cd chat-with-rag
 
 ```
 
-#### 2.1.3 Choose Your AI Provider(s)
+#### 2.1.3 Choose Your Provider(s)
 
 This application supports **multiple AI providers** with different capabilities:
 
@@ -301,13 +343,11 @@ This application supports **multiple AI providers** with different capabilities:
 | **OpenAI** | ✅ Default provider | Standard models, reasoning models, native API | OpenAI Platform account |
 | **Gemini** | ✅ Optional provider | Thinking models, OpenAI-compatible API | Google AI Platform account |
 
-> **Note**: You can use **either** provider or mix **the two** for different pipeline stages.
+> **Note:** You can use either provider or mix both across different pipeline stages.
 
-The following models are available for use in the model registry:
-**OpenAI**: gpt-4o, gpt-4o-mini, o1-mini, o3-mini, text-embedding-3-small/large
-**Gemini**: gemini-2.5-flash-lite, gemini-2.5-pro, gemini-embedding-001
+For the supported models, endpoint mappings, and registry details, see the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
 
-#### 2.1.4 Configure API Keys & Costs
+#### 2.1.4 Configure API Keys and Budget Controls
 
 Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
 >The setup instructions in this section uses OpenAI for reference. You may follow the same steps for Gemini. 
@@ -332,28 +372,9 @@ Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
 > **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
 
 ##### Option C: Both Providers (Advanced)
-Use different providers for different pipeline stages via UI or API
+Use different providers for different pipeline stages via the UI or API.
 > Sample data collection uses OpenAI embeddings (text-embedding-3-small) with 1536 dimensions
 
-### 2.1.6 LLM Providers, Models, and Endpoints (Overview)
-
-The system uses a centralized **Model Registry** to define and manage all supported LLM providers, models, and API surfaces. The registry serves as the **single source of truth** for provider routing, model capabilities, and cost tracking, and is consumed uniformly by the application and LLM handler.
-
-Currently the system supports these LLM *endpoints** :
-
-- **Open AI:** 
-  - chat-completions
-  - responses API
-  - embeddings
-
-- **Gemini:**
-  - chat-completions (OpenAI compatible adapter)
-  - gemini-sdk
-  - embeddings
-
-
-
-> Detailed provider behavior, endpoint mappings, and capability flags are documented in **[docs/technical-overview.md](docs/technical-overview.md)** and the model registry itself.
 
 #### 2.1.5 Set up local environment variables
 
@@ -376,24 +397,37 @@ GEMINI_API_KEY=your_gemini_api_key_here
 #### 2.1.6 Provider-Specific Configuration
 
 ##### Using Gemini as Primary Provider
-If you prefer Gemini over OpenAI:
+If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index your data so the stored vector dimensions remain consistent.
 
-1. **Update Embedding Model** (in `backend/core/config.py`):
-   ```python
-   embedding_model = "gemini:embed"  # Change from "openai:embed_small"
-   ```
+```python
+embedding_model = "gemini:embed"  # Change from "openai:embed_small"
+``` 
 
-2. **Re-index Sample Data**:
-   ```bash
-   # Export current data
-   # Visit frontend/list-docs.html → Export as JSON
-   
-   # Process with new embeddings
-   # Visit frontend/process-batch-docs.html → Import JSON
-   ```
+See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
 
 
-#### 2.1.7 Start Infrastructure
+#### 2.1.7 LLM Providers, Models, and Endpoints (Overview)
+
+The system uses a centralized **Model Registry** to define and manage all supported LLM providers, models, and API surfaces. The registry serves as the **single source of truth** for provider routing, model capabilities, and cost tracking, and is consumed uniformly by the application and LLM handler.
+
+Currently the system supports these LLM *endpoints** :
+
+- **Open AI:** 
+  - chat-completions
+  - responses API
+  - embeddings
+
+- **Gemini:**
+  - chat-completions (OpenAI compatible adapter)
+  - gemini-sdk
+  - embeddings
+
+
+
+> Detailed provider behavior, endpoint mappings, and capability flags are documented in **[docs/technical-overview.md](docs/technical-overview.md)** and the model registry itself.
+
+
+#### 2.1.8 Start Infrastructure
 
 ```bash
 make start
@@ -403,7 +437,7 @@ make start
 > `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-#### 2.1.8 Initialize environment and seed data
+#### 2.1.9 Initialize environment and seed data
 
 To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
 
@@ -418,7 +452,7 @@ deactivate
 
 ```
 
-#### 2.1.8) Access the interface
+#### 2.1.10 Access the interface
 Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
 
 
@@ -444,7 +478,7 @@ For additional Make targets (logs, reset, reseed, maintenance utilities), refer 
 - the `Makefile` in the project root
 - **[docs/technical-overview.md](docs/technical-overview.md)**
 
-For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter contract, see:
+For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter options, see:
 
 👉 **[docs/api-reference.md](docs/api-reference.md)**
 
@@ -822,19 +856,17 @@ See **docs/technical-overview.md** for a deeper architectural breakdown of the s
 
 ---
 
-## � Security & Deployment
+## 🔐 Security & Deployment
 
-This application includes a **domain-based access control framework** that provides built-in security for API endpoints and embedded widgets.
+This application includes a **domain-based access control framework** for APIs and embedded widgets.
 
-### **Implemented Security Features**
+### Included Security Controls
 
-#### **Domain-Based Access Controls**
-- **API Endpoint Protection**: All `/chat` and embedding endpoints enforce domain-based access controls
-- **Embeddable Widget Security**: `chat-embed.html` can only be embedded on authorized domains via `data-domain` attribute
+- **Domain-Based API Access** — Chat and embedding endpoints can enforce domain-level access rules
+- **Embeddable Widget Restrictions** — `chat-embed.html` can be restricted to authorized domains
+- **Collection Isolation** — Separate domains can be mapped to different knowledge bases and prompt configurations
 
----
-
----
+For deployment details and implementation notes, see **[docs/technical-overview.md](docs/technical-overview.md)**.
 
 ## 📡 API Usage
 
