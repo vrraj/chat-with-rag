@@ -154,19 +154,15 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 *Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 
-### 📥 High-Fidelity Ingestion
-* **Multi-Source Extraction**: Native support for high-fidelity parsing of **PDFs**, **MediaWiki**, and **HTML**.
-* **Intelligent Processing**: 
-    * **Smart Chunking**: Preserves semantic context across chunks.
-    * **Structure Preservation**: Maintains the integrity of tables and structured layouts.
-    * **Noise Filtering**: Configurable noise filtering to remove headers, footers, and selected sections for cleaner context.
-> **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
 
 ---
 
 ## ✨ Features
 
-An end-to-end modular RAG system that transforms raw documents into grounded answers using a configurable multi-stage pipeline with high-fidelity ingestion and live observability.
+### 📥 High-Fidelity Ingestion
+- **Multi-Source Extraction** — High-fidelity parsing for **PDFs**, **MediaWiki**, and **HTML**.
+- **Intelligent Processing** — Smart chunking (semantic), structure preservation, and configurable noise filtering for cleaner retrieval context.
+> **Batch & Scale:** Process local directories (`file://`) or remote URLs with built-in token and cost estimation before indexing.
 
 ### 🧠 Advanced Chat Orchestration
 
@@ -200,29 +196,17 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 
 
 #### 🔍 4. Retrieval, Inference & Tool Augmentation
-*Synthesizes grounded answers by combining retrieved knowledge, tools, and model inference.*
+*Combines retrieved knowledge, context assembly, tool use, and model inference to produce grounded answers.*
 
-- **Retrieval Optimization**
-  - Vector search via Qdrant with configurable Top-K and score thresholds
+- **Retrieval Optimization** — Vector search via Qdrant with configurable top-k and score thresholds.
 
-- **Inference Context Assembly**  
-  Final LLM prompts are composed from:
-  - System and user instructions (prompt registry)
-  - Domain-specific prompt augmentations
-  - Conversation summary and verbatim tail
-  - Retrieved and reranked document chunks
-  - Optional web search context
-  - User query
+- **Inference Context Assembly** — Final prompts are built from prompt instructions, domain overrides, conversation context, reranked document chunks, optional web results, and the user query.
 
-- **Tool Execution**
-  - Native function/tool calling (currently get_weather and get_airports)
-  - Tool outputs are merged into the final synthesis stage
+- **Tool Execution** — Native tool/function calling (currently 'web search`,`get_weather` and `get_airports`) with tool outputs merged into the final synthesis stage.
 
+  > Web search can be added either through an automatic web context stage or via an LLM tool call.
 
-  > Web search is supported via an optional automatic web context stage and via an LLM tool call.
-
-- **Verified Citations**
-  - All final answers include citations (URL and source document section / sub-section reference)
+- **Verified Citations** — Final answers include citations to source URLs and document sections where available.
 
 
 #### 📊 5. Observability & Cost Management
@@ -268,47 +252,31 @@ Ensure your environment meets these requirements before proceeding:
 
 
 
-### ⚡ 2.0 One-command setup (macOS/Linux)
+### ⚡ 2.0 One-Command Setup (macOS/Linux)
 
-If you prefer fewer copy/paste steps, you can **run the setup in one go**.
+To get the system running quickly, use the setup script below.
 
-This script will:
-- Create `.env` (if missing) and prompt you for `OPENAI_API_KEY`
-- Start Docker services (`make start`)
-- Create a Python venv, install dependencies, and seed sample data (`make seed`)
+The script will:
+
+- create `.env` if needed and prompt for `OPENAI_API_KEY`
+- start Docker services (`make start`)
+- create a Python virtual environment, install dependencies, and seed sample data (`make seed`)
 
 > [!IMPORTANT]
-> The API key is written to your local `.env` file. Treat it like a password (don't commit it).
->
-> Before running the setup, create an **OpenAI API Platform** key and set a **hard usage limit** (budget + alerts) in your OpenAI Dashboard.
-> See: [2.1.3 Configure OpenAI API & Costs](#213-configure-openai-api--costs)
+> Before running the script, create an **OpenAI API key** and set a **hard usage limit** in your OpenAI Dashboard.  See [2.1.4 Configure OpenAI API & Costs](#214-configure-openai-api--costs)
 
-Paste the commands below into your terminal.
 
-**Step 1 — Clone the repo**
+**Step 1 — Clone repo and run setup script**
 
 ```bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
-
-
-```
-
-> **Note:** You will be prompted to enter your OpenAI API key when you run the setup script. The API key is stored in `.env`. Treat it like a password — never commit it to Git.
-
-**Step 2 — Run the setup**
-
-```bash
 bash scripts/rag_setup.sh
-
 ```
 
-> **Troubleshooting (macOS):** If `make smoke_api` or `python3 scripts/api_smoke_test.py` fails with `SSL: CERTIFICATE_VERIFY_FAILED`, your Python install may be missing trusted root certificates.
->
-> Run:
-```bash
-open "/Applications/Python 3.12/Install Certificates.command"
-```
+**Step 2 — Open the application**
+
+Visit `http://localhost:8000`
 
 
 ### 🛠️ 2.1 Manual setup (step-by-step)
@@ -380,10 +348,6 @@ Use different providers for different pipeline stages via the UI or API.
 
 Copy the example environment file and add your API key(s).
 
-> **Note:** Optional: Advanced users may instead set API keys as OS environment variables.  
-> If set, they will take precedence over the values in `.env`.
-> If you used the one-command setup script above, it will prompt for OpenAI key and write it into your local .env automatically.
-
 ```bash
 cp .env.example .env
 # IMPORTANT: Open .env and add your API keys
@@ -394,40 +358,22 @@ OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-#### 2.1.6 Provider-Specific Configuration
-
-##### Using Gemini as Primary Provider
-If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index your data so the stored vector dimensions remain consistent.
-
-```python
-embedding_model = "gemini:embed"  # Change from "openai:embed_small"
-``` 
-
-See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
 
 
-#### 2.1.7 LLM Providers, Models, and Endpoints (Overview)
+#### 2.1.6 LLM Providers, Models, and Endpoints (Overview)
 
 The system uses a centralized **Model Registry** to define and manage all supported LLM providers, models, and API surfaces. The registry serves as the **single source of truth** for provider routing, model capabilities, and cost tracking, and is consumed uniformly by the application and LLM handler.
 
 Currently the system supports these LLM *endpoints** :
 
-- **Open AI:** 
-  - chat-completions
-  - responses API
-  - embeddings
-
-- **Gemini:**
-  - chat-completions (OpenAI compatible adapter)
-  - gemini-sdk
-  - embeddings
-
+- **Open AI:** : chat-completions, responses API, embeddings
+- **Gemini:** : chat-completions (OpenAI compatible adapter), gemini-sdk, embeddings
 
 
 > Detailed provider behavior, endpoint mappings, and capability flags are documented in **[docs/technical-overview.md](docs/technical-overview.md)** and the model registry itself.
 
 
-#### 2.1.8 Start Infrastructure
+#### 2.1.7 Start Infrastructure
 
 ```bash
 make start
@@ -437,7 +383,7 @@ make start
 > `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-#### 2.1.9 Initialize environment and seed data
+#### 2.1.8 Initialize environment and seed data
 
 To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
 
@@ -451,6 +397,17 @@ make seed
 deactivate
 
 ```
+
+#### 2.1.9 Provider-Specific Configuration
+
+##### Using Gemini as Primary Provider
+If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index your data so the stored vector dimensions remain consistent.
+
+```python
+embedding_model = "gemini:embed"  # Change from "openai:embed_small"
+``` 
+
+See **[docs/technical-overview.md](docs/technical-overview.md#-re-embedding-workflow)** for the recommended re-ingestion workflow.
 
 #### 2.1.10 Access the interface
 Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
@@ -472,11 +429,9 @@ Use the following Make targets to manage the application lifecycle:
 
   ```
 
-These commands are the recommended way to run and shut down the system locally.
-
 For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
 - the `Makefile` in the project root
-- **[docs/technical-overview.md](docs/technical-overview.md)**
+- **[docs/technical-overview.md](docs/technical-overview.md#-developer--operator-utilities-makefile)**
 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter options, see:
 
