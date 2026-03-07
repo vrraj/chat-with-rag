@@ -1,5 +1,7 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
+*An open-source reference architecture for building production-style Retrieval-Augmented Generation (RAG) systems with multi-LLM support, configurable pipelines, and document-grounded answers.*
+
 ![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
 
 
@@ -51,24 +53,37 @@ This app enforces **domain-based access controls** across APIs and embedded widg
 
 
 
-## 🧠 High-Level RAG Pipeline Overview
+## ⚙️ High-Level RAG Pipeline Overview
 
 The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
-**Ingestion Pipeline (Data → Enriched Vectors)**
-Documents (single or batch) ⟹ Load ⟹ Extract (PDF / HTML / Wiki) ⟹ Process & normalize (chunking) ⟹ Metadata augmentation ⟹ Embeddings ⟹ Vector storage
-
-**Chat Orchestration Pipeline (Prompt → Answer)**
-User prompt ⟹ Query rewrite ⟹ Retrieval ⟹ Rerank ⟹ Summarization ⟹ Context assembly ⟹ Inference prompt assembly ⟹ LLM inference ⟹ Tool execution (if needed) ⟹ Post-processing ⟹ Final response
 
 | Pipeline | Flow |
 |---|---|
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
 | **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Summarization` → `Context Assembly` → `Inference Prompt` → `LLM Inference` → `Tool Execution` → `Post-Processing` → `Final Response` |
 
+## Example Use Cases
+
+This project serves as a **reference architecture for production-style Retrieval-Augmented Generation (RAG) systems**. Typical use cases include:
+
+- **Document-grounded chat assistants** for PDFs, HTML pages, internal documentation, or MediaWiki sources
+- **Multi-model experimentation** comparing OpenAI and Gemini models across different pipeline stages
+- **Prompt and retrieval experimentation** using query rewrite, reranking, and domain-specific prompts
+- **Embedded knowledge assistants** for websites using the embeddable chat widget
+- **Domain-specific knowledge bases** (e.g., travel, healthcare, finance) with separate collections, embeddings, and prompt domains
+- **Observability-focused RAG development** where each stage of the pipeline can be inspected, tuned, and cost-tracked
+
 ### Inference Pipeline in Action 
 
-The screenshot below illustrates how these **inference pipeline stages** work together to generate a complete response in action, showing multi-turn conversation with  rewritten query, context maintenance across turns (_compare with ..._), tool calling capabilities, **multi-model** capabilities (openai, gemini), and LLM response postprocessing (HTML-formatted responses) with citations.
+The screenshot below shows the **chat orchestration pipeline in action** during a live conversation. It demonstrates key capabilities of the system:
+
+- Query rewrite for improved retrieval
+- Multi‑turn context preservation
+- Retrieval + inference working together
+- Optional tool calls
+- Multi‑model execution (OpenAI and Gemini)
+- HTML‑formatted responses with citations
 
 <p align="center">
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
@@ -83,7 +98,7 @@ The screenshot below illustrates how these **inference pipeline stages** work to
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
 ### Application Workspace
-This workspace is the **main entry point to the application**, combining navigation, ingestion, and operational tooling into a single interface. It provides access to chat configuration, embeddable experiences, vector store inspection, document management, and batch ingestion, making the full lifecycle of data and retrieval behavior visible and controllable from one place.
+This workspace provides a **simple navigation menu** to access the main parts of the application. From here you can open the chat interface, manage documents, inspect the vector store, run batch ingestion, and generate embeddable chat experiences.
 
 <p align="center">
   <a href="images/content-ingestion-primary-actions.png">
@@ -97,33 +112,6 @@ This workspace is the **main entry point to the application**, combining navigat
 
 *Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 
-## Documentation
-
-Additional technical documentation is available in the `/docs` directory:
-
-- **Technical Architecture:** `docs/technical-overview.md`
-- **API Reference:** `docs/api-reference.md`
-- **Data Attribution:** `docs/attributions.md`
-
-### Table of Contents
-
-- [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
-- [Features](#-features)
-  - [Advanced Chat Orchestration](#-advanced-chat-orchestration)
-  - [Prompt Registry](#-prompt-registry-yaml)
-- [Getting Started](#-getting-started)
-- [Embeddable Chat Widget](#-embeddable-chat-widget)
-- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
-- [Batch Ingestion](#-batch-ingestion)
-- [API Usage Examples](#-api-usage-examples)
-- [Security & Deployment](#-security--deployment)
-- [License & Usage](#-license--usage)
-
----
-## ✨ Features
-
-An end-to-end modular RAG system that transforms raw documents into grounded answers using a configurable multi-stage pipeline with high-fidelity ingestion and live observability.
-
 ### 📥 High-Fidelity Ingestion
 * **Multi-Source Extraction**: Native support for high-fidelity parsing of **PDFs**, **MediaWiki**, and **HTML**.
 * **Intelligent Processing**: 
@@ -132,10 +120,15 @@ An end-to-end modular RAG system that transforms raw documents into grounded ans
     * **Noise Filtering**: Configurable noise filtering to remove headers, footers, and selected sections for cleaner context.
 > **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
 
+---
+
+## ✨ Features
+
+An end-to-end modular RAG system that transforms raw documents into grounded answers using a configurable multi-stage pipeline with high-fidelity ingestion and live observability.
 
 ### 🧠 Advanced Chat Orchestration
 
-Advanced Chat Orchestration is the system’s control plane for intelligent retrieval and response generation. It coordinates pipeline execution, prompt and model selection, context and memory handling, retrieval and tool augmentation, observability, and output rendering into a single deterministic, observable flow—making complex multi-stage LLM behavior explicit, configurable, and testable.
+Advanced Chat Orchestration coordinates retrieval, context management, prompt selection, model execution, tool integration, observability, and output rendering into a deterministic multi-stage pipeline.
 
 #### 🔹 1. Pipeline Control & Execution Flow
 *Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
@@ -144,27 +137,13 @@ Advanced Chat Orchestration is the system’s control plane for intelligent retr
   Granular control over each stage: Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing.
 
 - **Stage-Specific Model Configuration**  
-  Independent model selection per stage, configurable at runtime via UI or API.
-
-- **Dynamic Model Selection (UI)**  
-  Per-stage model selection mid-conversation, including mixing providers (OpenAI + Gemini) for  capabilities and cost-control.
+  Each pipeline stage can run a different model (rewrite, rerank, summarization, inference), configurable at runtime via UI or API.
 
 - **API-Level Control**  
   Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
 
-  - **Multiple LLM Provider Support**  
-  A unified **LLM Adapter** framework that abstracts multiple provider surfaces behind a single contract. Currently supports
-  - **OpenAI** (Chat Completions API, Responses API)  
-  - **Gemini** (OpenAI-compatible Adapter, native Gemini SDK)  
-
-  >**Provider-specific differences are normalized so the pipeline remains provider-agnostic.**
-
-- **Model Registry Centralization**  
-  Models are selected via stable **registry keys** (e.g. `openai:fast`, `gemini:embed`) that abstract provider and model differences. The registry is the single source of truth for **capabilities, pricing, parameter semantics, and normalization**, enabling per-stage provider mixing, consistent routing, validation, and cost tracking without application changes.
-
-- **Prompt Registry (YAML-Driven Control)**  
-  A centralized prompt control layer that decouples prompts from code, supports default system and user prompts, with  domain-specific augmentation. Injects application-derived context dynamically at runtime. 
-  >A `prompt_domain` parameter can be passed per request to alter pipeline behavior without code changes, enabling parallel chat sessions and **A/B testing** of prompt strategies.
+- **Provider & Prompt Abstraction**  
+  The pipeline uses the **vrraj-llm-adapter** and the YAML **prompt registry** to keep model selection, provider differences, and prompt behavior configurable without changing application code.
 
 
 
@@ -207,11 +186,11 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 #### 📊 5. Observability & Cost Management
 *Provides real-time visibility into pipeline execution, token usage, and per-stage costs.*
 
-- **Real-Time Observability**
-Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens
+- **Real-Time Observability**  
+  Live **SSE (Server-Sent Events)** stream exposing pipeline stage execution and intermediate processing events in real time.
 
-- **Granular Cost Tracking**
-Instant transparency with per-stage token usage and dollar-cost metrics for every turn
+- **Granular Cost Tracking**  
+  Per-stage token usage and cost metrics for every turn.
 
 #### 🎨 6. Postprocessing & Output Rendering
 *Transforms raw LLM output into presentation-ready responses without affecting core inference behavior.*
@@ -439,7 +418,7 @@ deactivate
 
 ```
 
-#### 2.1.7) Access the interface
+#### 2.1.8) Access the interface
 Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
 
 
@@ -491,16 +470,7 @@ You can select a prompt domain per request using `params.prompt_domain`.
 
 In the UI (`frontend/chat.html`), the **Prompt Domain** dropdown under **Inference** controls the value sent on every chat request.
 
-### Debug logging (safe by default)
-
-The backend logs:
-
-- Which domain was resolved for inference.
-- A short tail snippet of the resolved system instruction.
-
-To log the full resolved prompt/template for debugging, set:
-
-- `PROMPT_REGISTRY_LOG_FULL=1`
+For detailed configuration options, see the [Configuration Reference](docs/configuration.md#prompt-registry).
 
 
 ---
@@ -566,37 +536,29 @@ Screenshot of Inline embed vs iFrame option:
         data-show_citations="true"
         data-namespace="oceans">
 </script>
-```
 
 ---
 
-## 🌐 Web Search 
+## �️ Tools Included in This Package
 
-The system supports web search (DuckDuckGo Instant Answer API) in two distinct modes, **Automatic Web Context** and **LLM Tool Call**:
+The system includes several built-in tools that can be invoked during chat conversations:
 
-1. **Automatic Web Context**
-   - Enabled in configuration with `use_web_search`
-   - Behavior:
-     - Runs as part of the chat pipeline stage **Establish Web Context**. and adds <web_search>web search results</web_search> to the inference prompt.
-     
-2. **LLM Tool Call (`web_search` tool)**
-   - Enabled when tools are enabled and the model chooses to call the tool.
-   - Returns as Tool Call output to the synthesis stage as `[SOURCE: TOOL - web_search] ...`.
+### Web Search
+- **Provider:** DuckDuckGo Instant Answer API
+- **Usage:** Enabled via configuration (`use_web_search`) and called with explicit prompt (use web search)
+- **Output:** Web search results are added to the inference context
 
+### Weather Information
+- **Usage:** Automatically called when current weather is requested in queries
+- **Output:** Current weather conditions and forecasts for specified locations
 
-### 🧪 2.4 Developer Mode (Optional)
+### Airport Lookup
+- **Usage:** Called when airports or travel-related queries are detected
+- **Output:** Information about nearest airports to specified locations
 
-To enable **hot-reload** (Uvicorn reload) for active development:
-
-1.  **Open `docker-compose.yml`**.
-2.  **Change the command** from `python start.py` to `python run.py`.
-3.  **Restart the container** (run `make start` again).
-
-> [!TIP]
-> Because the webapp is a **volume mount**, any changes you make to your local `.py` files will reflect instantly inside the container. `run.py` detects these changes and triggers an automatic Uvicorn restart.
+Tools can be configured per request using the `use_tools` parameter and are integrated seamlessly into the chat pipeline.
 
 ---
-
 
 ## 📚 Knowledge Base and Sample Data
 
@@ -872,252 +834,29 @@ Costs are tracked separately for each pipeline stage:
 
 ---
 
+
 ## 🤖 LLM Integration
 
-This system features a **unified LLM client** that provides a consistent interface for multiple AI providers and models through the llm-adapter package.
+This system uses the Python package **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** to provide a unified interface across multiple LLM providers.
 
-### Core Components
+The adapter normalizes model configuration, requests, responses, tool calls, and usage metrics across providers while allowing different models to be used across pipeline stages.
 
-1. **LLM Client** (`backend/llm/llm_client.py`)
-- **Unified Interface**: Single entry point for all LLM calls across providers
-- **Automatic Parameter Mapping**: Handles provider-specific parameter differences
-- **Capability Filtering**: Automatically filters unsupported parameters per model
-- **Error Handling**: Structured error responses with provider-specific context
+### Key Capabilities
 
-2.**LLM Adapter** ([`vrraj-llm-adapter`](https://pypi.org/project/vrraj-llm-adapter/))  
-- **Centralized Model Registry**: Maintains model capabilities, pricing metadata, and parameter policies in a single registry.  
-- **Multi-Provider Support**: Provides a unified interface across **OpenAI** and **Gemini** APIs.  
-- **Extensible Architecture**: Supports custom model registries, allowing users to add or override models and provider configurations at runtime.
+- **Multi-Provider Support** — Works with OpenAI and Gemini models
+- **Registry-Driven Model Configuration** — Model capabilities, pricing, and parameter policies are defined in a centralized model registry
+- **Provider-Agnostic Calls** — The same application code works across providers
+- **Custom Model Registries** — Users can extend or override models without changing application code
 
+### Custom Registry Path
 
-### Tested Providers and Models
+To load a user-defined custom model registry, set:
 
-- **OpenAI**: Responses API and Chat Completions API
-  - **Model Coverage**: 
-    -  **Pipeline stages**: `gpt-4o-mini`, `gpt-4o` `o3-mini`, `gpt-5-mini`
-    - **Embeddings**: `text-embedding-3-small`, `text-embedding-3-large`
-
-- **Gemini**: OpenAI-Compatible API and Gemini SDK
-  - **Model Coverage**:
-    - **Pipeline stages**: `gemini-2.5-flash-lite`, `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-3-flash`
-    - **Embeddings**: `gemini-embedding-001`
-
-### Key Benefits
-
-**Provider Agnostic**: Same code works across OpenAI and Gemini  
-**Parameter Adaptation**: Parameter differences handled automatically  
-**Custom Registry Support**: Extend with your own models and configurations  
-**Cost Tracking**: Built-in pricing metadata for all models  
-
-### Custom Model Registry
-
-The chat-with-rag application supports custom model registries that extend or override the default `llm-adapter` registry. This allows you to add custom models, override pricing, and configure provider-specific parameters.
-
-**Example Custom Registry**
-
-```python
-from llm_adapter import LLMAdapter
-from llm_adapter.model_registry import ModelInfo, Pricing
-
-custom_registry = {
-    "my-openai-model": ModelInfo(
-        provider="openai",
-        model="gpt-4o-mini",
-        endpoint="chat_completions",
-        pricing=Pricing(input_per_mm=0.05, output_per_mm=0.15),
-        param_policy={"allowed": {"temperature", "max_tokens"}},
-        limits={"max_output_tokens": 1000}
-    )
-}
-
-adapter = LLMAdapter(model_registry=custom_registry)
-```
->See the [Model Registry](https://vrraj.github.io/llm-adapter/model-registry.html) for the default model definitions and guidance on extending the registry with custom models.
-
-
-2. **Configure environment** (optional):
 ```bash
 export CUSTOM_REGISTRY_PATH=/path/to/your/custom_registry.py
 ```
 
-3. **Use in UI** - The "Change Models" dialog will automatically include your custom models.
-
-4. **API Integration** - Custom models are available via `/api/models?merge_custom_registry=true`
-
-5. **Hot Reload** - Changes to `custom_registry.py` are automatically picked up. No server restart needed.
-
-**Manual Reload URL**: 
-```
-GET http://localhost:8000/api/models?merge_custom_registry=true
-```
-
-**Features**:
-- Override existing model configurations
-- Add new provider/model combinations  
-- Custom pricing and capability flags
-- Provider-specific parameter policies
-- Automatic UI integration
-- **Hot reload** for instant updates  
-✅ **Future Proof**: Easy to extend to additional providers  
-✅ **Type Safety**: Structured responses and error handling  
-✅ **Performance**: Optimized routing and capability caching  
-
-### Technical Architecture
-
-#### Registry Merging Process
-
-The custom registry system leverages the `llm-adapter` package's built-in merging capabilities:
-
-```python
-# In LLMAdapter.__init__ (llm_adapter/llm_adapter.py:184-185)
-defaults = getattr(_model_registry, "REGISTRY", {})
-self.model_registry = {**dict(defaults), **dict(model_registry)}
-```
-
-**Merge Semantics**:
-- **Base registry**: All default `llm-adapter` models (14+ models)
-- **Custom registry**: Your `examples/custom_registry.py` models
-- **Result**: Combined registry with custom models overriding defaults on key collision
-
-#### Adapter Selection Logic
-
-The chat pipeline uses smart adapter selection in `backend/llm/llm_client.py`:
-
-```python
-def _get_adapter_for_model(model_key: str) -> LLMAdapter:
-    # Try custom adapter first (with merged registry)
-    try:
-        custom_adapter = _get_adapter(merge_custom_registry=True)
-        if custom_adapter._lookup_model_info_from_registry(model_key) is not None:
-            return custom_adapter  # Custom model found
-    except Exception:
-        pass
-    
-    # Fall back to default adapter
-    return llm_adapter  # Default model
-```
-
-**Decision Flow**:
-1. **Model lookup** in custom registry → Use custom adapter
-2. **Model not found** in custom registry → Use default adapter
-3. **Custom registry fails** → Use default adapter (fallback)
-
-#### Hot Reload Mechanism
-
-Hot reload is implemented in `backend/api/endpoints/model_keys.py`:
-
-```python
-# Module reload on each API call
-registry_module = __import__(module_name)
-import importlib
-importlib.reload(registry_module)  # Re-executes custom_registry.py
-USER_REGISTRY = getattr(registry_module, 'REGISTRY')
-custom_adapter = LLMAdapter(model_registry=USER_REGISTRY)
-```
-
-**Reload Process**:
-1. **API call** to `/api/models?merge_custom_registry=true`
-2. **Module reload**: `importlib.reload()` re-executes `custom_registry.py`
-3. **Registry rebuild**: New `LLMAdapter` with latest custom models
-4. **Cache update**: Fresh registry data returned to client
-
-#### Provider Resolution
-
-The LLM adapter resolves providers using the lookup hierarchy:
-
-```python
-# In LLMAdapter.create() (llm_adapter/llm_adapter.py:1916-1923)
-if not provider:
-    try:
-        mi = self._lookup_model_info_from_registry(model)
-        inferred = getattr(mi, "provider", None) if mi is not None else None
-        if inferred:
-            provider = str(inferred).strip().lower()
-    except Exception:
-        provider = ""  # Empty string triggers "Provider '' not supported" error
-```
-
-**Resolution Order**:
-1. **Explicit provider** passed to `create()` method
-2. **Registry lookup** via `_lookup_model_info_from_registry()`
-3. **Provider extraction** from `ModelInfo.provider` attribute
-4. **Fallback** to empty string (error case)
-
-#### Endpoint Routing
-
-Different endpoints trigger different API calls:
-
-```python
-# OpenAI endpoints in LLMAdapter._openai_call()
-if endpoint == self.ENDPOINT_RESPONSES:
-    # New OpenAI API format
-    resp = client.responses.create(...)
-elif endpoint == self.ENDPOINT_CHAT_COMPLETIONS:
-    # Legacy OpenAI API format  
-    resp = client.chat.completions.create(...)
-```
-
-**Supported Endpoints**:
-- **`responses`**: New OpenAI API (recommended)
-- **`chat_completions`**: Legacy OpenAI API (widely supported)
-- **`gemini_sdk`**: Gemini native SDK
-- **`embeddings`**: OpenAI embedding models
-- **`embed_content`**: Gemini embedding models
-
-#### Error Handling
-
-The system implements multi-level error handling:
-
-1. **Registry Loading**: Falls back to default adapter if custom registry fails
-2. **Model Lookup**: Falls back to default adapter if model not found in custom registry
-3. **Provider Resolution**: Raises `LLMError` if provider cannot be determined
-4. **API Calls**: Provider-specific error handling with detailed error messages
-
-#### Performance Considerations
-
-- **Registry Size**: Merged registry typically contains 17+ models (14 default + 3+ custom)
-- **Lookup Performance**: O(1) dictionary lookup for model resolution
-- **Hot Reload Overhead**: ~1-2ms per API call (negligible compared to LLM calls)
-- **Memory Usage**: Each adapter instance maintains its own registry copy
-
-#### Configuration Options
-
-**Environment Variables**:
-```bash
-# Custom registry path (optional)
-CUSTOM_REGISTRY_PATH=/path/to/custom_registry.py
-
-# Model allowlist (optional)
-LLM_ADAPTER_ALLOWED_MODELS=openai:gpt-4o,custom:experimental
-```
-
-**Registry Structure**:
-```python
-REGISTRY = {
-    "provider:model_key": ModelInfo(
-        provider="openai|gemini",           # Required
-        model="provider-model-name",         # Required  
-        endpoint="responses|chat_completions|gemini_sdk|embeddings|embed_content",
-        pricing=Pricing(...),                # Optional
-        capabilities={...},                  # Optional
-        param_policy={...},                  # Optional
-        reasoning_policy={...},              # Optional
-        limits={...},                        # Optional
-    )
-}
-```
-
-```python
-from backend.llm.llm_client import generate
-
-# Works across providers with same interface
-response = generate(
-    model_key="openai:gpt-4o-mini",     # or "gemini:openai-2.5-flash-lite"
-    input="Explain quantum computing",
-    temperature=0.7,
-    max_output_tokens=1000
-)
-```
+See the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)** for the models supported, default model definitions, and guidance on extending the adapter with custom models.
 
 ---
 
@@ -1135,32 +874,16 @@ This overview covers module structure, extraction pipeline, embedding flow, Qdra
 
 ```text
 chat-with-rag/
-├── backend/               # Server-side application
-│   ├── api/              # HTTP routes (chat, ingestion)
-│   ├── chat/             # Chat orchestration, tools, SSE stages
-│   ├── core/             # Settings, logging, shared schemas
-│   ├── db/               # Qdrant client + vector store layer
-│   ├── embeddings/       # Embedding manager + model abstraction
-│   ├── extractor/        # HTML/MediaWiki/PDF extractors + splitters
-│   ├── llm/              # LLM handler and model registry
-│   ├── tools/            # Tool implementations (weather, web search)
-│   ├── crawler/          # URL & PDF fetch utilities
-│   └── utils/            # Shared helpers and admin scripts
-├── frontend/             # Browser UI
-│   ├── static/           # JS/CSS assets (embed-loader.js, chat-embed.js)
-│   ├── index.html        # Landing page
-│   ├── chat.html         # Chat interface
-│   ├── chat-embed.html   # Embeddable chat widget
-│   └── chat-embed-example.html  # Integration examples
-├── scripts/              # Maintenance + ingestion scripts
-│   ├── qdrant_scripts/   # Qdrant maintenance scripts
-│   └── batch/            # Batch processing scripts
-├── prompts/              # Prompt registry (YAML-driven control)
-├── data/                 # Seed / demo datasets
-├── images/               # Images for documentation
-├── logs/                 # Rotating runtime logs
-└── qdrant_storage/       # Local Qdrant data volume
+├── backend/      # API, chat orchestration, ingestion pipeline, vector DB integration, tools
+├── frontend/     # Chat UI, embed pages, static assets
+├── scripts/      # Batch ingestion and maintenance utilities
+├── prompts/      # YAML prompt registry
+├── docs/         # Technical architecture and API documentation
+├── data/         # Seed/demo datasets
+└── images/       # README and documentation images
 ```
+
+See **docs/technical-overview.md** for a deeper architectural breakdown of the system modules and pipelines.
 
 
 
@@ -1178,80 +901,15 @@ This application includes a **domain-based access control framework** that provi
 
 ---
 
-## 📡 API Usage Example
+---
 
-### **Complete Chat API Call**
+## 📡 API Usage
 
-```bash
-curl -X POST "http://localhost:8000/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the main differences between Atlantic and Pacific oceans?",
-    "namespace": "oceans",
-    "render_html": true,
-    "show_processing_steps": true,
-    "stage_specs": {
-      "rewrite": {"model_key": "openai:gpt-4o-mini"},
-      "rerank": {"model_key": "openai:gpt-4o-mini"},
-      "inference": {"model_key": "openai:gpt-4o-mini"},
-      "summarization": {"model_key": "openai:gpt-4o-mini"}
-    },
-    "top_k": 5,
-    "show_citations": true
-  }' | jq '.'
-```
-
-### **Sample API Response**
-
-```json
-{
-  "answer": "The Atlantic Ocean is generally warmer and saltier than the Pacific Ocean...",
-  "response": "The Atlantic Ocean is generally warmer and saltier than the Pacific Ocean...",
-  "answer_html": "<p>The Atlantic Ocean is generally warmer and saltier than the Pacific Ocean...</p>",
-  "sources": [
-    {
-      "title": "Ocean Comparison Study",
-      "url": "https://example.com/ocean-study",
-      "snippet": "Atlantic waters average 22°C while Pacific averages 17°C...",
-      "citation": "[1]"
-    }
-  ],
-  "metrics": {
-    "vectors_retrieved": 5,
-    "tokens_used": 1250,
-    "cost_estimate": 0.0042
-  },
-  "turn_metrics": {
-    "rewrite_confidence": 0.85,
-    "reranking_score": 0.92
-  },
-  "conversation_totals": {
-    "total_turns": 3,
-    "total_tokens": 3800
-  },
-  "tools_used": ["web_search"],
-  "rewrite_display": {
-    "original": "differences between Atlantic and Pacific",
-    "rewritten": "What are the main differences between Atlantic and Pacific oceans?",
-    "confidence": 0.85
-  }
-}
-```
-
-### **Key Response Fields**
-
-- **`answer`**: Complete response text with citations
-- **`answer_html`**: Formatted HTML response (when `render_html=true`)
-- **`sources`**: Source documents with citations
-- **`metrics`**: Token usage, costs, retrieval counts
-- **`turn_metrics`**: Current turn performance data
-- **`conversation_totals`**: Session-level statistics
-- **`tools_used`**: Tools invoked during processing
-- **`rewrite_display`**: Query rewrite information
+For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](docs/api-reference.md)**.
 
 ---
 
-## �� License & Usage
+## ⚖️ License & Usage
 
 This project is **source-available** for **personal, educational, and evaluation purposes**.  
 It is permitted to **run, modify, and fork** the code for non-commercial use.
