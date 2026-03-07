@@ -7,11 +7,11 @@
 
 A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate **grounded answers with citations** from unstructured documents.
 
-The system implements an explicit, multi-stage orchestration pipeline covering **high-fidelity ingestion, retrieval, reasoning, tool execution, and response synthesis**, with **multi-LLM support (OpenAI + Gemini)**.
+The system implements an explicit, **multi-stage** orchestration pipeline covering high-fidelity **ingestion**, **retrieval**, **reasoning**, **tool** execution, and **response** synthesis.
 
 Unlike simple vector-search demos, this project exposes each stage of the RAG pipeline as a **configurable and observable component**, enabling experimentation with retrieval strategies, prompt design, model selection, and cost control.
 
-All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
+>All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
 ➡️ **Quick Start:** See [Getting Started](#-getting-started) to run the system locally.
 
@@ -27,7 +27,7 @@ Runtime model selection per pipeline stage (rewrite, rerank, summarization, infe
 Model configuration, pricing metadata, and parameter policies are referenced from the adapter’s registry. You may extend or override these defaults using a **custom registry** - no application code changes needed. 
 
 - **Prompt Registry**  
-  Centralized prompt control layer that decouples prompts from application code. Prompts for each pipeline stage are defined in a **YAML-driven registry** (`prompts/prompt_registry.yaml`) and can be switched dynamically using `prompt_domain`, enabling rapid prompt experimentation and domain‑specific pipeline behavior without redeploying the system.
+Centralized prompt control layer that decouples prompts from application code. Prompts for each pipeline stage are defined in a **YAML-driven registry** (`prompts/prompt_registry.yaml`) and can be switched dynamically using `prompt_domain`, enabling rapid prompt experimentation and domain‑specific pipeline behavior without redeploying the system.
 
 - **Advanced Context Window Management**  
 Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
