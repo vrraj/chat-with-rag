@@ -70,17 +70,17 @@ graph LR
 
     subgraph "CHAT ORCHESTRATION"
         direction LR
-        U[User] --> QR{Rewrite}
-        %% The 'Search' node acts as the transition point
-        QR -- "Request" --> Search[Search]
-        
+        U[User Prompt] --> QR[Query Rewrite]
+        QR --> Search[Retrieval]
+
         %% Return path from Ingestion back to Chat
-        R[Rerank] --> Sum[Summary] --> Inf[Inference]
-        
-        Inf --> Tools{Tools?}
-        Tools -- "Yes" --> API[Tool Calls] --> Inf2[Inference-with-Tools] --> Post[Post-Proc]
-        Tools -- "No" --> Post
-        Post --> Out[Final Answer]
+        R[Rerank] --> Ctx[Context Assembly] --> Inf[LLM Inference]
+
+        Inf --> Tools{Tool Execution?}
+        Tools -- "Yes" --> API[Tool Calls] --> Synth[Response Synthesis] --> Post[Post-Processing]
+        Tools -- "No" --> Synth
+        Synth --> Post
+        Post --> Out[Final Response]
     end
 
     subgraph "INGESTION PIPELINE"
@@ -96,7 +96,7 @@ graph LR
     DB -- "Results" --> R
 
     %% Apply Classes to match v2.0 features
-    class Inf,Inf2 highlight;
+    class Inf,Synth highlight;
     class DB storage;
     class QR,Search logic;
 ```
@@ -109,6 +109,7 @@ This project serves as a **reference architecture for production-style Retrieval
 - **Multi-model experimentation** comparing OpenAI and Gemini models across different pipeline stages
 - **Prompt and retrieval experimentation** using query rewrite, reranking, and domain-specific prompts
 - **Embedded knowledge assistants** for websites using the embeddable chat widget
+- **API-driven RAG workflows** where chat sessions, document ingestion, embeddable chat, and pipeline stage parameters can be invoked programmatically from external applications or automation workflows
 - **Domain-specific knowledge bases** (e.g., travel, healthcare, finance) with separate collections, embeddings, and prompt domains
 - **Observability-focused RAG development** where each stage of the pipeline can be inspected, tuned, and cost-tracked
 
