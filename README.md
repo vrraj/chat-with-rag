@@ -1,17 +1,15 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
-*An open-source reference architecture for building production-style Retrieval-Augmented Generation (RAG) systems with multi-LLM support, configurable pipelines, and document-grounded answers.*
-
 
 A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate **grounded answers with citations** from unstructured documents.
 
-The system implements an explicit, **multi-stage** orchestration pipeline covering high-fidelity **ingestion**, **retrieval**, **reasoning**, **tool** execution, and **response** synthesis.
+The system implements an explicit, **multi-stage** orchestration **pipeline** covering high-fidelity **ingestion**, **retrieval**, **reasoning**, **tool** execution, and **response** synthesis.
 
-Unlike simple vector-search demos, this project exposes each stage of the RAG pipeline as a **configurable and observable component**, enabling experimentation with retrieval strategies, prompt design, model selection, and cost control.
+Unlike simple vector-search demos, this project exposes each stage of the RAG pipeline as a **configurable and observable component**, enabling experimentation with retrieval strategies, **prompt design**, **model selection**, and **cost control**.
 
 >All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
-**Get Started:** See [Getting Started](#-getting-started) to run the system locally.
+**Get Started:** See section [Getting Started](#-getting-started) to run the system locally.
 
 ### 🆕 What's New in v2.0
 
@@ -33,7 +31,7 @@ Hybrid strategy combining summarized conversation history with recent verbatim t
 - **Performance & Cost Controls**  
 Configurable controls for all pipeline stages with cost tracking.
 
-- **Postprocessing LLM Response**  
+- **Post-processing LLM Response**  
 Currently supports Markdown → scoped HTML conversion and can be extended for additional post-processing workflows.
 
 - **Embeddable Chat Widget**  
@@ -47,7 +45,7 @@ Isolation and authorization enforced consistently across APIs and embedded clien
 
 
 > **Auth & Security Note**  
-This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** below for details and deployment guidance.
+This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** for more details.
 
 
 
@@ -59,7 +57,7 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 | Pipeline | Flow |
 |---|---|
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
-| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Summarization` → `Context Assembly` → `Inference Prompt` → `LLM Inference` → `Tool Execution` → `Post-Processing` → `Final Response` |
+| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
 ```mermaid
 %%{init: {'themeVariables': { 'fontSize': '18px', 'subgraphFontSize': '22px'}}}%%
@@ -817,7 +815,7 @@ This application includes a **domain-based access control framework** for APIs a
 - **Embeddable Widget Restrictions** — `chat-embed.html` can be restricted to authorized domains
 - **Collection Isolation** — Separate domains can be mapped to different knowledge bases and prompt configurations
 
-For deployment details and implementation notes, see **[docs/technical-overview.md](docs/technical-overview.md)**.
+These security controls help prevent unauthorized access and ensure that different domains or websites can only access their designated knowledge bases and configurations.
 
 ## 📡 API Usage
 
