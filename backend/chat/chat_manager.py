@@ -247,7 +247,7 @@ def resolve_stage_specs(
 
     # Existing flat temps/limits (read as-is)
     rewrite_temp = float(getattr(settings_obj, "rewrite_temperature", 0.2))
-    rewrite_max_out = int(getattr(settings_obj, "rewrite_max_output_tokens", 128))
+    rewrite_max_out = int(getattr(settings_obj, "rewrite_max_output_tokens", getattr(settings_obj, "rewrite_max_tokens", 128)))
 
     summarizer_temp = float(getattr(settings_obj, "summarizer_temperature", 0.3))
     summarizer_max_in = int(getattr(settings_obj, "summarizer_max_input_tokens", 512))
@@ -1725,7 +1725,7 @@ def rewrite_query(
         # Log an estimated prompt token count for rewrite
         try:
             _rw = stage_spec or {}
-            _model_for_est = str(_rw.get("model") or settings.rewrite_model)
+            _model_for_est = str(_rw.get("model") or getattr(settings, 'rewrite_model_key', 'openai:gpt-4o-mini'))
             enc = _get_encoder_for_model(_model_for_est)
             pt_est = len(enc.encode(prompt))
             #logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, _model_for_est)
@@ -1734,12 +1734,12 @@ def rewrite_query(
         # Invoke the rewrite model with the prompt for the user's latest message for it to rewrite it
         _rw = stage_spec or {}
         _provider = str(_rw.get("provider") or "openai")
-        _model = str(_rw.get("model") or settings.rewrite_model)
+        _model = str(_rw.get("model") or getattr(settings, 'rewrite_model_key', 'openai:gpt-4o-mini'))
         _kwargs = dict(_rw.get("kwargs") or {})
         if not _kwargs:
             _kwargs = {
-                "max_output_tokens": int(settings.rewrite_max_output_tokens),
-                "temperature": float(settings.rewrite_temperature),
+                "max_output_tokens": int(getattr(settings, 'rewrite_max_output_tokens', 300)),
+                "temperature": float(getattr(settings, 'rewrite_temperature', 0.3)),
             }
 
         # DEBUG: Log rewrite stage details with endpoint info
@@ -1985,7 +1985,7 @@ class ChatManager:
         # Prefer caller-provided query_id (so SSE subscriber can pre-open /chat/stream/stages?query_id=...)
         _p = params or {}
         req_id = str(_p.get("query_id") or _p.get("request_id") or uuid.uuid4().hex[:8])
-        logger.info("Starting chat in chat_manager.chat() [req_id=%s]", req_id, extra={"message": message})
+        logger.info("Starting chat in chat_manager.chat() [req_id=%s] [msg=%s]", req_id, message[:50])
         if use_web_search is None:
             use_web_search = bool(getattr(settings, "use_web_search", False))
         try:
@@ -1994,6 +1994,15 @@ class ChatManager:
         except Exception:
             pass
         logger.debug("Context length=%d use_web_search=%s", len(context), use_web_search)
+        
+        # Debug: Show what history we're using
+        history_to_use = context if context is not None else self.chat_history
+        logger.info("Using history: %d messages from %s", len(history_to_use), 
+                   "session context" if context is not None else "ChatManager history")
+        if history_to_use:
+            logger.debug("History preview: %s", 
+                        [{"role": msg.get("role", "unknown"), "content": msg.get("content", "")[:50] + "..."} 
+                         for msg in history_to_use[-3:]])  # Show last 3 messages
 
         # Always use orchestrator; legacy inlined flow removed (kept in git history).
         try:
@@ -2012,7 +2021,10 @@ class ChatManager:
                 "log_origin": "chat_manager.chat[orchestrator]",
                 "request_id": req_id,
             }
-            req = {"message": message, "history": self.chat_history, "params": (params or {})}
+            # Use context parameter if provided, otherwise use self.chat_history
+            # This allows session-based chat to work properly while maintaining backward compatibility
+            history_to_use = context if context is not None else self.chat_history
+            req = {"message": message, "history": history_to_use, "params": (params or {})}
 
             out = run_pipeline(deps=deps, req=req)
             answer_text = out.get("answer", "") or ""

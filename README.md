@@ -151,6 +151,90 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 *Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
 
+---
+
+## 🔄 Session-Based (Stateful) Chat API
+
+The system supports both **stateless** and **stateful** chat modes, enabling flexible integration patterns for different use cases.
+
+### 🎯 Quick Overview
+
+| Feature | Stateless (`/chat`) | Session-Based (`/chat/{session_id}`) |
+|---------|-------------------|-------------------------------------|
+| **History Management** | Client sends full history each request | Server maintains history automatically |
+| **Use Case** | Web frontend, simple integrations | Mobile apps, backend systems, multi-device |
+| **Pipeline Quality** | Identical RAG pipeline | Identical RAG pipeline |
+| **Setup** | No setup required | Create session first |
+
+### 🚀 Quick Start Examples
+
+#### 1. Create a Session
+```bash
+curl -X POST http://localhost:8000/chat/session
+# Response: {"session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd"}
+```
+
+#### 2. Send Messages (Context Preserved)
+```bash
+# First message
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is Mount Everest?",
+    "history": [],
+    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
+  }'
+
+# Follow-up (understands context from previous message)
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How tall is it?",
+    "history": [],
+    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
+  }'
+```
+
+#### 3. Use Different Models
+```bash
+curl -X POST http://localhost:8000/chat/session-id \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Explain quantum computing",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500,
+      "model_keys": {
+        "inference": "gemini:gemini-2.5-flash"
+      }
+    }
+  }'
+```
+
+### 📚 When to Use Session-Based API
+
+| Scenario | Recommended API | Reason |
+|----------|----------------|--------|
+| **Web frontend** | Stateless (`/chat`) | Simpler, client-managed state |
+| **Mobile apps** | Session-based (`/chat/{session_id}`) | Server-side persistence |
+| **Backend integrations** | Session-based | Automatic context management |
+| **Multi-device access** | Session-based | Shared conversation state |
+| **Long-running conversations** | Session-based | Automatic history management |
+
+### 🔧 Key Benefits
+
+- **Automatic context management** - No need to send history in each request
+- **Token-aware truncation** - Prevents context overflow automatically  
+- **Multi-device support** - Same session accessible from different clients
+- **Identical pipeline quality** - Same retrieval, rewrite, and inference as stateless
+- **Model override support** - Per-request model selection via `model_keys`
+
+### 📖 Learn More
+
+- **[Technical Overview](docs/technical-overview.md#-session-based-stateful-chat)** - Detailed architecture and implementation
+- **[API Reference](docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
 
 ---
 

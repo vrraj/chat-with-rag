@@ -176,13 +176,111 @@ Each batch definition contains:
 
 When executed, the batch runner orchestrates extraction, chunking, and (optionally) embedding for each item in sequence, emitting per‑document statistics (chunk counts, token usage, and estimated embedding cost) as well as a final aggregate summary for the batch. This enables teams to quickly onboard corporate PDF repositories, internal wiki pages, or mixed documentation sets into a single Qdrant collection through a repeatable, scriptable workflow.
 
-
 > **Note:** The Ingestion Pipeline supports an **estimation mode** that runs extraction and chunking steps without invoking the embedding model or writing to the index. This mode is useful for:
->- Quickly previewing how many chunks each document will produce
->- Validating extraction rules or section skipping logic
->- Estimating embedding costs before committing to full ingestion
-
+> - Quickly previewing how many chunks each document will produce
+> - Validating extraction rules or section skipping logic
+> - Estimating embedding costs before committing to full ingestion
+> 
 > Estimation mode can be triggered via CLI flags or configuration settings.
+
+#### Directory Structure for Local Files
+
+When using local file paths in batch processing, the backend expects the following structure:
+
+```
+chat-with-rag/
+├── data/
+│   └── pdf-files-for-upload/  # Recommended directory for PDFs
+│       ├── document1.pdf
+│       ├── document2.pdf
+│       └── document3.pdf
+```
+
+#### Path Handling Guidelines
+
+- **Relative Paths (Recommended)**: Use paths relative to the project root
+  - Example: For batch processing documents from a folder: `/app/data/pdf-files-for-upload`
+  - Example direct file reference: `./data/pdf-files-for-upload/document1.pdf`
+
+- **Absolute Paths**: Must be accessible within the Docker container
+  - Example: `/app/data/pdf-files-for-upload/document1.pdf`
+
+#### Batch Processing Features
+
+- Process multiple PDFs, web pages, or MediaWiki articles in a single operation
+- Skip common sections (References, External links, etc.)
+- Set global or per-document chunking and processing options
+- Preview and edit configuration before processing
+
+#### Embedding Provider Limits
+
+When configuring chunk sizes and batch processing, be aware of provider-specific limits:
+
+| Feature | OpenAI (text-embedding-3-small/large) | Gemini (gemini-embedding-001) |
+|---------|----------------------------------------|-------------------------------|
+| **Max Inputs per Request** | 2,048 texts | 250 texts |
+| **Max Tokens per Request** | Variable (often restricted by Tier) | 20,000 tokens |
+| **Max Tokens per Text** | 8,191 tokens | 2,048 (or 8,000 on newer models) |
+| **Truncation Behavior** | Manual (must be handled by user) | Silent (automatic) by default |
+| **Batch API Support** | Yes (up to 50,000 requests/file) | No (synchronous only via API) |
+
+> **Note**: These limits affect how you should configure `chunk_size` and `embedding_batch_size` in `backend/core/config.py`. Always check current provider documentation for the latest limits.
+
+#### Embedding Batch Indexing
+
+To reduce latency and API overhead, the ingestion pipeline batches **multiple chunks** into a single embeddings call wherever possible:
+
+- **Pre-chunked ingestion** (`/mediawiki/url`, `/index`, `frontend/process-batch-docs.html`)
+  - Uses `EmbeddingsManager.index_chunks`, which groups chunks into batches and calls `llm_client.embed` once per batch.
+- **Raw document ingestion** (HTML/PDF via `/index` and `/pdf`)
+  - Uses `EmbeddingsManager.process_document`, which also batches chunk texts before calling the embedding provider.
+
+Batch size is provider-aware and configurable in `backend/core/config.py`:
+
+```python
+embedding_batch_size_default: int = 25
+embedding_batch_size_openai: int = 25
+embedding_batch_size_gemini: int = 25
+```
+
+- For **OpenAI embeddings**, the system uses `embedding_batch_size_openai`.
+- For **Gemini embeddings**, the system uses `embedding_batch_size_gemini`.
+- Any future providers fall back to `embedding_batch_size_default`.
+
+The effective behavior is roughly:
+
+- `num_chunks = 40`, `embedding_batch_size_gemini = 25` → 2 embedding calls (25 + 15 chunks).
+- Token usage and cost accounting remain accurate because each batched call returns aggregate usage, which is tracked per document.
+
+#### Example Batch Configuration
+
+```json
+{
+  "items": [
+    {
+      "url": "file:///app/data/pdf-files-for-upload/document1.pdf",
+      "doc_type": "pdf",
+      "skip_sections": ["References", "External links"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Example",
+      "doc_type": "mediawiki"
+    }
+  ],
+  "max_chunks": 100,
+  "estimate": true,
+  "force_delete": false
+}
+```
+
+#### Best Practices
+
+1. Place all PDFs in the `data/pdf-files-for-upload` directory
+2. Use relative paths when possible for better portability
+3. Start with `"estimate": true` to preview processing before actual ingestion
+4. Check the web interface's "View Documents" page to verify successful ingestion
+
+> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[Re-embedding Workflow](#re-embedding-workflow)** for the recommended re-ingestion process.
 
 ### 🔄 3. High-Level Flow
 
@@ -433,6 +531,86 @@ The embedding layer includes:
 - safeguards to ensure failed embeddings do not corrupt the index
 
 These controls enhance reliability during large‑scale ingestion.
+
+---
+
+## 🔄 Re-embedding Workflow
+
+When you need to change embedding models (e.g., switching from OpenAI to Gemini, or upgrading to a larger model), you must re-embed and rebuild the vector index because vectors produced by different models are not directly comparable.
+
+### When Re-embedding is Required
+
+- **Switching providers** (OpenAI ↔ Gemini)
+- **Changing model size** (e.g., `text-embedding-3-small` → `text-embedding-3-large`)
+- **Updating model parameters** that affect vector dimensions
+- **Migrating to new model versions**
+
+### Recommended Workflow
+
+#### Step 1: Export Existing Document URLs
+1. Navigate to **List Documents** in the web interface
+2. Use the **Download JSON** option to export all document URLs and metadata
+3. This creates a batch ingestion file with your existing document sources
+
+#### Step 2: Update Embedding Configuration
+1. Edit `backend/core/config.py`
+2. Update the embedding model:
+   ```python
+   # Example: Switch to Gemini embeddings
+   embedding_model = "gemini:embed"  # Change from "openai:embed_small"
+   ```
+
+#### Step 3: Clear Existing Collection (Optional)
+If you want a completely fresh start:
+```bash
+# Activate your environment
+source .venv/bin/activate
+python scripts/qdrant_scripts/qdrant_ops.py --delete-collection $(python -c "from backend.core.config import settings; print(settings.collection_name)")
+```
+
+#### Step 4: Re-ingest with New Model
+1. Use the exported JSON file from Step 1
+2. Run batch ingestion with the new embedding model:
+   - **Via UI**: Upload the JSON file to **Process Batch Documents**
+   - **Via API**: Use the `/process-batch` endpoint with the JSON payload
+3. Start with `"estimate": true` to preview costs and processing behavior
+4. Set `"estimate": false` for actual ingestion
+
+#### Step 5: Verify Results
+1. Check the **View Documents** page to confirm successful ingestion
+2. Test a few queries to ensure retrieval works with new embeddings
+3. Monitor token usage and costs in the application logs
+
+### Best Practices
+
+- **Always test with estimation mode first** to preview costs before committing
+- **Keep the original JSON file** as a backup of your document sources
+- **Monitor vector dimensions** to ensure consistency across the collection
+- **Update any domain configurations** if you use domain-specific embedding models
+- **Document the change** for future reference and team coordination
+
+### Example Batch Configuration for Re-embedding
+
+```json
+{
+  "items": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Mount_Everest",
+      "doc_type": "mediawiki"
+    },
+    {
+      "url": "file:///app/data/mountains/k2.pdf",
+      "doc_type": "pdf",
+      "skip_sections": ["References", "External links"]
+    }
+  ],
+  "max_chunks": 100,
+  "estimate": true,
+  "force_delete": false
+}
+```
+
+> **Note**: The re-embedding process uses the same ingestion pipeline as initial ingestion, ensuring consistent chunking, metadata, and processing across all documents.
 
 ---
 
@@ -741,6 +919,147 @@ After inference, the system optionally postprocesses the assistant’s text to r
 - **Readability**: Tighter, scoped spacing for rendered content versus plain text.
 - **Safety**: Server-side sanitization prevents malformed or malicious HTML from reaching the browser.
 - **Consistency**: Sources formatting is enforced on the backend, ensuring a uniform layout across clients.
+
+---
+
+## 🔄 Session-Based (Stateful) Chat
+
+The system supports both stateless and stateful chat modes. While the frontend uses stateless chat (client-managed history), the session-based API provides server-side conversation state management.
+
+### 1. Stateless vs Stateful Comparison
+
+| Aspect | Stateless (`/chat`) | Stateful (`/chat/{session_id}`) |
+|--------|-------------------|--------------------------------|
+| **History Management** | Client sends full history in each request | Server maintains history in session storage |
+| **State Management** | No server state | Server-side session state |
+| **Use Case** | Frontend web apps, simple integrations | Backend integrations, mobile apps, multi-device scenarios |
+| **Pipeline** | Identical RAG pipeline | Identical RAG pipeline |
+| **Quality** | Same retrieval, rewrite, inference quality | Same retrieval, rewrite, inference quality |
+
+### 2. Session-Based Chat Flow
+
+#### Step 1: Create Session
+```bash
+curl -X POST http://localhost:8000/chat/session
+# Response: {"session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd"}
+```
+
+#### Step 2: Send First Message
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is Mount Everest?",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500
+    }
+  }'
+```
+
+#### Step 3: Send Follow-up Message (Context Preserved)
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How tall is it?",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500
+    }
+  }'
+```
+
+#### Step 4: Check Session History
+```bash
+curl http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd/history
+```
+
+### 3. Model Override with Session-Based Chat
+
+Override inference model per request using `model_keys`:
+
+```bash
+curl -X POST http://localhost:8000/chat/fd91c243-1f0f-441a-8ce9-635377ba54a5 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "what is the elevation difference with kilimanjaro?",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500,
+      "model_keys": {
+        "inference": "gemini:gemini-2.5-flash"
+      }
+    }
+  }'
+```
+
+### 4. Stage-Specific Model Overrides
+
+Override specific pipeline stages:
+
+```json
+{
+  "params": {
+    "model_keys": {
+      "inference": "gemini:gemini-2.5-flash",
+      "rewrite": "openai:gpt-4o-mini",
+      "rerank": "openai:gpt-4o-mini",
+      "summary": "openai:gpt-4o-mini"
+    }
+  }
+}
+```
+
+### 5. Session Context Management
+
+The session manager automatically:
+- **Maintains conversation history** across requests
+- **Applies token limits** to prevent context overflow
+- **Preserves conversation flow** for follow-up questions
+- **Handles context truncation** when token limits are exceeded
+
+#### Context Building Logic
+```python
+# From ChatSessionManager.get_context()
+for msg in reversed(messages):
+    msg_tokens = len(msg["content"].split())
+    if total_tokens + msg_tokens <= max_history_tokens:
+        context.append(msg)
+    else:
+        break
+```
+
+### 6. Pipeline Consistency
+
+Both stateless and stateful paths use the **identical RAG pipeline**:
+- Same query rewrite logic
+- Same retrieval and reranking
+- Same context summarization
+- Same LLM inference
+- Same tool execution
+
+The only difference is the **history source**:
+- **Stateless**: `history = client_provided_history`
+- **Stateful**: `history = session_stored_history`
+
+### 7. Use Case Recommendations
+
+| Scenario | Recommended Approach |
+|----------|---------------------|
+| **Web frontend** | Stateless (simpler, client-managed) |
+| **Mobile apps** | Stateful (server-side persistence) |
+| **Backend integrations** | Stateful (automatic context management) |
+| **Multi-device scenarios** | Stateful (shared conversation state) |
+| **Simple API calls** | Stateless (no session setup needed) |
+
+---
 
 ## 🔎 Retrieval and Ranking
 

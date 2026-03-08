@@ -37,7 +37,12 @@ python start.py
 
 ## Documentation
 
+- **[Main README](../README.md)** - Project overview, features, and complete documentation guide
 - **[API Reference](api-reference.md)** - Complete API documentation
+- **[Configuration Reference](configuration.md)** - All configuration options and settings
+- **[Troubleshooting Guide](troubleshooting.md)** - Common issues and solutions
+- **[Development Guide](development.md)** - Development setup and workflows
+- **[Deployment Guide](deployment.md)** - Production deployment strategies
 - **[Embeddings Guide](embeddings.md)** - Embedding configuration and usage
 - **[Server-Sent Events](server-sent-events.md)** - Real-time streaming implementation
 - **[Technical Overview](technical-overview.md)** - Architecture and design

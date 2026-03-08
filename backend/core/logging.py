@@ -56,7 +56,7 @@ LOGGING_CONFIG = {
             'stream': 'ext://sys.stderr',
         },
         'file': {
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'class': 'logging.handlers.RotatingFileHandler',
             'filename': str(log_dir / 'server.log'),
             'maxBytes': 5 * 1024 * 1024,  # 5MB per file
             'backupCount': 5,              # Keep 5 backup files
@@ -65,7 +65,7 @@ LOGGING_CONFIG = {
             'level': ENV_LOG_FILE_LEVEL,
         },
         'error_file': {
-            'class': 'concurrent_log_handler.ConcurrentRotatingFileHandler',
+            'class': 'logging.handlers.RotatingFileHandler',
             'filename': str(log_dir / 'warnings_and_errors.log'),
             'maxBytes': 5 * 1024 * 1024,
             'backupCount': 5,

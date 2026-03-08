@@ -349,4 +349,234 @@ if __name__ == "__main__":
 
 - Use `params.show_processing_steps` for **per-turn** control of intermediate stage visibility, and `settings.show_processing_steps` (or `SHOW_PROCESSING_STEPS` env) for global defaults.
 
-- The RAG logic and final answer are unchanged by `show_processing_steps`; it only affects whats emitted on the SSE "Processing steps" stream.
+- The RAG logic and final answer are unchanged by `show_processing_steps`; it only affects what's emitted on the SSE "Processing steps" stream.
+
+---
+
+# Session-Based Chat API (Stateful `/chat/{session_id}` Endpoint)
+
+This document describes the **session-based chat API** that provides server-side conversation state management, ideal for backend integrations, mobile apps, and multi-device scenarios.
+
+## Table of Contents
+
+1. [Session API Overview](#1-session-api-overview)  
+2. [Session Management](#2-session-management)  
+   2.1. [Create Session](#21-create-session)  
+   2.2. [Send Message to Session](#22-send-message-to-session)  
+   2.3. [Get Session History](#23-get-session-history)  
+3. [Model Override Examples](#3-model-override-examples)  
+4. [Session vs Stateless Comparison](#4-session-vs-stateless-comparison)  
+
+---
+
+## 1. Session API Overview
+
+The session-based API provides:
+- **Server-side conversation state** - No need to send history in each request
+- **Automatic context management** - Token-aware history truncation
+- **Multi-device support** - Same session accessible from different clients
+- **Identical pipeline quality** - Same RAG processing as stateless endpoint
+
+### Key Differences from Stateless API
+
+| Feature | Stateless (`/chat`) | Session-Based (`/chat/{session_id}`) |
+|---------|-------------------|-------------------------------------|
+| **History Management** | Client sends full history each request | Server maintains history automatically |
+| **State** | No server state | Persistent session state |
+| **Setup** | No setup required | Create session first |
+| **Use Case** | Simple integrations, web UI | Backend systems, mobile apps |
+
+---
+
+## 2. Session Management
+
+### 2.1. Create Session
+
+**Endpoint:** `POST /chat/session`
+
+**Request:** (empty body)
+
+**Response:**
+```json
+{
+  "session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd"
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8000/chat/session
+```
+
+---
+
+### 2.2. Send Message to Session
+
+**Endpoint:** `POST /chat/{session_id}`
+
+**Request Schema:** Same as stateless `/chat` endpoint, but `history` is optional (server manages it)
+
+**Response Schema:** Same as stateless `/chat` endpoint
+
+**Example - First Message:**
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is Mount Everest?",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500
+    }
+  }'
+```
+
+**Example - Follow-up Message (Context Preserved):**
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How tall is it?",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500
+    }
+  }'
+```
+
+---
+
+### 2.3. Get Session History
+
+**Endpoint:** `GET /chat/{session_id}/history`
+
+**Response:**
+```json
+{
+  "session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd",
+  "messages": [
+    {"role": "user", "content": "What is Mount Everest?"},
+    {"role": "assistant", "content": "Mount Everest is Earth's highest mountain..."},
+    {"role": "user", "content": "How tall is it?"},
+    {"role": "assistant", "content": "Mount Everest stands at 8,848 meters..."}
+  ],
+  "created_at": "2024-01-15T10:30:00Z",
+  "last_activity": "2024-01-15T10:32:15Z"
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd/history
+```
+
+---
+
+## 3. Model Override Examples
+
+### 3.1. Override Inference Model
+
+Use `model_keys` to override models per request:
+
+```bash
+curl -X POST http://localhost:8000/chat/fd91c243-1f0f-441a-8ce9-635377ba54a5 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "what is the elevation difference with kilimanjaro?",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500,
+      "model_keys": {
+        "inference": "gemini:gemini-2.5-flash"
+      }
+    }
+  }'
+```
+
+### 3.2. Stage-Specific Model Overrides
+
+Override specific pipeline stages:
+
+```bash
+curl -X POST http://localhost:8000/chat/session-id \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Explain quantum computing",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500,
+      "model_keys": {
+        "inference": "gemini:gemini-2.5-flash",
+        "rewrite": "openai:gpt-4o-mini",
+        "rerank": "openai:gpt-4o-mini",
+        "summary": "openai:gpt-4o-mini"
+      }
+    }
+  }'
+```
+
+### 3.3. Available Model Keys
+
+| Stage | Example Models |
+|-------|----------------|
+| **inference** | `openai:gpt-4o-mini`, `gemini:gemini-2.5-flash`, `openai:gpt-4o` |
+| **rewrite** | `openai:gpt-4o-mini`, `gemini:gemini-2.5-flash` |
+| **rerank** | `openai:gpt-4o-mini`, `openai:gpt-4o` |
+| **summary** | `openai:gpt-4o-mini`, `gemini:gemini-2.5-flash` |
+
+---
+
+## 4. Session vs Stateless Comparison
+
+### When to Use Session-Based API
+
+| Scenario | Recommended API | Reason |
+|----------|----------------|--------|
+| **Web frontend** | Stateless (`/chat`) | Simpler, client-managed state |
+| **Mobile apps** | Session-based (`/chat/{session_id}`) | Server-side persistence |
+| **Backend integrations** | Session-based | Automatic context management |
+| **Multi-device access** | Session-based | Shared conversation state |
+| **Simple API calls** | Stateless | No session setup needed |
+| **Long-running conversations** | Session-based | Automatic history management |
+
+### Quality and Performance
+
+Both APIs provide:
+- **Identical RAG pipeline quality**
+- **Same retrieval and reranking**
+- **Same query rewrite logic**
+- **Same LLM inference models**
+- **Same tool execution capabilities**
+
+The only difference is **history management**:
+- **Stateless:** Client sends full history each request
+- **Session-based:** Server maintains and manages history
+
+### Session Context Management
+
+The session manager automatically:
+- **Maintains conversation history** across requests
+- **Applies token limits** to prevent context overflow
+- **Preserves conversation flow** for follow-up questions
+- **Handles context truncation** when token limits are exceeded
+
+**Context Building Logic:**
+```python
+# From ChatSessionManager.get_context()
+for msg in reversed(messages):
+    msg_tokens = len(msg["content"].split())
+    if total_tokens + msg_tokens <= max_history_tokens:
+        context.append(msg)
+    else:
+        break
+```
+
+---

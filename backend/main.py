@@ -832,6 +832,12 @@ async def reset_chat_totals(request: Request):
 async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Request):
     """Process a chat message with context"""
     enforce_origin_host(request)
+    
+    # Initialize chat_manager if needed
+    global chat_manager
+    if chat_manager is None:
+        chat_manager = ChatManager()
+    
     try:
         # Get session context
         session = chat_session_manager.get_session(session_id)
@@ -839,8 +845,8 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Req
         # Get relevant context from chat history
         context = chat_session_manager.get_context(session_id)
         
-        # Process chat message with context
-        response = await chat_manager.chat(
+        # Process chat message with context (wrap synchronous call in thread)
+        response = await asyncio.to_thread(chat_manager.chat,
             message=chat_request.message,
             context=context,
             use_web_search=chat_request.use_web_search,
