@@ -13,25 +13,25 @@ Unlike simple vector-search demos, this project exposes each stage of the RAG pi
 
 ### 🆕 What's New in v2.0
 
-- **Multi‑LLM Pipeline Support**  
+- **Multi‑LLM Pipeline Orchestration**  
 The application supports multiple LLM providers through the **vrraj‑llm‑adapter**.
 
-- **Per-Stage Model Configuration**  
+- **Stage-Specific Model Selection**  
 Runtime model selection per pipeline stage (rewrite, rerank, summarization, inference) via UI or API.
 
 - **Extensible Model Registry**  
 Model configuration, pricing metadata, and parameter policies are referenced from the adapter’s registry. You may extend or override these defaults using a **custom registry** - no application code changes needed. 
 
-- **Prompt Registry**  
+- **Domain-Aware Prompt Registry**  
 Centralized prompt control layer that decouples prompts from application code. Prompts for each pipeline stage are defined in a **YAML-driven registry** (`prompts/prompt_registry.yaml`) and can be switched dynamically using `prompt_domain`, enabling rapid prompt experimentation and domain‑specific pipeline behavior without redeploying the system.
 
 - **Advanced Context Window Management**  
 Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
 
-- **Performance & Cost Controls**  
+- **Cost Tracking and Observability**  
 Configurable controls for all pipeline stages with cost tracking.
 
-- **Post-processing LLM Response**  
+- **Response Post-processing**  
 Currently supports Markdown → scoped HTML conversion and can be extended for additional post-processing workflows.
 
 - **Embeddable Chat Widget**  
@@ -42,7 +42,35 @@ Isolation and authorization enforced consistently across APIs and embedded clien
 
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
+```mermaid
+graph LR
+    %% Lightened Theme Styling
+    %% Core: Light Mint/White (#f0fff4) with Teal border (#159957)
+    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold,fsize:18px;
+    
+    %% Features: Clean white with softer Blue borders (#1e6bb8)
+    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,fsize:14px;
 
+    %% Left-side spokes
+    F1[Multi-LLM Pipeline Orchestration] --- Core
+    F2[Stage-Specific Model Selection] --- Core
+    F3[Extensible Model Registry] --- Core
+    F4[Domain-Aware Prompt Registry] --- Core
+
+    %% The Hub (Now Light & Airy)
+    Core((Chat with RAG v2.0))
+
+    %% Right-side spokes
+    Core --- F5[Context Window Management]
+    Core --- F6[Cost and Observability]
+    Core --- F7[Response Post-processing]
+    Core --- F8[Embeddable Chat Widget]
+    Core --- F9[Domain-Based Access Controls]
+
+    %% Applying styles
+    class Core core;
+    class F1,F2,F3,F4,F5,F6,F7,F8,F9 feat;
+```
 
 > **Auth & Security Note**  
 This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** for more details.
@@ -60,13 +88,12 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 | **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
 ```mermaid
-%%{init: {'themeVariables': { 'fontSize': '18px', 'subgraphFontSize': '22px'}}}%%
+%%{init: {'themeVariables': { 'fontSize': '16px', 'subgraphFontSize': '20px', 'subgraphTitleColor': '#1e6bb8'}}}%%
 graph LR
-    %% Global Styling
-    classDef default stroke-width:2px,rect:round;
-    classDef highlight fill:#f96,stroke:#333,stroke-width:3px,font-weight:bold;
-    classDef storage fill:#69f,color:#fff,stroke:#333;
-    classDef logic fill:#dfd,stroke:#333;
+    %% Theme Styling from your finalized Hub
+    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
+    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
+    classDef highlight fill:#159957,stroke:#159957,stroke-width:2px,color:#fff,font-weight:bold;
 
     subgraph "CHAT ORCHESTRATION"
         direction LR
@@ -88,17 +115,17 @@ graph LR
         S[Sources] --> P[Parse] --> C[Chunk] --> D[Add Metadata] --> E[Embed] --> DB[(Vector DB)]
     end
 
-    %% PHYSICAL CONNECTIONS (Crossing Subgraphs)
-    %% 1. Search logic enters Ingestion to hit the DB
+    %% PHYSICAL CONNECTIONS
     Search -- "Query" --> DB
-    
-    %% 2. DB returns results back to the Search node or directly to Rerank
     DB -- "Results" --> R
 
-    %% Apply Classes to match v2.0 features
+    %% Apply Themes
+    %% Using 'core' style for the main entry/exit and database
+    class U,Out,DB core;
+    %% Using 'feat' style for standard logic steps
+    class QR,Search,R,Ctx,API,Post,S,P,C,D,E feat;
+    %% Using 'highlight' (Cayman Green) for the critical LLM stages
     class Inf,Synth highlight;
-    class DB storage;
-    class QR,Search logic;
 ```
 
 ## Example Use Cases
@@ -305,10 +332,7 @@ Advanced Chat Orchestration coordinates retrieval, context management, prompt se
 *Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
 
 - **Multi-Stage LLM Pipeline Orchestration**  
-  Granular control over each stage: Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing.
-
-- **Stage-Specific Model Configuration**  
-  Each pipeline stage can run a different model (rewrite, rerank, summarization, inference), configurable at runtime via UI or API.
+  Granular control across pipeline stages — Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing — with stage-specific model selection. Different providers or models can be used per stage based on **cost, capabilities, and task suitability**, configurable at runtime via the UI or API.
 
 - **API-Level Control**  
   Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
