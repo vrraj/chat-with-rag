@@ -2005,6 +2005,15 @@ class ChatManager:
                          for msg in history_to_use[-3:]])  # Show last 3 messages
 
         # Always use orchestrator; legacy inlined flow removed (kept in git history).
+        # Derive namespace for token accounting (use session_id as conversation_id)
+        try:
+            _uid = str((params or {}).get("user_id") or "").strip()
+            _session_id = str((params or {}).get("session_id") or "").strip()
+            # For session-based chat, use session_id as namespace for proper token accounting
+            session_namespace = f"session:{_session_id}" if _session_id else ""
+        except Exception:
+            session_namespace = ""
+
         try:
             deps = {
                 "db": self.qdrant_db,
@@ -2020,6 +2029,7 @@ class ChatManager:
                 "use_web_search": bool(use_web_search),
                 "log_origin": "chat_manager.chat[orchestrator]",
                 "request_id": req_id,
+                "namespace": session_namespace,  # Add namespace for token accounting
             }
             # Use context parameter if provided, otherwise use self.chat_history
             # This allows session-based chat to work properly while maintaining backward compatibility
@@ -2028,6 +2038,10 @@ class ChatManager:
 
             out = run_pipeline(deps=deps, req=req)
             answer_text = out.get("answer", "") or ""
+            
+            # Debug: Log what we got from orchestrator
+            logger.info("DEBUG: orchestrator out keys: %s", list(out.keys()) if isinstance(out, dict) else "not a dict")
+            logger.info("DEBUG: orchestrator out: %s", out)
 
             # Update stateful history to preserve conversation context
             self.chat_history.extend([
@@ -2035,10 +2049,22 @@ class ChatManager:
                 {"role": "assistant", "content": answer_text},
             ])
 
-            return {
+            # Prepare response with all metrics
+            response_dict = {
                 "response": answer_text,
+                "answer": answer_text,  # Add for consistency with handle_chat
                 "sources": out.get("sources", []),
+                "metrics": out.get("metrics", {"vectors_retrieved": 0}),
+                "turn_metrics": out.get("turn_metrics", {}),
+                "conversation_totals": out.get("conversation_totals", {}),
+                "tools_used": out.get("tools_used", []),
+                "rewrite_display": out.get("rewrite_display", {}),
             }
+            
+            logger.info("DEBUG: response_dict keys: %s", list(response_dict.keys()))
+            logger.info("DEBUG: response_dict: %s", response_dict)
+            
+            return response_dict
         except Exception as e:
             logger.exception("Exception in chat: %s", e)
             err_text = f"I'm sorry, I encountered an error while processing your request: {str(e)}"

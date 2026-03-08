@@ -230,6 +230,58 @@ curl -X POST http://localhost:8000/chat/session-id \
 - **Multi-device support** - Same session accessible from different clients
 - **Identical pipeline quality** - Same retrieval, rewrite, and inference as stateless
 - **Model override support** - Per-request model selection via `model_keys`
+- **Session-based token accounting** - Isolated cost tracking per session
+
+### 📊 Token Accounting & Namespaces
+
+#### Stateless vs Session-Based Token Tracking
+
+| Approach | Namespace Pattern | Token Isolation | Use Case |
+|----------|------------------|-----------------|---------|
+| **Stateless** | `user_id:conversation_id` | Per conversation | Web frontend, client-managed |
+| **Session-Based** | `session:{session_id}` | Per session | Mobile apps, backend systems |
+
+#### How Token Accounting Works
+
+**Stateless (`/chat`):**
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",
+      "conversation_id": "conv456",
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `user123:conv456`
+- **Token tracking:** Isolated per conversation
+
+**Session-Based (`/chat/{session_id}`):**
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",  # Optional
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `session:12d8cd79-0ee8-4dcd-97a5-5983effcbccd`
+- **Token tracking:** Isolated per session
+
+#### Benefits of Namespace Isolation
+
+- **Cost tracking** - Monitor tokens per user/conversation/session
+- **Cache management** - Separate caches for different contexts
+- **Resource isolation** - Prevent cross-contamination of data
+- **Usage analytics** - Track patterns per namespace
 
 ### 📖 Learn More
 

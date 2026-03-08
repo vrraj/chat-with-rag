@@ -1061,7 +1061,72 @@ The only difference is the **history source**:
 
 ---
 
-## 🔎 Retrieval and Ranking
+## � Token Accounting & Namespace Management
+
+### 1. Namespace Patterns
+
+The system uses different namespace patterns for stateless vs session-based chat to ensure proper token accounting isolation.
+
+#### Stateless Namespaces
+```python
+# From handle_chat()
+user_id = params.get("user_id", "")
+conversation_id = params.get("conversation_id", "")
+namespace = f"{user_id}:{conversation_id}" if user_id and conversation_id else conversation_id
+```
+
+#### Session-Based Namespaces
+```python
+# From chat_manager.chat()
+session_id = params.get("session_id", "")
+namespace = f"session:{session_id}" if session_id else ""
+```
+
+### 2. Token Accounting Isolation
+
+| Approach | Namespace Format | Isolation Level | Example |
+|----------|------------------|-----------------|---------|
+| **Stateless** | `user123:conv456` | Per conversation | Each conversation tracked separately |
+| **Session-Based** | `session:abc123...` | Per session | Each session tracked separately |
+
+### 3. Cache & Resource Management
+
+Namespaces are used for:
+- **Token cost tracking** - Per-namespace usage metrics
+- **Summary cache isolation** - Separate cache entries per namespace
+- **Chunked history management** - Isolated conversation chunks
+- **Usage analytics** - Track patterns per user/session
+
+### 4. Implementation Details
+
+#### Token Accumulation
+```python
+# Per-namespace token tracking
+_CONVO_TOTALS_BY_NS[namespace] = {
+    "tokens": {"embedding": 0, "rewrite": 0, "rerank": 0, "inference": 0},
+    "cost": {"embedding": 0.0, "rewrite": 0.0, "rerank": 0.0, "inference": 0.0},
+    "messages": 0
+}
+```
+
+#### Cache Key Management
+```python
+# Namespace-aware cache keys
+cache_key = f"{namespace}|rewrite|{hash}" if namespace else f"rewrite|{hash}"
+_SUMMARY_NS_INDEX[namespace].add(cache_key)
+```
+
+### 5. Benefits of Namespace Isolation
+
+- **Cost Control** - Monitor and limit usage per user/session
+- **Resource Management** - Prevent memory leaks in caches
+- **Multi-tenant Safety** - Ensure data isolation between users
+- **Debugging** - Trace issues to specific namespaces
+- **Analytics** - Generate usage reports per namespace
+
+---
+
+## �🔎 Retrieval and Ranking
 
 The retrieval and ranking subsystem identifies the most semantically relevant document chunks to support the LLM's answer generation. It operates in two phases: vector retrieval and optional LLM-based reranking.
 

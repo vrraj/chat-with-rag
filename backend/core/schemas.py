@@ -36,6 +36,12 @@ class ChatResponse(BaseModel):
     response: str
     sources: List[Dict] = []
     tools_used: Optional[List[str]] = Field(default_factory=list)
+    # Add metrics fields for consistency with stateless endpoint
+    answer: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    turn_metrics: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    conversation_totals: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    rewrite_display: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 class MediaWikiURLInput(BaseModel):
     url: str

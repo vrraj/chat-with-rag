@@ -534,6 +534,97 @@ curl -X POST http://localhost:8000/chat/session-id \
 
 ---
 
+## 4. Token Accounting & Namespaces
+
+### 4.1. Namespace Patterns
+
+The system uses different namespace patterns for proper token accounting isolation:
+
+| Approach | Namespace Pattern | Source | Example |
+|----------|------------------|--------|---------|
+| **Stateless** | `user_id:conversation_id` | Request params | `user123:conv456` |
+| **Session-Based** | `session:{session_id}` | Auto-generated | `session:12d8cd79-...` |
+
+### 4.2. Token Accounting Examples
+
+#### Stateless Token Accounting
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",
+      "conversation_id": "conv456",
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `user123:conv456`
+- **Token tracking:** Isolated per conversation
+- **Use case:** Web frontend with multiple conversations per user
+
+#### Session-Based Token Accounting
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",  # Optional, for analytics
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `session:12d8cd79-0ee8-4dcd-97a5-5983effcbccd`
+- **Token tracking:** Isolated per session
+- **Use case:** Mobile app with session-based conversations
+
+### 4.3. Token Accounting Response
+
+Both APIs return token usage metrics in the response:
+
+```json
+{
+  "answer": "RAG stands for Retrieval-Augmented Generation...",
+  "metrics": {
+    "tokens": {
+      "embedding": 1500,
+      "rewrite": 120,
+      "rerank": 80,
+      "inference": 250
+    },
+    "cost": {
+      "embedding": 0.003,
+      "rewrite": 0.002,
+      "rerank": 0.001,
+      "inference": 0.005
+    }
+  },
+  "turn_metrics": {
+    "tokens": {"total": 1950},
+    "cost": {"total": 0.011}
+  },
+  "conversation_totals": {
+    "tokens": {"total": 5000},
+    "cost": {"total": 0.025},
+    "messages": 3
+  }
+}
+```
+
+### 4.4. Benefits of Namespace Isolation
+
+- **Cost Tracking** - Monitor tokens per user/conversation/session
+- **Cache Management** - Separate caches for different contexts
+- **Resource Isolation** - Prevent cross-contamination of data
+- **Usage Analytics** - Track patterns per namespace
+- **Multi-tenant Safety** - Ensure data isolation between users
+
+---
+
 ## 4. Session vs Stateless Comparison
 
 ### When to Use Session-Based API

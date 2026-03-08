@@ -846,11 +846,15 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Req
         context = chat_session_manager.get_context(session_id)
         
         # Process chat message with context (wrap synchronous call in thread)
+        # Add session_id to params for namespace/token accounting
+        chat_params = chat_request.params or {}
+        chat_params["session_id"] = session_id
+        
         response = await asyncio.to_thread(chat_manager.chat,
             message=chat_request.message,
             context=context,
             use_web_search=chat_request.use_web_search,
-            params=(chat_request.params or {})
+            params=chat_params
         )
         
         # Update session with new message and response
@@ -869,7 +873,12 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Req
         return ChatResponse(
             response=response["response"],
             sources=response["sources"],
-            tools_used=response.get("tools_used", [])
+            tools_used=response.get("tools_used", []),
+            answer=response.get("answer"),
+            metrics=response.get("metrics", {}),
+            turn_metrics=response.get("turn_metrics", {}),
+            conversation_totals=response.get("conversation_totals", {}),
+            rewrite_display=response.get("rewrite_display", {})
         )
     except Exception as e:
         # logger.error("Error processing chat: %s", e)
