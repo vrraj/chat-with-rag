@@ -19,8 +19,8 @@ The application supports multiple LLM providers through the **vrraj‑llm‑adap
 - **Stage-Specific Model Selection**  
 Runtime model selection per pipeline stage (rewrite, rerank, summarization, inference) via UI or API.
 
-- **Extensible Model Registry**  
-Model configuration, pricing metadata, and parameter policies are referenced from the adapter’s registry. You may extend or override these defaults using a **custom registry** - no application code changes needed. 
+- **Registry-Driven LLM Integration**  
+Model configuration, pricing metadata, and parameter policies are referenced from the adapter’s defaultregistry. You may extend or override these defaults using a **custom registry** - no application code changes needed. 
 
 - **Domain-Aware Prompt Registry**  
 Centralized prompt control layer that decouples prompts from application code. Prompts for each pipeline stage are defined in a **YAML-driven registry** (`prompts/prompt_registry.yaml`) and can be switched dynamically using `prompt_domain`, enabling rapid prompt experimentation and domain‑specific pipeline behavior without redeploying the system.
@@ -54,7 +54,7 @@ graph LR
     %% Left-side spokes
     F1[Multi-LLM Pipeline Orchestration] --- Core
     F2[Stage-Specific Model Selection] --- Core
-    F3[Extensible Model Registry] --- Core
+    F3[Registry-Driven LLM Integration] --- Core
     F4[Domain-Aware Prompt Registry] --- Core
 
     %% The Hub (Now Light & Airy)
@@ -76,6 +76,8 @@ graph LR
 This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** for more details.
 
 
+
+---
 
 ## High-Level RAG Pipeline Overview
 
@@ -128,9 +130,11 @@ graph LR
     class Inf,Synth highlight;
 ```
 
+---
+
 ## Example Use Cases
 
-This project serves as a **reference architecture for production-style Retrieval-Augmented Generation (RAG) systems**. Typical use cases include:
+This project serves as a **reference architecture for Retrieval-Augmented Generation (RAG) systems**. Typical use cases include:
 
 - **Document-grounded chat assistants** for PDFs, HTML pages, internal documentation, or MediaWiki sources
 - **Multi-model experimentation** comparing OpenAI and Gemini models across different pipeline stages
@@ -177,143 +181,6 @@ This workspace provides a **simple navigation menu** to access the main parts of
 </p>
 
 *Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
-
----
-
-## 🔄 Session-Based (Stateful) Chat API
-
-The system supports both **stateless** and **stateful** chat modes, enabling flexible integration patterns for different use cases.
-
-### 🎯 Quick Overview
-
-| Feature | Stateless (`/chat`) | Session-Based (`/chat/{session_id}`) |
-|---------|-------------------|-------------------------------------|
-| **History Management** | Client sends full history each request | Server maintains history automatically |
-| **Use Case** | Web frontend, simple integrations | Mobile apps, backend systems, multi-device |
-| **Pipeline Quality** | Identical RAG pipeline | Identical RAG pipeline |
-| **Setup** | No setup required | Create session first |
-
-### 🚀 Quick Start Examples
-
-#### 1. Create a Session
-```bash
-curl -X POST http://localhost:8000/chat/session
-# Response: {"session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd"}
-```
-
-#### 2. Send Messages (Context Preserved)
-```bash
-# First message
-curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "What is Mount Everest?",
-    "history": [],
-    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
-  }'
-
-# Follow-up (understands context from previous message)
-curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "How tall is it?",
-    "history": [],
-    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
-  }'
-```
-
-#### 3. Use Different Models
-```bash
-curl -X POST http://localhost:8000/chat/session-id \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Explain quantum computing",
-    "history": [],
-    "params": {
-      "top_k": 5,
-      "temperature": 0.7,
-      "max_output_tokens": 500,
-      "model_keys": {
-        "inference": "gemini:gemini-2.5-flash"
-      }
-    }
-  }'
-```
-
-### 📚 When to Use Session-Based API
-
-| Scenario | Recommended API | Reason |
-|----------|----------------|--------|
-| **Web frontend** | Stateless (`/chat`) | Simpler, client-managed state |
-| **Mobile apps** | Session-based (`/chat/{session_id}`) | Server-side persistence |
-| **Backend integrations** | Session-based | Automatic context management |
-| **Multi-device access** | Session-based | Shared conversation state |
-| **Long-running conversations** | Session-based | Automatic history management |
-
-### 🔧 Key Benefits
-
-- **Automatic context management** - No need to send history in each request
-- **Token-aware truncation** - Prevents context overflow automatically  
-- **Multi-device support** - Same session accessible from different clients
-- **Identical pipeline quality** - Same retrieval, rewrite, and inference as stateless
-- **Model override support** - Per-request model selection via `model_keys`
-- **Session-based token accounting** - Isolated cost tracking per session
-
-### 📊 Token Accounting & Namespaces
-
-#### Stateless vs Session-Based Token Tracking
-
-| Approach | Namespace Pattern | Token Isolation | Use Case |
-|----------|------------------|-----------------|---------|
-| **Stateless** | `user_id:conversation_id` | Per conversation | Web frontend, client-managed |
-| **Session-Based** | `session:{session_id}` | Per session | Mobile apps, backend systems |
-
-#### How Token Accounting Works
-
-**Stateless (`/chat`):**
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "What is RAG?",
-    "history": [],
-    "params": {
-      "user_id": "user123",
-      "conversation_id": "conv456",
-      "top_k": 5
-    }
-  }'
-```
-- **Namespace:** `user123:conv456`
-- **Token tracking:** Isolated per conversation
-
-**Session-Based (`/chat/{session_id}`):**
-```bash
-curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "What is RAG?",
-    "history": [],
-    "params": {
-      "user_id": "user123",  # Optional
-      "top_k": 5
-    }
-  }'
-```
-- **Namespace:** `session:12d8cd79-0ee8-4dcd-97a5-5983effcbccd`
-- **Token tracking:** Isolated per session
-
-#### Benefits of Namespace Isolation
-
-- **Cost tracking** - Monitor tokens per user/conversation/session
-- **Cache management** - Separate caches for different contexts
-- **Resource isolation** - Prevent cross-contamination of data
-- **Usage analytics** - Track patterns per namespace
-
-### 📖 Learn More
-
-- **[Technical Overview](docs/technical-overview.md#-session-based-stateful-chat)** - Detailed architecture and implementation
-- **[API Reference](docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
 
 ---
 
@@ -691,7 +558,190 @@ The widget can be configured in two ways:
 
 The embed loader automatically initializes the widget and connects it to the configured backend API.
 
-## 🛠️ Tools Included
+
+## 🔄 Session-Based (Stateful) Chat API
+
+The system supports both **stateless** and **stateful** chat modes, enabling flexible integration patterns for different use cases.
+
+### 🎯 Quick Overview
+
+| Feature | Stateless (`/chat`) | Session-Based (`/chat/{session_id}`) |
+|---------|-------------------|-------------------------------------|
+| **History Management** | Client sends full history each request | Server maintains history automatically |
+| **Use Case** | Web frontend, simple integrations | Mobile apps, backend systems, multi-device |
+| **Pipeline Quality** | Identical RAG pipeline | Identical RAG pipeline |
+| **Setup** | No setup required | Create session first |
+
+
+```mermaid
+graph TD
+    %% Theme Styling - All borders unified to #1e6bb8
+    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
+    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
+    classDef logic fill:#f0fff4,stroke:#1e6bb8,stroke-width:1px,color:#159957,font-weight:bold;
+    classDef stateful fill:#fdf2ff,stroke:#1e6bb8,stroke-width:1px,color:#a333c8;
+    classDef spacer opacity:0;
+
+    %% Entry
+    Start[User Message] --> Mode{Chat Mode}
+
+    %% Stateless Path
+    Mode -- "Stateless" --> SL[Stateless Flow]
+    SL --> Hist[Send Full History + user_id]
+
+    %% Stateful Path
+    Mode -- "Stateful" --> SF[Stateful Flow]
+    SF --> Sess[Create/Get Session]
+    Sess --> Ctx[Get Session Context]
+
+    %% Shared Orchestration
+    Hist --> Pipe
+    Ctx --> Pipe
+
+    subgraph Pipeline [SHARED ORCHESTRATOR]
+        direction TB
+        Pipe[🔄 Shared Orchestrator Pipeline]  --> Steps
+        Steps[Query Rewrite → Retrieval → Rerank → Inference → Tools]
+    end
+
+    %% Exit Logic
+    Steps --> Res[Response + Metrics]
+    Res --> Out1[Return to Client]
+    Res --> Out2[Update Session + Return]
+
+    %% Applying Styles
+    class Start,Res core;
+    class Mode,SL,Hist,Out1 feat;
+    class SF,Sess,Ctx,Out2 stateful;
+    class Pipeline,Pipe,Steps logic;
+    class Spacer1,Spacer2 spacer;
+```
+
+### 🚀 Quick Start Examples
+
+#### 1. Create a Session
+```bash
+curl -X POST http://localhost:8000/chat/session
+# Response: {"session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd"}
+```
+
+#### 2. Send Messages (Context Preserved)
+```bash
+# First message
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is Mount Everest?",
+    "history": [],
+    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
+  }'
+
+# Follow-up (understands context from previous message)
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How tall is it?",
+    "history": [],
+    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
+  }'
+```
+
+#### 3. Use Different Models
+```bash
+curl -X POST http://localhost:8000/chat/session-id \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Explain quantum computing",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500,
+      "model_keys": {
+        "inference": "gemini:gemini-2.5-flash"
+      }
+    }
+  }'
+```
+
+### 📚 When to Use Session-Based API
+
+| Scenario | Recommended API | Reason |
+|----------|----------------|--------|
+| **Web frontend** | Stateless (`/chat`) | Simpler, client-managed state |
+| **Mobile apps** | Session-based (`/chat/{session_id}`) | Server-side persistence |
+| **Backend integrations** | Session-based | Automatic context management |
+| **Multi-device access** | Session-based | Shared conversation state |
+| **Long-running conversations** | Session-based | Automatic history management |
+
+### 🔧 Key Benefits
+
+- **Automatic context management** - No need to send history in each request
+- **Token-aware truncation** - Prevents context overflow automatically  
+- **Multi-device support** - Same session accessible from different clients
+- **Identical pipeline quality** - Same retrieval, rewrite, and inference as stateless
+- **Model override support** - Per-request model selection via `model_keys`
+- **Session-based token accounting** - Isolated cost tracking per session
+
+### 📊 Token Accounting & Namespaces
+
+#### Stateless vs Session-Based Token Tracking
+
+| Approach | Namespace Pattern | Token Isolation | Use Case |
+|----------|------------------|-----------------|---------|
+| **Stateless** | `user_id:conversation_id` | Per conversation | Web frontend, client-managed |
+| **Session-Based** | `session:{session_id}` | Per session | Mobile apps, backend systems |
+
+#### How Token Accounting Works
+
+**Stateless (`/chat`):**
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",
+      "conversation_id": "conv456",
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `user123:conv456`
+- **Token tracking:** Isolated per conversation
+
+**Session-Based (`/chat/{session_id}`):**
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",  # Optional
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `session:12d8cd79-0ee8-4dcd-97a5-5983effcbccd`
+- **Token tracking:** Isolated per session
+
+#### Benefits of Namespace Isolation
+
+- **Cost tracking** - Monitor tokens per user/conversation/session
+- **Cache management** - Separate caches for different contexts
+- **Resource isolation** - Prevent cross-contamination of data
+- **Usage analytics** - Track patterns per namespace
+
+### 📖 Learn More
+
+- **[Technical Overview](docs/technical-overview.md#-session-based-stateful-chat)** - Detailed architecture and implementation
+- **[API Reference](docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
+
+---
+
+## 🛠️ Included Tools
 
 The chat pipeline supports optional tool use during inference.
 
