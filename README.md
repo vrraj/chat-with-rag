@@ -3,9 +3,7 @@
 
 A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate **grounded answers with citations** from unstructured documents.
 
-The system implements an explicit, **multi-stage** orchestration **pipeline** covering high-fidelity **ingestion**, **retrieval**, **reasoning**, **tool** execution, and **response** synthesis.
-
-Unlike simple vector-search demos, this project exposes each stage of the RAG pipeline as a **configurable and observable component**, enabling experimentation with retrieval strategies, **prompt design**, **model selection**, and **cost control**.
+Unlike simple vector-search demos, this project provides a **multi-stage RAG pipeline** with configurable retrieval, prompts, models, tools, and observability.
 
 >All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
