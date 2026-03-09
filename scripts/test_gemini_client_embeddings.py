@@ -1,7 +1,7 @@
 """Test script for llm_client Gemini embeddings route.
 
 Usage:
-    python examples/llm_tests/test_gemini_embeddings.py "Your text here"
+    python scripts/test_gemini_client_embeddings.py "Your text here"
 
 Requirements:
     - GEMINI_API_KEY must be set (e.g., via .env)
