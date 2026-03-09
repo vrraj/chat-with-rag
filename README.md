@@ -43,6 +43,7 @@ Isolation and authorization enforced consistently across APIs and embedded clien
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
 ```mermaid
+%%{init: {'themeVariables': { 'nodePadding': '5', 'mainBkg': '#fff'}, 'flowchart': { 'curve': 'basis', 'rankSpacing': 30, 'nodeSpacing': 20}}}%%
 graph LR
     %% Lightened Theme Styling
     %% Core: Light Mint/White (#f0fff4) with Teal border (#159957)
@@ -186,7 +187,14 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 ## Features
 
-### 📥 High-Fidelity Ingestion
+### 🔄 Dual Chat Architecture
+- **Stateless** (`/chat`) - Client-managed history for web frontends
+- **Stateful** (`/chat/{session_id}`) - Server-managed sessions for mobile/backend
+- **Identical RAG Pipeline** - Same quality orchestration for both
+
+> **See details:** [Session-Based Chat API](#-session-based-stateful-chat-api)
+
+### � High-Fidelity Ingestion
 - **Multi-Source Extraction** — High-fidelity parsing for **PDFs**, **MediaWiki**, and **HTML**.
 - **Intelligent Processing** — Smart chunking (semantic), structure preservation, and configurable noise filtering for cleaner retrieval context.
 > **Batch & Scale:** Process local directories (`file://`) or remote URLs with built-in token and cost estimation before indexing.
@@ -212,7 +220,7 @@ Advanced Chat Orchestration coordinates retrieval, context management, prompt se
 #### 🧠 2. Context & Memory Management
 *Maintains long-running conversational continuity while keeping context size bounded and cache-efficient.*
 
-Long-running conversations remain coherent and performant without exceeding context limits by combining a persistent conversation summary with a short, verbatim recent history. As the conversation grows, older turns are automatically **summarized and merged into the active context**, preserving continuity while maintaining stable context size and cache efficiency.
+Long-running conversations remain coherent without exceeding context limits by combining a persistent conversation summary with a short verbatim recent history window. As the conversation grows, older turns are automatically **summarized into the active context**, preserving continuity while keeping context size stable and cache-efficient.
 
 
 #### ✏️ 3. Query Intelligence & Rewrite
@@ -222,14 +230,9 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 #### 🔍 4. Retrieval, Inference & Tool Augmentation
 *Combines retrieved knowledge, context assembly, tool use, and model inference to produce grounded answers.*
 
-- **Retrieval Optimization** — Vector search via Qdrant with configurable top-k and score thresholds.
-
-- **Inference Context Assembly** — Final prompts are built from prompt instructions, domain overrides, conversation context, reranked document chunks, optional web results, and the user query.
-
-- **Tool Execution** — Native tool/function calling (currently 'web search`,`get_weather` and `get_airports`) with tool outputs merged into the final synthesis stage.
-
-  > Web search can be added either through an automatic web context stage or via an LLM tool call.
-
+- **Vector Search** - Configurable retrieval via Qdrant with top-k and score thresholds
+- **Context Assembly** - Builds prompts from instructions, context, documents, and web results  
+- **Tool Execution** - Native function calling (web search, weather, airports) with merged outputs
 - **Verified Citations** — Final answers include citations to source URLs and document sections where available.
 
 
@@ -245,9 +248,9 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 #### 🎨 6. Postprocessing & Output Rendering
 *Transforms raw LLM output into presentation-ready responses without affecting core inference behavior.*
 
-After inference, responses can be post-processed to deliver a richer, presentation-ready experience in the chat UI.
-
-> This post-processing stage is isolated from inference, ensuring output formatting can evolve independently without affecting core model behavior. In addition post processing can be extended to support custom workflows and transformations.
+- **HTML Conversion** - Markdown to scoped HTML for rich display
+- **Isolated Stage** - Output formatting evolves independently from core inference
+- **Extensible** - Support for custom post-processing workflows
 
 ### 🌐 Embeddable Chat Widget
 **Embeddable chat** for any website with full access to pipeline configuration controls.
@@ -486,6 +489,77 @@ For detailed configuration options, see the [Configuration Reference](docs/confi
 
 ---
 
+## 📦 Batch Ingestion
+
+Batch ingestion is the recommended way to build or refresh a **knowledge base** from multiple sources at once. It supports local documents, remote URLs, and mixed source sets, with optional estimation before indexing.
+
+> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
+
+### 🎯 What It Does
+
+Each source in the batch is processed through the same ingestion pipeline used elsewhere in the application:
+
+`load` → `extract` → `chunk` → `augment metadata` → `embed` → `store`
+
+This makes it the easiest way to populate or refresh Qdrant collections consistently at scale.
+
+### 📁 How to Organize Documents
+
+A practical pattern is to organize source files by topic or domain before ingestion.
+
+```text
+data/
+├── mountains/
+│   ├── everest.pdf
+│   ├── kilimanjaro.pdf
+│   └── whitney.html
+├── oceans/
+│   ├── pacific.html
+│   └── atlantic.html
+└── travel/
+    ├── italy-guide.pdf
+    └── rome.html
+```
+
+This makes it easier to:
+
+- build domain-specific collections
+- keep metadata consistent
+- re-index a single topic area without rebuilding everything
+
+### 💡 Typical Uses
+
+- ingest a folder of PDFs
+- index a curated list of webpages
+- process mixed source sets in a single batch
+- rebuild a collection after changing chunking or embedding settings
+
+### 📄 Example Batch Configuration
+
+```json
+{
+  "items": [
+    {
+      "url": "file:///app/data/mountains/everest.pdf",
+      "doc_type": "pdf",
+      "skip_sections": ["References", "External links"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Mount_Whitney",
+      "doc_type": "mediawiki"
+    }
+  ],
+  "max_chunks": 100,
+  "estimate": true,
+  "force_delete": false
+}
+```
+
+>Start with **`"estimate": true`** to preview cost and processing behavior **before committing** a batch to storage.
+
+See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#-2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
+
+---
 ## 🪟 Embeddable Chat Widget
 
 A lightweight widget that embeds the **full RAG pipeline** into any website.
@@ -573,7 +647,8 @@ The system supports both **stateless** and **stateful** chat modes, enabling fle
 | **Setup** | No setup required | Create session first |
 
 
-```mermaid
+```
+%%{init: {'themeVariables': { 'nodePadding': '5', 'mainBkg': '#fff'}, 'flowchart': { 'curve': 'basis', 'rankSpacing': 30, 'nodeSpacing': 20}}}%%
 graph TD
     %% Theme Styling - All borders unified to #1e6bb8
     classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
@@ -892,75 +967,6 @@ Tools Used: get_weather
 
 ---
 
-## 📦 Batch Ingestion
-
-Batch ingestion is the recommended way to build or refresh a **knowledge base** from multiple sources at once. It supports local documents, remote URLs, and mixed source sets, with optional estimation before indexing.
-
-> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
-
-### 🎯 What It Does
-
-Each source in the batch is processed through the same ingestion pipeline used elsewhere in the application:
-
-`load` → `extract` → `chunk` → `augment metadata` → `embed` → `store`
-
-This makes it the easiest way to populate or refresh Qdrant collections consistently at scale.
-
-### 📁 How to Organize Documents
-
-A practical pattern is to organize source files by topic or domain before ingestion.
-
-```text
-data/
-├── mountains/
-│   ├── everest.pdf
-│   ├── kilimanjaro.pdf
-│   └── whitney.html
-├── oceans/
-│   ├── pacific.html
-│   └── atlantic.html
-└── travel/
-    ├── italy-guide.pdf
-    └── rome.html
-```
-
-This makes it easier to:
-
-- build domain-specific collections
-- keep metadata consistent
-- re-index a single topic area without rebuilding everything
-
-### 💡 Typical Uses
-
-- ingest a folder of PDFs
-- index a curated list of webpages
-- process mixed source sets in a single batch
-- rebuild a collection after changing chunking or embedding settings
-
-### 📄 Example Batch Configuration
-
-```json
-{
-  "items": [
-    {
-      "url": "file:///app/data/mountains/everest.pdf",
-      "doc_type": "pdf",
-      "skip_sections": ["References", "External links"]
-    },
-    {
-      "url": "https://en.wikipedia.org/wiki/Mount_Whitney",
-      "doc_type": "mediawiki"
-    }
-  ],
-  "max_chunks": 100,
-  "estimate": true,
-  "force_delete": false
-}
-```
-
->Start with **`"estimate": true`** to preview cost and processing behavior **before committing** a batch to storage.
-
-See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#-2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
 
 ## LLM Integration
 
