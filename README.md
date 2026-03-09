@@ -445,6 +445,7 @@ Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
 
 > **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
 
+---
 ## 🧩 Prompt Registry (YAML)
 
 This repo uses a YAML-based prompt registry to keep prompts centralized and avoid drift between code paths.
@@ -556,19 +557,6 @@ The widget can be configured in two ways:
 - **Direct iframe embedding** (simplest)
 - **Embed loader script** using HTML `data-*` attributes (advanced configuration)
 
-<p align="center">
-  <a href="images/chat-embedding-options.png">
-    <img
-      src="images/chat-embedding-options.png"
-      style="max-width: 100%; height: auto;"
-      alt="Chat embedding options iframe and inline page"
-    />
-  </a>
-</p>
-
-*Embeddable widget options (inline page or iframe).* 
-
----
 
 ### 🖼️ Simple Example (iframe)
 
@@ -582,7 +570,6 @@ The widget can be configured in two ways:
 </iframe>
 ```
 
----
 
 ### 🔧 Advanced Example (Embed Loader)
 
@@ -611,9 +598,9 @@ The widget can be configured in two ways:
 </script>
 ```
 
-The embed loader automatically initializes the widget and connects it to the configured backend API.
+>The embed loader automatically initializes the widget and connects it to the configured backend API.
 
-
+---
 ## 🔄 Session-Based (Stateful) Chat API
 
 The system supports both **stateless** and **stateful** chat architectures. The current web UI uses a stateless pattern with client-managed history, while the session-based API is better suited for backend, mobile, and multi-client integrations that benefit from server-managed conversation state.
@@ -671,7 +658,7 @@ Steps[Query Rewrite → Retrieval → Rerank → Inference → Tools]
     class Pipeline,Pipe,Steps,Res logic;
 ```
 
-### 🚀 Quick Start Examples
+### 🚀 Session-Based Chat API Examples
 
 #### 1. Create a Session
 ```bash
@@ -1013,6 +1000,7 @@ This application includes a **domain-based access control framework** for APIs a
 
 These security controls help prevent unauthorized access and ensure that different domains or websites can only access their designated knowledge bases and configurations.
 
+--
 ## 📡 API Usage
 
 For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](docs/api-reference.md)**.
@@ -1025,4 +1013,4 @@ This project is **source-available** for **personal, educational, and evaluation
 It is permitted to **run, modify, and fork** the code for non-commercial use.
 
 **Redistribution, sublicensing, or commercial use** of this project or derivative works **requires explicit written permission** from the author.
-© 2025 Rajkumar Velliavitil — All Rights Reserved
+© 2026 Rajkumar Velliavitil — All Rights Reserved
