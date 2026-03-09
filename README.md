@@ -5,7 +5,6 @@ A modular **Retrieval-Augmented Generation (RAG) framework** for building AI app
 
 Unlike simple vector-search demos, this project provides a **multi-stage RAG pipeline** with configurable retrieval, prompts, models, tools, and observability.
 
->All LLM interactions are handled through the standalone Python library **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** — a registry-driven adapter that normalizes requests, responses, tool calls, and usage accounting across providers.
 
 **Get Started:** See section [Getting Started](#-getting-started) to run the system locally.
 
@@ -18,10 +17,10 @@ The application supports multiple LLM providers through the **vrraj‑llm‑adap
 Runtime model selection per pipeline stage (rewrite, rerank, summarization, inference) via UI or API.
 
 - **Registry-Driven LLM Integration**  
-Model configuration, pricing metadata, and parameter policies are referenced from the adapter’s defaultregistry. You may extend or override these defaults using a **custom registry** - no application code changes needed. 
+Model capabilities, pricing, and parameter policies are referenced from the adapter’s (**[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)**) registry. This can be extended/overridden with a **custom registry**.
 
 - **Domain-Aware Prompt Registry**  
-Centralized prompt control layer that decouples prompts from application code. Prompts for each pipeline stage are defined in a **YAML-driven registry** (`prompts/prompt_registry.yaml`) and can be switched dynamically using `prompt_domain`, enabling rapid prompt experimentation and domain‑specific pipeline behavior without redeploying the system.
+Centralized prompt control layer that decouples prompts from application code. Prompts are grouped by domain/pipeline stage in a **YAML-driven registry** enabling rapid prompt experimentation and domain‑specific pipeline behavior.
 
 - **Advanced Context Window Management**  
 Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
@@ -645,14 +644,14 @@ The system supports both **stateless** and **stateful** chat modes, enabling fle
 | **Setup** | No setup required | Create session first |
 
 
-```
+```mermaid
 %%{init: {'themeVariables': { 'nodePadding': '5', 'mainBkg': '#fff'}, 'flowchart': { 'curve': 'basis', 'rankSpacing': 30, 'nodeSpacing': 20}}}%%
 graph TD
     %% Theme Styling - All borders unified to #1e6bb8
-    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
+    classDef core fill:#e1f0f0,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:normal;
     classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
-    classDef logic fill:#f0fff4,stroke:#1e6bb8,stroke-width:1px,color:#159957,font-weight:bold;
-    classDef stateful fill:#fdf2ff,stroke:#1e6bb8,stroke-width:1px,color:#a333c8;
+    classDef logic fill:#f0fff4,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:normal;
+    classDef stateful fill:#cae3e3,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
     classDef spacer opacity:0;
 
     %% Entry
@@ -671,11 +670,10 @@ graph TD
     Hist --> Pipe
     Ctx --> Pipe
 
-    subgraph Pipeline [SHARED ORCHESTRATOR]
-        direction TB
-        Pipe[🔄 Shared Orchestrator Pipeline]  --> Steps
-        Steps[Query Rewrite → Retrieval → Rerank → Inference → Tools]
-    end
+   
+        Pipe[🔄 Shared Orchestrator Pipeline] --> Steps
+Steps[Query Rewrite → Retrieval → Rerank → Inference → Tools]
+ 
 
     %% Exit Logic
     Steps --> Res[Response + Metrics]
@@ -683,11 +681,10 @@ graph TD
     Res --> Out2[Update Session + Return]
 
     %% Applying Styles
-    class Start,Res core;
+    class Start core;
     class Mode,SL,Hist,Out1 feat;
     class SF,Sess,Ctx,Out2 stateful;
-    class Pipeline,Pipe,Steps logic;
-    class Spacer1,Spacer2 spacer;
+    class Pipeline,Pipe,Steps,Res logic;
 ```
 
 ### 🚀 Quick Start Examples
