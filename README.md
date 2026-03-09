@@ -31,7 +31,7 @@ Real-time stage visibility, token accounting, and per-stage cost tracking across
 - **Response Post-processing**  
 Configurable output transformation layer, currently supporting Markdown → scoped HTML conversion and extensible post-processing workflows.
 
-- **Embeddable Chat Widget**  
+- **Embeddable Chat Experience**  
 Drop-in widget with comprehensive configuration via API params.
 
 - **Domain-Based Access Controls**  
@@ -62,7 +62,7 @@ graph LR
     Core --- F5[Context Window Management]
     Core --- F6[Cost Tracking & Observability]
     Core --- F7[Response Post-processing]
-    Core --- F8[Embeddable Chat Widget]
+    Core --- F8[Embeddable Chat Experience]
     Core --- F9[Domain-Based Access Controls]
 
     %% Applying styles
@@ -165,6 +165,25 @@ The screenshot below shows the **chat orchestration pipeline in action** during 
 
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
+### 📦 Embedded RAG Chat Experience
+
+The screenshot below illustrates the two configuration options for the chat widget:
+
+- **Direct iframe embedding** (simplest)
+- **Embed loader script** using HTML `data-*` attributes (advanced configuration)
+
+<p align="center">
+  <a href="images/chat-embedding-options.png">
+    <img
+      src="images/chat-embedding-options.png"
+      style="max-width: 100%; height: auto;"
+      alt="Chat embedding options iframe and inline page"
+    />
+  </a>
+</p>
+
+See the **[Embeddable Widget Configuration](#-embeddable-widget-configuration)** section below for implementation examples.
+
 ### 🖥️ Application Workspace
 This workspace provides a **simple navigation menu** to access the main parts of the application. From here you can open the chat interface, manage documents, inspect the vector store, run batch ingestion, and generate embeddable chat experiences.
 
@@ -251,9 +270,6 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 
 ### 🌐 Embeddable Chat Widget
 **Embeddable chat** for any website with full access to pipeline configuration controls.
-
-See the **[Embeddable Widget Configuration](#-embeddable-chat-widget-1)** section below for detailed implementation examples and all available options.
-
 
 
 
@@ -525,7 +541,7 @@ This makes it easier to:
 See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#-2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
 
 ---
-## 🪟 Embeddable Chat Widget
+## 🪟 Embeddable Widget Configuration
 
 A lightweight widget that embeds the **full RAG pipeline** into any website.
 
@@ -550,7 +566,7 @@ The widget can be configured in two ways:
   </a>
 </p>
 
-*Embeddable chat widget options (inline page or iframe).* 
+*Embeddable widget options (inline page or iframe).* 
 
 ---
 
