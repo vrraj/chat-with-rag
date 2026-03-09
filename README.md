@@ -291,9 +291,9 @@ Ensure your environment meets these requirements before proceeding:
 - **LLM Provider API Key(s):** Supports **OpenAI** and **Gemini**. For the model configuration details, see the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
 
 > [!TIP]
-> Before installing the application, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure **usage limits or alerts**. See [Configure API Keys and Budget Controls](#-configure-api-keys-and-budget-controls).
+> Before installing the application, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure **usage limits or alerts**. See the section [Configure API Keys and Budget Controls](#configure-api-keys-and-budget-controls) for more details.
 
-### ⚡ 2.0 Automated Setup (macOS/Linux)
+### ⚡ 2.0 Automated Setup- Preferred
 
 To get the system running quickly, use the setup script below. This will:
 
@@ -326,10 +326,10 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 **Step 3 — Launch the application**
 
-Visit: http://localhost:8000
+Visit : 👉 http://localhost:8000
 
 
-### 🛠️ 2.1 Manual setup (step-by-step)
+### 🛠️ 2.1 Manual setup
 
 > If you ran the **2.0 One-command setup** above, you can skip this entire section.
 
@@ -389,7 +389,7 @@ If you want to use Gemini embeddings instead of OpenAI, update the embedding mod
 embedding_model = "gemini:embed"  # Change from "openai:embed_small"
 ``` 
 
-See **[docs/technical-overview.md](docs/technical-overview.md#-re-embedding-workflow)** for the recommended re-ingestion workflow.
+See **[docs/technical-overview.md](docs/technical-overview.md#re-embedding-workflow)** for the recommended re-ingestion workflow.
 
 #### Step 5 — Launch the Application
 Visit : 👉 http://localhost:8000
@@ -413,7 +413,7 @@ Use the following Make targets to manage the application lifecycle:
 
 For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
 - the `Makefile` in the project root
-- **[docs/technical-overview.md](docs/technical-overview.md#-developer--operator-utilities-makefile)**
+- **[docs/technical-overview.md](docs/technical-overview.md#developer--operator-utilities-makefile)**
 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter options, see:
 
@@ -539,7 +539,7 @@ This makes it easier to:
 
 >Start with **`"estimate": true`** to preview cost and processing behavior **before committing** a batch to storage.
 
-See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#-2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
+See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
 
 ---
 ## 🪟 Embeddable Widget Configuration
@@ -777,7 +777,7 @@ curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
 
 ### 📖 Learn More
 
-- **[Technical Overview](docs/technical-overview.md#-session-based-stateful-chat)** - Detailed architecture and implementation
+- **[Technical Overview](docs/technical-overview.md#session-based-stateful-chat)** - Detailed architecture and implementation
 - **[API Reference](docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
 
 ---
