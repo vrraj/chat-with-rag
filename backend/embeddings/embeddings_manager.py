@@ -130,16 +130,38 @@ class EmbeddingsManager:
                 
                 response = embed(model_key=model, texts=text, **kwargs_for_embed)
                 # Normalize embeddings into a list for simpler handling.
-                embeddings_list = [d.embedding for d in response.data]
+                # response.data is already a list of embedding vectors (lists of floats)
+                embeddings_list = response.data
                 
                 # Capture magnitude metadata if available
                 magnitudes = []
                 normalized_flags = []
                 providers = []
-                for d in response.data:
-                    magnitudes.append(getattr(d, 'magnitude', None))
-                    normalized_flags.append(getattr(d, 'normalized', False))
-                    providers.append(getattr(d, 'provider', 'unknown'))
+                
+                # Extract metadata from response
+                if hasattr(response, 'metadata') and response.metadata:
+                    magnitudes = response.metadata.get('magnitudes', [])
+                    # Ensure magnitudes list matches the number of embeddings
+                    if not isinstance(magnitudes, list) or len(magnitudes) != len(embeddings_list):
+                        magnitudes = [None] * len(embeddings_list)
+                else:
+                    magnitudes = [None] * len(embeddings_list)
+                
+                # Get normalization info from response attribute or metadata
+                normalized = getattr(response, 'normalized', False)
+                if isinstance(normalized, bool):
+                    normalized_flags = [normalized] * len(embeddings_list)
+                elif hasattr(response, 'metadata') and response.metadata:
+                    normalized_flags = response.metadata.get('normalized_flags', [False] * len(embeddings_list))
+                else:
+                    normalized_flags = [False] * len(embeddings_list)
+                
+                # Get provider info from metadata
+                if hasattr(response, 'metadata') and response.metadata:
+                    provider = response.metadata.get('provider', 'unknown')
+                    providers = [provider] * len(embeddings_list)
+                else:
+                    providers = ['unknown'] * len(embeddings_list)
                 
                 prompt_tokens = response.usage.prompt_tokens if response.usage else "N/A"
                 total_tokens = response.usage.total_tokens if response.usage else 0
