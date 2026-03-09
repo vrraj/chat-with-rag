@@ -203,23 +203,23 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 ## Features
 
-### 🔄 Dual Chat Architecture
+### 1. Dual Chat Architecture
 - **Stateless** (`/chat`) - Client-managed history for web frontends
 - **Stateful** (`/chat/{session_id}`) - Server-managed sessions for mobile/backend
 - **Identical RAG Pipeline** - Same quality orchestration for both
 
 > **See details:** [Session-Based Chat API](#-session-based-stateful-chat-api)
 
-### � High-Fidelity Ingestion
+### 2. High-Fidelity Ingestion
 - **Multi-Source Extraction** — High-fidelity parsing for **PDFs**, **MediaWiki**, and **HTML**.
 - **Intelligent Processing** — Smart chunking, structure preservation, and configurable **noise filtering** for cleaner retrieval context.
 > **Batch & Scale:** Process local directories (`file://`) or remote URLs with built-in token and cost estimation before indexing.
 
-### 🧠 Advanced Chat Orchestration
+### 3. Advanced Chat Orchestration
 
 Advanced Chat Orchestration coordinates retrieval, context management, prompt selection, model execution, tool integration, observability, and output rendering into a deterministic multi-stage pipeline.
 
-#### 🔧 1. Pipeline Control & Execution Flow
+#### 3.1. Pipeline Control & Execution Flow
 *Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
 
 - **LLM Pipeline Orchestration**  
@@ -233,17 +233,17 @@ Advanced Chat Orchestration coordinates retrieval, context management, prompt se
 
 
 
-#### 🧠 2. Context & Memory Management
+#### 3.2. Context & Memory Management
 *Maintains long-running conversational continuity while keeping context size bounded and cache-efficient.*
 
 Long-running conversations remain coherent without exceeding context limits by combining a persistent conversation summary with a short verbatim recent history window. As the conversation grows, older turns are automatically **summarized into the active context**, preserving continuity while keeping context size stable and cache-efficient.
 
 
-#### ✏️ 3. Query Intelligence & Rewrite
+#### 3.3. Query Intelligence & Rewrite
 Improves retrieval accuracy by selectively refining user intent before search. Rewrites are confidence-gated, context-aware (verbatim turns or summaries), and fully configurable or disable-able per request.
 
 
-#### 🔍 4. Retrieval, Inference & Tool Augmentation
+#### 3.4. Retrieval, Inference & Tool Augmentation
 *Combines retrieved knowledge, context assembly, tool use, and model inference to produce grounded answers.*
 
 - **Vector Search** - Configurable retrieval via Qdrant with top-k and score thresholds
@@ -252,7 +252,7 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 - **Verified Citations** — Final answers include citations to source URLs and document sections where available.
 
 
-#### 📊 5. Observability & Cost Management
+#### 3.5. Observability & Cost Management
 *Provides real-time visibility into pipeline execution, token usage, and per-stage costs.*
 
 - **Real-Time Observability**  
@@ -261,14 +261,14 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 - **Granular Cost Tracking**  
   Per-stage token usage and cost metrics for every turn.
 
-#### 🎨 6. Postprocessing & Output Rendering
+#### 3.6. Postprocessing & Output Rendering
 *Transforms raw LLM output into presentation-ready responses without affecting core inference behavior.*
 
 - **HTML Conversion** - Markdown to scoped HTML for rich display
 - **Isolated Stage** - Output formatting evolves independently from core inference
 - **Extensible** - Support for custom post-processing workflows
 
-### 🌐 Embeddable Chat Widget
+### 4. Embeddable Chat Widget
 **Embeddable chat** for any website with full access to pipeline configuration controls.
 
 
