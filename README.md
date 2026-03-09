@@ -11,7 +11,7 @@ Unlike simple vector-search demos, this project provides a **multi-stage RAG pip
 ### 🆕 What's New in v2.0
 
 - **Multi‑LLM Pipeline Orchestration**  
-The application supports multiple LLM providers through the **vrraj‑llm‑adapter**.
+Use different LLM providers and models across pipeline stages through the **vrraj‑llm‑adapter**, based on cost, capabilities, and task suitability.
 
 - **Stage-Specific Model Selection**  
 Runtime model selection per pipeline stage (rewrite, rerank, summarization, inference) via UI or API.
@@ -26,10 +26,10 @@ Centralized prompt control layer that decouples prompts from application code. P
 Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
 
 - **Cost Tracking and Observability**  
-Configurable controls for all pipeline stages with cost tracking.
+Real-time stage visibility, token accounting, and per-stage cost tracking across the pipeline.
 
 - **Response Post-processing**  
-Currently supports Markdown → scoped HTML conversion and can be extended for additional post-processing workflows.
+Configurable output transformation layer, currently supporting Markdown → scoped HTML conversion and extensible post-processing workflows.
 
 - **Embeddable Chat Widget**  
 Drop-in widget with comprehensive configuration via API params.
@@ -60,7 +60,7 @@ graph LR
 
     %% Right-side spokes
     Core --- F5[Context Window Management]
-    Core --- F6[Cost and Observability]
+    Core --- F6[Cost Tracking & Observability]
     Core --- F7[Response Post-processing]
     Core --- F8[Embeddable Chat Widget]
     Core --- F9[Domain-Based Access Controls]
@@ -252,7 +252,7 @@ Improves retrieval accuracy by selectively refining user intent before search. R
 ### 🌐 Embeddable Chat Widget
 **Embeddable chat** for any website with full access to pipeline configuration controls.
 
-See the **[Embeddable Widget Configuration](#-embeddable-chat-widget)** section below for detailed implementation examples and all available options.
+See the **[Embeddable Widget Configuration](#-embeddable-chat-widget-1)** section below for detailed implementation examples and all available options.
 
 
 
@@ -272,19 +272,18 @@ Ensure your environment meets these requirements before proceeding:
 - **Git** – required to clone the repository. Install: https://git-scm.com/downloads
 - **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
 - **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
-- **LLM Provider API Key(s):** Required for embeddings and chat inference. Supports **OpenAI** and **Gemini**.
+- **LLM Provider API Key(s):** Supports **OpenAI** and **Gemini**. For the model configuration details, see the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
 
+> [!TIP]
+> Before installing the application, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure **usage limits or alerts**. See [Configure API Keys and Budget Controls](#-configure-api-keys-and-budget-controls).
 
 ### ⚡ 2.0 Automated Setup (macOS/Linux)
 
-To get the system running quickly, use the setup script below. The script will:
+To get the system running quickly, use the setup script below. This will:
 
 - create `.env` if needed and prompt for `OPENAI_API_KEY`
 - start Docker services (`make start`)
 - create a Python virtual environment, install dependencies, and seed sample data (`make seed`)
-
-> [!TIP]
-> Before running the script, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure usage limits or alerts, especially when testing a new system. See [2.1.4 Configure API Keys and Budget Controls](#214-configure-api-keys-and-budget-controls).
 
 
 **Step 1 — Clone repo and run setup script**
@@ -294,106 +293,54 @@ git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
 bash scripts/rag_setup.sh
 ```
+**Step 2 — Verify/Setup your API Keys**
 
-**Step 2 — Open the application**
+```bash
+# Check if .env exists
+ls -la .env
+# If not, create it
+cp .env.example .env
+# Edit the file to add your API keys
+vi .env   
+# Add one or both keys:
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 
-Visit `http://localhost:8000`
+```
+
+**Step 3 — Launch the application**
+
+Visit: http://localhost:8000
 
 
 ### 🛠️ 2.1 Manual setup (step-by-step)
 
 > If you ran the **2.0 One-command setup** above, you can skip this entire section.
 
-**2.1.1) Verify Docker Installation**
-```bash
-# Verify Docker
- docker --version
 
-# Verify Docker Compose (v2 or v1)
- docker compose version || docker-compose --version
-```
- You should see version numbers if Docker is installed correctly.
-
-> **Note for Linux Users:** If you get "permission denied," add your user to the docker group: `sudo usermod -aG docker $USER` and then log out/in.
-
-**2.1.2) Clone the Repository**
+**Step 1 — Clone the Repository**
 ``` bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
 
 ```
 
-#### 2.1.3 Choose Your Provider(s)
-
-This application supports **multiple AI providers** with different capabilities:
-
-| Provider | Default Use | Key Features | Requirements |
-|----------|---------------|---------------|---------------|
-| **OpenAI** | ✅ Default provider | Standard models, reasoning models, native API | OpenAI Platform account |
-| **Gemini** | ✅ Optional provider | Thinking models, OpenAI-compatible API | Google AI Platform account |
-
-> **Note:** You can use either provider or mix both across different pipeline stages.
-
-For the supported models, endpoint mappings, and registry details, see the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
-
-#### 2.1.4 Configure API Keys and Budget Controls
-
-Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
->The setup instructions in this section uses OpenAI for reference. You may follow the same steps for Gemini. 
-
-##### Option A: OpenAI (Getting Started)
-
-| Recommendation | Action | Rationale |
-| :--- | :--- | :--- |
-| **Budget** | Set a limit of **$5–$10**. | Establishes a safety ceiling for testing. |
-| **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
-| **Alerts** | Set a 50% notification. | Provides proactive cost control. |
-
-##### Option B: Gemini 
-
-
-| Recommendation | Action | Rationale |
-| :--- | :--- | :--- |
-| **Quota** | Set a **daily quota limit** based on your budget. | Prevents unexpected cost overruns. |
-| **Dedicated Key** | Name it `chat-with-rag-gemini`. | Isolates usage tracking for this project. |
-| **Monitoring** | Enable **usage alerts** in Google Cloud Console. | Provides proactive cost visibility. |
-
-> **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
-
-##### Option C: Both Providers (Advanced)
-Use different providers for different pipeline stages via the UI or API.
-> Sample data collection uses OpenAI embeddings (text-embedding-3-small) with 1536 dimensions
-
-
-#### 2.1.5 Set up local environment variables
+#### Step 2 — Set up local environment variables
 
 Copy the example environment file and add your API key(s).
 
 ```bash
 cp .env.example .env
-# IMPORTANT: Open .env and add your API keys
-vi .env   # or use 'nano .env' / your preferred text editor
+vi .env   
 
 # Add one or both keys:
 OPENAI_API_KEY=your_openai_api_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
+
 ```
 
 
-#### 2.1.6 LLM Providers, Models, and Endpoints (Overview)
-
-The system uses a centralized **Model Registry** to define and manage all supported LLM providers, models, and API surfaces. The registry serves as the **single source of truth** for provider routing, model capabilities, and cost tracking, and is consumed uniformly by the application and LLM handler.
-
-Currently the system supports these LLM *endpoints** :
-
-- **Open AI:** : chat-completions, responses API, embeddings
-- **Gemini:** : chat-completions (OpenAI compatible adapter), gemini-sdk, embeddings
-
-
-> Detailed provider behavior, endpoint mappings, and capability flags are documented in **[docs/technical-overview.md](docs/technical-overview.md)** and the model registry itself.
-
-
-#### 2.1.7 Start Infrastructure
+#### Step 3 — Start Services
 
 ```bash
 make start
@@ -403,9 +350,9 @@ make start
 > `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
 
-#### 2.1.8 Initialize environment and seed data
+#### Step 4 — Initialize environment and seed data
 
-To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). By default, `make seed` uses the sample collection configured for **OpenAI embeddings**. This requires a local Python environment.
+To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). By default, `make seed` uses the sample collection configured for **OpenAI embeddings**. 
 
 ```bash
 # Create and activate virtual environment
@@ -418,11 +365,8 @@ deactivate
 
 ```
 
-> **Note for Gemini users:** The seeded sample data is built with the default OpenAI embedding configuration. If you switch the embedding model to Gemini, you should re-index the dataset after changing `embedding_model` so the stored vector dimensions remain consistent.
+> **Note for Gemini users:** The seeded sample data is built with the default OpenAI embedding configuration.
 
-#### 2.1.9 Provider-Specific Configuration
-
-##### Using Gemini as Primary Provider
 If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index the seeded dataset (or your own collection) so the stored vector dimensions remain consistent.
 
 ```python
@@ -431,8 +375,8 @@ embedding_model = "gemini:embed"  # Change from "openai:embed_small"
 
 See **[docs/technical-overview.md](docs/technical-overview.md#-re-embedding-workflow)** for the recommended re-ingestion workflow.
 
-#### 2.1.10 Access the interface
-Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
+#### Step 5 — Launch the Application
+Visit : 👉 http://localhost:8000
 
 
 ### ▶️ 2.3 Running & Managing the Application
@@ -460,6 +404,30 @@ For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html
 👉 **[docs/api-reference.md](docs/api-reference.md)**
 
 ---
+
+## Configure API Keys and Budget Controls
+
+Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
+>The setup instructions in this section use OpenAI for reference. You may follow the same steps for Gemini. 
+
+##### Option A: OpenAI (Getting Started)
+
+| Recommendation | Action | Rationale |
+| :--- | :--- | :--- |
+| **Budget** | Set a limit of **$5–$10**. | Establishes a safety ceiling for testing. |
+| **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
+| **Alerts** | Set a 50% notification. | Provides proactive cost control. |
+
+##### Option B: Gemini 
+
+
+| Recommendation | Action | Rationale |
+| :--- | :--- | :--- |
+| **Quota** | Set a **daily quota limit** based on your budget. | Prevents unexpected cost overruns. |
+| **Dedicated Key** | Name it `chat-with-rag-gemini`. | Isolates usage tracking for this project. |
+| **Monitoring** | Enable **usage alerts** in Google Cloud Console. | Provides proactive cost visibility. |
+
+> **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
 
 ## 🧩 Prompt Registry (YAML)
 
@@ -632,7 +600,7 @@ The embed loader automatically initializes the widget and connects it to the con
 
 ## 🔄 Session-Based (Stateful) Chat API
 
-The system supports both **stateless** and **stateful** chat modes, enabling flexible integration patterns for different use cases.
+The system supports both **stateless** and **stateful** chat architectures. The current web UI uses a stateless pattern with client-managed history, while the session-based API is better suited for backend, mobile, and multi-client integrations that benefit from server-managed conversation state.
 
 ### 🎯 Quick Overview
 
@@ -860,7 +828,7 @@ The system supports **domain-based collection management** where each domain is 
 #### **Domain-Based Configuration (Recommended)**
 
 A single `active_domain` setting configures both the collection name and embedding model. This helps prevent dimension drift and ensures consistency.
-The system comes with a default configuration for the `default` domain and two additional domains: `mountains` and `oceans`. You may modify /add to the configuration in `backend/core/config.py`.
+The system comes with a default configuration for the `default` domain and two additional domains: `mountains` and `oceans`. You may modify or add to the configuration in `backend/core/config.py`.
 > *Only one domain can be active at a time, and that defines the Qdrant collection and embedding model.*
 
 ```python
