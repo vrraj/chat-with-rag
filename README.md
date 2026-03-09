@@ -193,7 +193,7 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 ### � High-Fidelity Ingestion
 - **Multi-Source Extraction** — High-fidelity parsing for **PDFs**, **MediaWiki**, and **HTML**.
-- **Intelligent Processing** — Smart chunking (semantic), structure preservation, and configurable noise filtering for cleaner retrieval context.
+- **Intelligent Processing** — Smart chunking, structure preservation, and configurable **noise filtering** for cleaner retrieval context.
 > **Batch & Scale:** Process local directories (`file://`) or remote URLs with built-in token and cost estimation before indexing.
 
 ### 🧠 Advanced Chat Orchestration
@@ -203,8 +203,8 @@ Advanced Chat Orchestration coordinates retrieval, context management, prompt se
 #### 🔧 1. Pipeline Control & Execution Flow
 *Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
 
-- **Multi-Stage LLM Pipeline Orchestration**  
-  Granular control across pipeline stages — Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing — with stage-specific model selection. Different providers or models can be used per stage based on **cost, capabilities, and task suitability**, configurable at runtime via the UI or API.
+- **LLM Pipeline Orchestration**  
+  Granular control across pipeline stages — Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing — with stage-specific model selection. Models are configurable per stage based on cost, capabilities, and task suitability at runtime - via the UI or API.
 
 - **API-Level Control**  
   Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
