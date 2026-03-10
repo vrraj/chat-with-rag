@@ -24,6 +24,13 @@ import os
 import sys
 from typing import Iterable, Dict, Any
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except ImportError:
+    pass
+
 # Import Qdrant configuration from backend/core/config.py
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from backend.core.config import settings
