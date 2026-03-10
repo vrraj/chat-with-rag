@@ -6,7 +6,7 @@ A modular **Retrieval-Augmented Generation (RAG) framework** for building AI app
 Unlike simple vector-search demos, this project provides a **multi-stage RAG pipeline** with configurable retrieval, prompts, models, tools, and observability.
 
 
-**Get Started:** See section [Getting Started](#-getting-started) to run the system locally.
+**🚀 Get Started:** See section **[Getting Started](#-getting-started)** to run the system locally.
 
 ### 🆕 What's New in v2.0
 
