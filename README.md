@@ -347,7 +347,7 @@ make start
 
 > **Note for macOS users:** `make start` will attempt to launch Docker Desktop if it is not already running.
 
-**Step 4 — Create the local Python environment and seed sample data**
+**Step 4 — Seed sample data (need local Python environment)**
 
 ```bash
 python3 -m venv venv
