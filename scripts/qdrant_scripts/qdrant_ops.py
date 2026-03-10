@@ -310,9 +310,9 @@ def cmd_export(args) -> int:
     """
     client = build_client(args.host, args.port)
 
-    # Resolve data directory relative to project root: ../data from this script
+    # Resolve data directory relative to project root: ../../data from this script
     script_dir = os.path.dirname(__file__)
-    data_dir = os.path.abspath(os.path.join(script_dir, "..", "data"))
+    data_dir = os.path.abspath(os.path.join(script_dir, "..", "..", "data"))
     os.makedirs(data_dir, exist_ok=True)
 
     # Default filename if none provided

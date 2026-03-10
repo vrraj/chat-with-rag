@@ -132,15 +132,15 @@ graph LR
 
 ## Example Use Cases
 
-This project serves as a **reference architecture for Retrieval-Augmented Generation (RAG) systems**. Typical use cases include:
+This project serves as a **reference architecture for production-style RAG systems**. Typical use cases include:
 
-- **Document-grounded chat assistants** for PDFs, HTML pages, internal documentation, or MediaWiki sources
-- **Multi-model experimentation** A/B testing OpenAI and Gemini models across different pipeline stages
-- **Prompt and retrieval experimentation** using query rewrite, reranking, and domain-specific prompts
-- **Embedded knowledge assistants** for websites using the embeddable chat widget
-- **API-driven RAG workflows** where chat sessions, document ingestion, embeddable chat, and pipeline stage parameters can be invoked programmatically from external applications or automation workflows
-- **Domain-specific knowledge bases** (e.g., travel, healthcare, finance) with separate collections, embeddings, and prompt domains
-- **Observability-focused RAG development** where each stage of the pipeline can be inspected, tuned, and cost-tracked
+- **Document-grounded assistants** for PDFs, HTML pages, internal documentation, and MediaWiki-based knowledge sources
+- **Multi-LLM experimentation** across pipeline stages for retrieval, reranking, summarization, and inference
+- **Prompt and retrieval tuning** using query rewrite, reranking, and domain-specific prompt configurations
+- **Embeddable knowledge assistants** for websites and internal portals
+- **API-driven RAG workflows** for chat, ingestion, embedded experiences, and runtime pipeline control
+- **Domain-specific knowledge bases** with separate collections, embeddings, and prompt domains
+- **Observable RAG systems** where each pipeline stage can be inspected, tuned, and cost-tracked
 
 ### 📸 Inference Pipeline in Action
 
@@ -274,106 +274,89 @@ Ensure your environment meets these requirements before proceeding:
 
 ### ⚡ 2.0 Automated Setup- Preferred
 
-To get the system running quickly, use the setup script below. This will:
+To bootstrap the environment quickly, run the setup script below.
 
-- create `.env` if needed and prompt for `OPENAI_API_KEY`
-- start Docker services (`make start`)
-- create a Python virtual environment, install dependencies, and seed sample data (`make seed`)
-
-
-**Step 1 — Clone repo and run setup script**
+**Step 1 — Run the bootstrap script**
 
 ```bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
 bash scripts/rag_setup.sh
 ```
-**Step 2 — Verify/Setup your API Keys**
 
-```bash
-# Check if .env exists
-ls -la .env
-# If not, create it
-cp .env.example .env
-# Edit the file to add your API keys
-vi .env   
-# Add one or both keys:
-OPENAI_API_KEY=your_openai_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
+The script will automatically:
+
+- create `.env` from `.env.example` (if it does not already exist)
+- start Docker services (`make start`)
+- create a Python virtual environment and install dependencies
+- seed the sample data (`make seed`)
+
+**Step 2 — Add your API keys and restart the application**
+
+Open `.env` and add one or both keys:
 
 ```
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+```
 
-**Step 3 — Launch the application**
+Then restart the application:
 
-Visit : 👉 http://localhost:8000
+```bash
+make stop
+make start
+```
+
+Visit: 👉 http://localhost:8000
+
+> **Note:** API keys are loaded when the application starts. If you add or change keys later, restart the application for the changes to take effect.
 
 
-### 🛠️ 2.1 Manual setup
+### 🛠️ 2.1 Manual Setup
 
-> If you ran the **2.0 One-command setup** above, you can skip this entire section.
+Use this path if you want full control over each setup step instead of the bootstrap script.
 
+**Step 1 — Clone the repository**
 
-**Step 1 — Clone the Repository**
-``` bash
+```bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
-
 ```
 
-#### Step 2 — Set up local environment variables
-
-Copy the example environment file and add your API key(s).
+**Step 2 — Create `.env` and add your API keys**
 
 ```bash
 cp .env.example .env
-vi .env   
-
-# Add one or both keys:
-OPENAI_API_KEY=your_openai_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
-
 ```
 
+Then edit `.env` and add one or both keys:
 
-#### Step 3 — Start Services
+```
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+**Step 3 — Start the application stack**
 
 ```bash
 make start
-
 ```
-> **Note for macOS Users:**
-> `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
+> **Note for macOS users:** `make start` will attempt to launch Docker Desktop if it is not already running.
 
-#### Step 4 — Initialize environment and seed data
-
-To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). By default, `make seed` uses the sample collection configured for **OpenAI embeddings**. 
+**Step 4 — Create the local Python environment and seed sample data**
 
 ```bash
-# Create and activate virtual environment
 python3 -m venv venv
 source venv/bin/activate
-# Install dependencies and seed Qdrant
-pip install -r requirements.txt 
+pip install -r requirements.txt
 make seed
-
-```
-```bash
-# Optional: deactivate virtual environment after seeding
 deactivate
 ```
-> **Note for Gemini users:** The seeded sample data is built with the default OpenAI embedding configuration.
 
-If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index the seeded dataset (or your own collection) so the stored vector dimensions remain consistent.
+**Step 5 — Open the application**
 
-```python
-embedding_model = "gemini:embed"  # Change from "openai:embed_small"
-``` 
-
-See **[docs/technical-overview.md](docs/technical-overview.md#re-embedding-workflow)** for the recommended re-ingestion workflow.
-
-#### Step 5 — Launch the Application
-Visit : 👉 http://localhost:8000
+Visit: 👉 http://localhost:8000
 
 
 ### ▶️ 2.3 Running & Managing the Application
@@ -401,6 +384,35 @@ For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html
 👉 **[docs/api-reference.md](docs/api-reference.md)**
 
 ---
+
+
+### 🔄 Updating Your Local Copy
+
+If you pull new changes from the repository, update your environment before restarting the application.
+
+```bash
+git pull
+```
+
+Restart the application stack:
+
+```bash
+make stop
+make start
+```
+
+If changes affect container dependencies (for example `Dockerfile` or `requirements.txt`), rebuild the containers (you may also use the `make rebuild` target):
+
+```bash
+docker compose up -d --build
+```
+
+If Python dependencies for local scripts changed, refresh the virtual environment:
+
+```bash
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
 ## Configure API Keys and Budget Controls
 
@@ -779,13 +791,13 @@ Tool usage can be enabled per request via the application configuration and is i
 
 ## 📚 Knowledge Base and Sample Data
 
-When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **50 Wikipedia pages**. This focus on world-renowned mountains, national parks, and trails provides a rich environment to test the RAG pipeline's accuracy.
+When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **70 Wikipedia pages** in two collections (OpenAI and Gemini): `document_index` and `document_index_gemini`. This focus on world-renowned mountains, oceans and seas - providing a rich environment to test the RAG pipeline's accuracy.
 
-> **Note:** The sample data created by `make seed` is indexed into the `document_index` collection using the default OpenAI embedding key `openai:embed_small` (`text-embedding-3-small`, 1536 dimensions). If you switch to Gemini embeddings, re-index the data after updating the embedding model.
+> **Note:** You can access these collections by switching between the active_domain keys (mountains - OpenAI, oceans - Gemini) in the `config.py` file.
 
 ### 📄 Data Attribution
-To demonstrate multi-source RAG capabilities, this project includes a sample knowledge base derived from Wikipedia.
-* **Source:** 55 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
+This project includes a sample knowledge base derived from Wikipedia.
+* **Source:** ~70 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
 * **Integrity:** Source URLs and author metadata are preserved within the vector payloads to enable **verified citations**.
 * **License:** Distributed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 * **Full Credits:** Detailed source links and compliance information can be found in [docs/attributions.md](docs/attributions.md).
@@ -809,11 +821,13 @@ python scripts/qdrant_scripts/qdrant_ops.py --list-titles --limit 100
 
 The system supports **domain-based collection management** where each domain is tightly coupled with its embedding model to prevent dimension drift and ensure consistency. Selecting a collection automatically sets the compatible embedding model and vector dimensions.
 
-#### **Domain-Based Configuration (Recommended)**
+#### **Domain-Based Configuration**
 
 A single `active_domain` setting configures both the collection name and embedding model. This helps prevent dimension drift and ensures consistency.
-The system comes with a default configuration for the `default` domain and two additional domains: `mountains` and `oceans`. You may modify or add to the configuration in `backend/core/config.py`.
+The default is set to `mountains` which uses the `openai:embed_small` model. You may modify or add to the configuration in `backend/core/config.py`.
+
 > *Only one domain can be active at a time, and that defines the Qdrant collection and embedding model.*
+>  This approach allows you to maintain multiple **"knowledge bases"** on the same database. You can swap between domains at any time just by changing the `active_domain` variable.
 
 ```python
 # In backend/core/config.py
@@ -837,24 +851,7 @@ active_domain: str = "mountains"
 ```
 
 > [!TIP]
-> This approach allows you to maintain multiple "knowledge bases" on the same server. You can swap between domains at any time just by changing the `active_domain` variable.
-
-#### **Collection Management Options**
-
-**Option A: Create Fresh Collections (Recommended)**
-Each domain automatically gets its own collection when first used. No manual setup required.
-
-**Option B: Clear Existing Collection**
-Use this if you want to completely clear a collection but keep using the same name.
-
-> [!WARNING]
-> This action will permanently delete the collection and all vectors within it. This cannot be undone.
-
-```bash
-# Activate your environment
-source .venv/bin/activate
-python scripts/qdrant_scripts/qdrant_ops.py --delete-collection $(python -c "from backend.core.config import settings; print(settings.collection_name)")
-```
+>
 
 ### 💬 Example Queries
 The following examples are based on the seed data.
@@ -985,6 +982,25 @@ These security controls help prevent unauthorized access and ensure that differe
 ## 📡 API Usage
 
 For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](docs/api-reference.md)**.
+
+---
+
+## 🧰 Qdrant Operations
+
+Manage your vector collections with the **Qdrant Operations CLI**. Essential for backup, export, and collection maintenance.
+
+```bash
+# Export collection to JSONL (for backup/seeding)
+python scripts/qdrant_scripts/qdrant_ops.py export
+
+# List document titles and inspect collection
+python scripts/qdrant_scripts/qdrant_ops.py list-titles
+
+# Target specific collection (e.g., Gemini embeddings)
+python scripts/qdrant_scripts/qdrant_ops.py --collection document_index_gemini export -f docs-index-seed-gemini.jsonl
+```
+
+👉 **[Technical Overview: Qdrant Operations CLI](docs/technical-overview.md#qdrant-operations-cli)**
 
 ---
 

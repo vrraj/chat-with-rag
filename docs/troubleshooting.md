@@ -106,6 +106,17 @@ open "/Applications/Python 3.12/Install Certificates.command"
    docker logs qdrant_container_name
    ```
 
+### Container Updates After Code Changes
+
+**Issue:** Services not reflecting recent code changes after git pull
+
+**Solution:**
+If you've pulled new changes, rebuild the containers to pick up service updates:
+
+```bash
+docker compose up --build
+```
+
 ### Port Conflicts
 
 **Issue:** Port 8000 or 6333 already in use

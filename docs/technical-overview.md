@@ -445,6 +445,23 @@ This mechanism enables:
 
 All ingestion pipelines (HTML, MediaWiki, PDF, batch) and all retrieval flows always operate against the currently configured domain's collection.
 
+##### **Collection Management Options**
+
+**Option A: Create Fresh Collections (Recommended)**
+Each domain automatically gets its own collection when first used. No manual setup required.
+
+**Option B: Clear Existing Collection**
+Use this if you want to completely clear a collection but keep using the same name.
+
+> [!WARNING]
+> This action will permanently delete the collection and all vectors within it. This cannot be undone.
+
+```bash
+# Activate your environment
+source .venv/bin/activate
+python scripts/qdrant_scripts/qdrant_ops.py --delete-collection $(python -c "from backend.core.config import settings; print(settings.collection_name)")
+```
+
 ### 🌱 Seed Data and Demo Collection
 
 For local development and exploration, the repository includes a small demo dataset
@@ -1551,6 +1568,7 @@ The `Makefile` includes specialized targets essential for debugging, maintenance
 | `make start` | **Starts the full Docker Compose stack** (Webapp + Qdrant). (Recommended for general deployment.) | `make start` |
 | `make start-hybrid` | Starts the Qdrant container, then runs the FastAPI application in a local **Python virtual environment (venv)**. (Recommended for local development/debugging.) | `make start-hybrid` |
 | `make stop` | Stops and removes the full Docker Compose stack. | `make stop` |
+| `make rebuild` | **Rebuilds and starts containers** with latest code changes after pulling updates. | `make rebuild` |
 | `make stop-hybrid` | Stops the web app and Qdrant container and resources. | `make stop-hybrid` |
 
 

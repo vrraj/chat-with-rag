@@ -117,50 +117,54 @@ make seed
 deactivate
 
 # -----------------------------------------------------------------------------
-# 4) Optional API smoke tests (non-fatal)
+# 4) Optional API smoke tests (non-fatal) - DISABLED
 # -----------------------------------------------------------------------------
+# Note: API smoke tests are commented out to avoid requiring API keys during setup
+# Users can manually run tests later if desired:
+#   python3 scripts/api_smoke_test_openai.py
+#   python3 scripts/api_smoke_test_gemini.py
 
-if [ "${SKIP_API_SMOKE_TESTS:-0}" = "1" ]; then
-  echo
-  echo "🧪 Skipping API smoke tests (SKIP_API_SMOKE_TESTS=1)"
-else
-  echo
-  echo "🧪 Running API smoke tests (auth checks) ..."
-  
-  # Test OpenAI if key is present
-  if grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; then
-    echo "🧪 Testing OpenAI API ..."
-    if python3 scripts/api_smoke_test_openai.py; then
-      echo "✅ OpenAI smoke test passed"
-    else
-      echo "⚠️  OpenAI smoke test failed. Your API key, budget, or network may need attention." >&2
-      echo "    Next steps:" >&2
-      echo "      1) Update OPENAI_API_KEY in .env (and verify OpenAI usage limits/budget)" >&2
-      echo "      2) Re-run: python3 scripts/api_smoke_test_openai.py" >&2
-    fi
-  else
-    echo "ℹ️  No OpenAI API key found - skipping OpenAI smoke test"
-  fi
-  
-  # Test Gemini if key is present
-  if grep -qE '^GEMINI_API_KEY=.+$' .env || grep -qE '^GEMINI_API_KEY=$' .env; then
-    echo "🧪 Testing Gemini API ..."
-    if python3 scripts/api_smoke_test_gemini.py; then
-      echo "✅ Gemini smoke test passed"
-    else
-      echo "⚠️  Gemini smoke test failed. Your API key, quota, or network may need attention." >&2
-      echo "    Next steps:" >&2
-      echo "      1) Update GEMINI_API_KEY in .env (and verify Google AI Studio quotas)" >&2
-      echo "      2) Re-run: python3 scripts/api_smoke_test_gemini.py" >&2
-    fi
-  else
-    echo "ℹ️  No Gemini API key found - skipping Gemini smoke test"
-  fi
-  
-  # Overall status
-  echo
-  echo "🎯 API smoke tests completed"
-fi
+# if [ "${SKIP_API_SMOKE_TESTS:-0}" = "1" ]; then
+#   echo
+#   echo "🧪 Skipping API smoke tests (SKIP_API_SMOKE_TESTS=1)"
+# else
+#   echo
+#   echo "🧪 Running API smoke tests (auth checks) ..."
+#   
+#   # Test OpenAI if key is present
+#   if grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; then
+#     echo "🧪 Testing OpenAI API ..."
+#     if python3 scripts/api_smoke_test_openai.py; then
+#       echo "✅ OpenAI smoke test passed"
+#     else
+#       echo "⚠️  OpenAI smoke test failed. Your API key, budget, or network may need attention." >&2
+#       echo "    Next steps:" >&2
+#       echo "      1) Update OPENAI_API_KEY in .env (and verify OpenAI usage limits/budget)" >&2
+#       echo "      2) Re-run: python3 scripts/api_smoke_test_openai.py" >&2
+#     fi
+#   else
+#     echo "ℹ️  No OpenAI API key found - skipping OpenAI smoke test"
+#   fi
+#   
+#   # Test Gemini if key is present
+#   if grep -qE '^GEMINI_API_KEY=.+$' .env || grep -qE '^GEMINI_API_KEY=$' .env; then
+#     echo "🧪 Testing Gemini API ..."
+#     if python3 scripts/api_smoke_test_gemini.py; then
+#       echo "✅ Gemini smoke test passed"
+#     else
+#       echo "⚠️  Gemini smoke test failed. Your API key, quota, or network may need attention." >&2
+#       echo "    Next steps:" >&2
+#       echo "      1) Update GEMINI_API_KEY in .env (and verify Google AI Studio quotas)" >&2
+#       echo "      2) Re-run: python3 scripts/api_smoke_test_gemini.py" >&2
+#     fi
+#   else
+#     echo "ℹ️  No Gemini API key found - skipping Gemini smoke test"
+#   fi
+#   
+#   # Overall status
+#   echo
+#   echo "🎯 API smoke tests completed"
+# fi
 
 # -----------------------------------------------------------------------------
 # Done

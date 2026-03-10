@@ -29,8 +29,7 @@ qdrant_commands
 # jsonl output log files
 *.jsonl
 
-# Exception : track docs-index.seed.jsonl (seed data for application)
-!docs-index.seed.jsonl
+# Exception : track docs-index-seed.jsonl (seed data for application)
 !docs-index-seed.jsonl
 
 # Virtual Environment

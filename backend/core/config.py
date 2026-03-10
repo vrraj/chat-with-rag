@@ -182,7 +182,7 @@ class Settings(BaseSettings):
     }
     
     # Active domain selection. Sets the collection_name and embedding_model_key
-    active_domain: str = "mountains"
+    active_domain: str = "oceans"
 
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)

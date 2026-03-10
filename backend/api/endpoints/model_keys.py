@@ -13,8 +13,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Custom registry configuration - can be overridden via environment variable
-# In Docker, the working directory is /app, so we use that as the base
-DEFAULT_CUSTOM_REGISTRY_PATH = Path("/app/examples/custom_registry.py")
+# In Docker, the working directory is /app, but locally we use the project root
+if Path.cwd().name == "app":  # Running in Docker
+    DEFAULT_CUSTOM_REGISTRY_PATH = Path("/app/examples/custom_registry.py")
+else:  # Running locally
+    DEFAULT_CUSTOM_REGISTRY_PATH = Path("examples/custom_registry.py")
+
 env_path = os.getenv("CUSTOM_REGISTRY_PATH")
 CUSTOM_REGISTRY_PATH = Path(env_path) if env_path else DEFAULT_CUSTOM_REGISTRY_PATH
 
