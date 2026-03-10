@@ -93,32 +93,43 @@ class Settings(BaseSettings):
     rewrite_model: str = "openai:gpt-4o-mini"
     summary_model: str = "openai:gpt-4o-mini"
     rerank_model: str = "openai:gpt-4o-mini"
+    tools_synth_model: str = "openai:gpt-4o-mini"
     
     # Processing Settings
     top_k: int = 8
     score_threshold: float = 0.35
-    max_output_tokens: int = 1000
+    max_inference_output_tokens: int = 500
     temperature: float = 0.7
+    top_p: float = 0.9
     
     # Chat Settings
-    raw_tail_turns: int = 2
-    summarizer_max_input_tokens: int = 800
-    summarizer_max_output_tokens: int = 200
+    raw_tail_turns: int = 10
+    summarizer_max_input_tokens: int = 4000
+    summarizer_max_output_tokens: int = 128
+    summarizer_temperature: float = 0.3
     
     # Query Rewrite
     enable_query_rewrite: bool = True
-    rewrite_confidence_threshold: float = 0.67
+    rewrite_confidence_threshold: float = 0.6
     rewrite_tail_turns: int = 1
     rewrite_summary_turns: int = 3
+    rewrite_cache_ttl_s: int = 300
     
     # Tools
     use_tools: bool = True
     use_web_search: bool = False
+    max_tool_passes: int = 2
     
     # Embedding Settings
     embedding_batch_size: int = 100
-    chunk_size: int = 800
-    chunk_overlap: int = 100
+    default_chunk_size: int = 800
+    default_chunk_overlap: int = 100
+    max_chunks_per_doc: int = 0
+    
+    # Reasoning
+    inference_reasoning_effort: str = "low"
+    inference_reasoning_model: bool = False
+    debug_thoughts: bool = True
     
     # Debug
     debug_verbose: bool = False
@@ -167,49 +178,126 @@ The model registry defines all available LLM providers and models. Located in th
 ### OpenAI Models
 
 ```python
-"openai:gpt-4o": {
-    "provider": "openai",
-    "model": "gpt-4o",
-    "api_type": "chat_completions",
-    "max_tokens": 128000,
-    "input_cost_per_1k": 0.005,
-    "output_cost_per_1k": 0.015,
-    "supports_tools": True,
-    "supports_reasoning": False
-}
-
 "openai:embed_small": {
     "provider": "openai", 
     "model": "text-embedding-3-small",
     "api_type": "embeddings",
     "dimensions": 1536,
-    "input_cost_per_1k": 0.00002,
+    "input_cost_per_1k": 0.00002,  # $0.02 per 1M tokens
     "max_inputs_per_request": 2048
+}
+
+"openai:embed_large": {
+    "provider": "openai", 
+    "model": "text-embedding-3-large",
+    "api_type": "embeddings",
+    "dimensions": 3072,
+    "input_cost_per_1k": 0.00013,  # $0.13 per 1M tokens
+    "max_inputs_per_request": 2048
+}
+
+"openai:gpt-4o-mini": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "api_type": "responses",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00015,   # $0.15 per 1M tokens
+    "output_cost_per_1k": 0.00060,  # $0.60 per 1M tokens
+    "cached_input_per_1k": 0.000075, # $0.075 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": False
+}
+
+"openai:gpt-4o": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "api_type": "responses",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00250,   # $2.50 per 1M tokens
+    "output_cost_per_1k": 0.01000,  # $10.00 per 1M tokens
+    "cached_input_per_1k": 0.00125, # $1.25 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": False
+}
+
+"openai:reasoning_o3-mini": {
+    "provider": "openai",
+    "model": "o3-mini",
+    "api_type": "responses",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00110,   # $1.10 per 1M tokens
+    "output_cost_per_1k": 0.00440,  # $4.40 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": True,
+    "reasoning_parameter": "reasoning_effort",
+    "reasoning_default": "low"
+}
+
+"openai:reasoning_gpt-5-mini": {
+    "provider": "openai",
+    "model": "gpt-5-mini",
+    "api_type": "responses",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00025,   # $0.25 per 1M tokens
+    "output_cost_per_1k": 0.00200,  # $2.00 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": True,
+    "reasoning_parameter": "reasoning_effort",
+    "reasoning_default": "minimal"
 }
 ```
 
 ### Gemini Models
 
 ```python
-"gemini:flash": {
-    "provider": "gemini",
-    "model": "gemini-2.5-flash-lite", 
-    "api_type": "chat_completions",
-    "max_tokens": 1048576,
-    "input_cost_per_1k": 0.000075,
-    "output_cost_per_1k": 0.0003,
-    "supports_tools": True,
-    "supports_reasoning": False
-}
-
-"gemini:embed": {
+"gemini:native-embed": {
     "provider": "gemini",
     "model": "gemini-embedding-001",
-    "api_type": "embeddings", 
-    "dimensions": 768,
-    "input_cost_per_1k": 0.00001875,
+    "api_type": "embed_content", 
+    "dimensions": 1536,
+    "input_cost_per_1k": 0.00010,  # $0.10 per 1M tokens
     "max_inputs_per_request": 250,
     "max_tokens_per_input": 2048
+}
+
+"gemini:openai-2.5-flash-lite": {
+    "provider": "gemini",
+    "model": "models/gemini-2.5-flash-lite",
+    "api_type": "chat_completions",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00020,   # $0.20 per 1M tokens
+    "output_cost_per_1k": 0.00080,  # $0.80 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": False,
+    "thinking_tax": True
+}
+
+"gemini:openai-3-flash-preview": {
+    "provider": "gemini",
+    "model": "models/gemini-3-flash-preview",
+    "api_type": "chat_completions",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00050,   # $0.50 per 1M tokens
+    "output_cost_per_1k": 0.00300,  # $3.00 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": True,
+    "reasoning_parameter": "thinking_level",
+    "reasoning_default": "minimal",
+    "thinking_tax": True
+}
+
+"gemini:openai-reasoning-2.5-flash": {
+    "provider": "gemini",
+    "model": "models/gemini-2.5-flash",
+    "api_type": "chat_completions",
+    "max_tokens": 2000,
+    "input_cost_per_1k": 0.00030,   # $0.30 per 1M tokens
+    "output_cost_per_1k": 0.00250,  # $2.50 per 1M tokens
+    "supports_tools": True,
+    "supports_reasoning": True,
+    "reasoning_parameter": "thinking_budget",
+    "reasoning_default": "low",
+    "thinking_tax": True
 }
 ```
 
@@ -236,7 +324,7 @@ DOMAIN_EMBEDDING_CONFIG = {
 }
 
 # Active domain (change this to switch domains)
-active_domain: str = "default"
+active_domain: str = "mountains"
 ```
 
 ### Using Different Domains
@@ -257,9 +345,10 @@ active_domain = "oceans"  # Switch to oceans domain
 
 ```python
 # Text chunking settings
-chunk_size: int = 800          # Characters per chunk
-chunk_overlap: int = 100       # Overlap between chunks
+default_chunk_size: int = 800          # Characters per chunk
+default_chunk_overlap: int = 100       # Overlap between chunks
 embedding_batch_size: int = 100  # Chunks per embedding API call
+max_chunks_per_doc: int = 0        # 0 = no limit
 ```
 
 ### Provider-Specific Limits
@@ -302,26 +391,29 @@ namespace: str = "default"        # Collection/domain isolation
 # LLM generation parameters
 temperature: float = 0.7          # Randomness (0.0-1.0)
 top_p: float = 0.9                # Nucleus sampling
-max_output_tokens: int = 1000     # Response length limit
-reasoning_effort: str = "minimal" # For reasoning models
+max_inference_output_tokens: int = 500     # Response length limit
+reasoning_effort: str = "low"    # For reasoning models
+inference_reasoning_model: bool = False  # Enable reasoning model
 ```
 
 ### Context Management
 
 ```python
 # Conversation memory
-raw_tail_turns: int = 2                    # Verbatim recent turns
-summarizer_max_input_tokens: int = 800      # Summary input limit  
-summarizer_max_output_tokens: int = 200     # Summary output limit
+raw_tail_turns: int = 10                    # Verbatim recent turns
+summarizer_max_input_tokens: int = 4000      # Summary input limit  
+summarizer_max_output_tokens: int = 128     # Summary output limit
+summarizer_temperature: float = 0.3         # Summarization randomness
 ```
 
 ### Query Rewrite Configuration
 
 ```python
 enable_query_rewrite: bool = True
-rewrite_confidence_threshold: float = 0.67   # Minimum confidence to accept rewrite
-rewrite_tail_turns: int = 1                 # Recent turns for context
-rewrite_summary_turns: int = 3              # How many summary turns to consider
+rewrite_confidence_threshold: float = 0.6    # Minimum confidence to accept rewrite
+rewrite_tail_turns: int = 1                   # Recent turns for context
+rewrite_summary_turns: int = 3                # How many summary turns to consider
+rewrite_cache_ttl_s: int = 300                # Cache duration in seconds
 ```
 
 ### Tool Configuration
@@ -329,6 +421,7 @@ rewrite_summary_turns: int = 3              # How many summary turns to consider
 ```python
 use_tools: bool = True
 use_web_search: bool = False
+max_tool_passes: int = 2                     # Maximum tool loops per turn
 
 # Available tools
 # - get_weather: Weather information
@@ -355,7 +448,9 @@ All configuration can be overridden at runtime via the `params` object in API ca
 params = {
     "top_k": 12,                    # Override default top_k
     "temperature": 0.3,             # Override default temperature
-    "inference_model": "gemini:flash",  # Use different model
+    "model_keys": {                 # New format for model overrides
+        "inference": "openai:gpt-4o-mini"
+    },
     "enable_query_rewrite": False,  # Disable query rewrite
     "show_processing_steps": False  # Hide processing steps
 }
@@ -365,10 +460,46 @@ params = {
 
 ```python
 params = {
-    "inference_model": "openai:gpt-4o",      # Main inference
-    "rewrite_model": "openai:gpt-4o-mini",   # Query rewrite  
-    "summary_model": "openai:gpt-4o-mini",    # Summarization
-    "rerank_model": "openai:gpt-4o-mini"      # Reranking
+    "model_keys": {
+        "inference": "openai:gpt-4o",              # Main inference
+        "rewrite": "openai:gpt-4o-mini",           # Query rewrite  
+        "summary": "openai:gpt-4o-mini",           # Summarization
+        "rerank": "openai:gpt-4o-mini",            # Reranking
+        "tools_synth": "gemini:openai-2.5-flash-lite"  # Tool synthesis
+    }
+}
+```
+
+### Reasoning Model Override
+
+```python
+params = {
+    "model_keys": {
+        "inference": "openai:reasoning_o3-mini",    # OpenAI reasoning model
+        "reasoning_effort": "medium"                 # Reasoning intensity
+    }
+}
+```
+
+### Gemini Reasoning Model Override
+
+```python
+params = {
+    "model_keys": {
+        "inference": "gemini:openai-3-flash-preview",  # Gemini reasoning model
+        "thinking_level": "low"                      # Gemini reasoning parameter
+    }
+}
+```
+
+### Legacy Model Override (Deprecated)
+
+```python
+params = {
+    "inference_model": "openai:gpt-4o",      # Legacy format
+    "rewrite_model": "openai:gpt-4o-mini",   # Legacy format
+    "summary_model": "openai:gpt-4o-mini",    # Legacy format
+    "rerank_model": "openai:gpt-4o-mini"      # Legacy format
 }
 ```
 

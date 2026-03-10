@@ -163,15 +163,40 @@ open "/Applications/Python 3.12/Install Certificates.command"
 
 ### Embedding Dimension Mismatch
 
-**Issue:** `Dimension mismatch` errors during indexing
+**Issue:** `Dimension mismatch` errors during indexing or retrieval
 
 **Solutions:**
 1. Check embedding model configuration in `backend/core/config.py`
 2. Ensure all documents use same embedding model
-3. Clear and re-index if changing models:
+3. Verify domain configuration matches collection:
+   ```python
+   # Check active domain and corresponding model
+   from backend.core.config import settings
+   print(f"Domain: {settings.active_domain}")
+   print(f"Model: {settings.embedding_model_key}")
+   print(f"Collection: {settings.collection_name}")
+   ```
+4. Clear and re-index if changing models:
    ```bash
    python scripts/qdrant_scripts/qdrant_ops.py --delete-collection document_index
+   make seed
    ```
+
+### Gemini Embedding Normalization
+
+**Issue:** Poor retrieval quality with Gemini embeddings
+
+**Solutions:**
+1. Ensure `gemini_embedding_normalize=true` in configuration
+2. Test normalization consistency:
+   ```bash
+   python scripts/test_gemini_normalization.py
+   ```
+3. Compare OpenAI vs Gemini embeddings:
+   ```bash
+   python scripts/test_gemini_embed_retrieval.py
+   ```
+4. Consider using OpenAI embeddings if issues persist
 
 ### Rate Limiting
 
@@ -187,9 +212,10 @@ open "/Applications/Python 3.12/Install Certificates.command"
 **Issue:** Out of memory errors with large documents
 
 **Solutions:**
-1. Reduce `chunk_size` in configuration
+1. Reduce `default_chunk_size` in configuration (try 300-500)
 2. Process documents in smaller batches
 3. Enable `estimate` mode first to preview costs
+4. Reduce `embedding_batch_size` if processing many documents
 
 ---
 
@@ -208,6 +234,7 @@ open "/Applications/Python 3.12/Install Certificates.command"
    ```
 
 4. Verify collection name matches indexed data
+5. Check `active_domain` configuration - ensure you're using the correct domain/collection
 
 ### Poor Quality Results
 
@@ -216,8 +243,11 @@ open "/Applications/Python 3.12/Install Certificates.command"
 **Solutions:**
 1. Enable query rewrite: `"enable_query_rewrite": true`
 2. Adjust `rewrite_confidence_threshold` (try 0.6-0.8)
-3. Check document chunking strategy
+3. Check document chunking strategy:
+   - Reduce `default_chunk_size` (try 300-500)
+   - Adjust `default_chunk_overlap` (try 50-100)
 4. Consider re-indexing with different chunk size
+5. Enable reranking if not already enabled
 
 ### Tool Calling Issues
 
@@ -228,6 +258,42 @@ open "/Applications/Python 3.12/Install Certificates.command"
 2. Check tool configurations in backend
 3. Verify API keys for external services (weather, airports)
 4. Check tool execution logs
+5. Verify `max_tool_passes` allows sufficient tool loops
+
+### Reasoning Model Issues
+
+**Issue:** Reasoning models not working or showing reasoning
+
+**Solutions:**
+1. Use correct model keys:
+   - OpenAI: `openai:reasoning_o3-mini` or `openai:reasoning_gpt-5-mini`
+   - Gemini: `gemini:openai-3-flash-preview` or `gemini:openai-reasoning-2.5-flash`
+2. Set correct reasoning parameters:
+   - OpenAI: `"reasoning_effort": "low"|"medium"|"high"`
+   - Gemini: `"thinking_level": "minimal"|"low"|"medium"|"high"`
+3. Enable `debug_thoughts=true` to see reasoning output
+4. Check model registry for reasoning support
+
+### Query Rewrite Issues
+
+**Issue:** Query rewrite not working or always rejected
+
+**Solutions:**
+1. Ensure `"enable_query_rewrite": true` in params
+2. Check `rewrite_confidence_threshold` (default 0.7, try 0.6)
+3. Verify conversation history exists (rewrite needs context)
+4. Check `rewrite_tail_turns` and `rewrite_summary_turns` settings
+5. Look for rewrite display in response to see why rejected
+
+### Session Management Issues
+
+**Issue:** Session-based chat not maintaining context
+
+**Solutions:**
+1. Ensure consistent `session_id` across requests
+2. Check session manager logs for session creation/deletion
+3. Verify session TTL settings (`chunk_manager_idle_ttl_seconds`)
+4. Test with simple session first to isolate the issue
 
 ---
 
@@ -248,10 +314,12 @@ open "/Applications/Python 3.12/Install Certificates.command"
 **Issue:** System running out of memory
 
 **Solutions:**
-1. Reduce batch sizes in configuration
+1. Reduce batch sizes in configuration:
+   - `embedding_batch_size`: try 50-100
+   - `default_chunk_size`: try 300-500
 2. Process documents sequentially instead of in parallel
 3. Monitor memory usage during indexing
-4. Consider using smaller models
+4. Consider using smaller models for non-critical stages
 
 ---
 
@@ -306,14 +374,27 @@ PROMPT_REGISTRY_LOG_FULL=1
 # Check indexed documents
 python scripts/qdrant_scripts/qdrant_ops.py --list-titles --limit 10
 
-# Test API connection
+# Test API connections
 python scripts/api_smoke_test_openai.py
+python scripts/api_smoke_test_gemini.py
 
 # Check collections
 python scripts/qdrant_scripts/qdrant_ops.py --list-collections
 
 # Test embedding generation
 python scripts/embedding_compare.py
+
+# Test Gemini embeddings specifically
+python scripts/test_gemini_client_embeddings.py
+
+# Test reasoning models
+python scripts/test_gemini_reasoning.py
+
+# Test chunked history manager
+python scripts/test_chunked_history_manager.py
+
+# Check Qdrant collection info
+python scripts/qdrant_scripts/qdrant_ops.py --collection-info document_index
 ```
 
 ### When to Ask for Help

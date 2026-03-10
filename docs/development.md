@@ -38,23 +38,23 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-pip install -r requirements-dev.txt  # If exists
 
 # Setup environment
 cp .env.example .env
 # Edit .env with your API keys
 ```
 
-#### 2. Install Pre-commit Hooks
+#### 2. Install Development Dependencies
 
 ```bash
-# Install pre-commit
+# Install development tools
+pip install black pylint pytest pytest-cov mypy
+
+# Install pre-commit (optional)
 pip install pre-commit
 
-# Setup hooks
+# Setup pre-commit hooks (optional)
 pre-commit install
-
-# Run manually on all files
 pre-commit run --all-files
 ```
 
@@ -289,19 +289,29 @@ class TestEmbeddingsManager:
     def setup_method(self):
         self.manager = EmbeddingsManager()
     
-    def test_embed_text(self):
-        """Test text embedding"""
-        text = "Test document"
-        embedding = self.manager.embed_text(text)
+    def test_estimate_tokens(self):
+        """Test token estimation"""
+        text = "Test document for token estimation"
+        tokens = self.manager.estimate_tokens(text)
         
+        assert isinstance(tokens, int)
+        assert tokens > 0
+    
+    def test_generate_embeddings(self):
+        """Test embedding generation"""
+        text = "Test document"
+        embedding = self.manager.generate_embeddings(text)
+        
+        assert isinstance(embedding, list)
         assert len(embedding) == 1536  # OpenAI dimensions
         assert all(isinstance(x, float) for x in embedding)
     
-    def test_batch_embed(self):
+    def test_batch_embeddings(self):
         """Test batch embedding"""
         texts = ["Doc 1", "Doc 2", "Doc 3"]
-        embeddings = self.manager.embed_batch(texts)
+        embeddings = self.manager.generate_embeddings(texts)
         
+        assert isinstance(embeddings, list)
         assert len(embeddings) == 3
         assert all(len(e) == 1536 for e in embeddings)
 ```
@@ -311,14 +321,10 @@ class TestEmbeddingsManager:
 ```python
 # tests/integration/test_chat_pipeline.py
 import pytest
-from backend.chat.chat_manager import ChatManager
+from backend.chat.chat_manager import handle_chat
 
 class TestChatPipeline:
-    def setup_method(self):
-        self.chat_manager = ChatManager()
-    
-    @pytest.mark.asyncio
-    async def test_chat_request(self):
+    def test_chat_request(self):
         """Test end-to-end chat request"""
         request = {
             "message": "What is the capital of France?",
@@ -329,7 +335,7 @@ class TestChatPipeline:
             }
         }
         
-        response = self.chat_manager.handle_chat(request)
+        response = handle_chat(request)
         
         assert "answer" in response
         assert "metrics" in response
@@ -558,15 +564,16 @@ def debug_qdrant():
 
 ```python
 # Debug embedding generation
-from backend.llm.llm_client import LLMClient
+from backend.embeddings.embeddings_manager import EmbeddingsManager
+from backend.llm.llm_client import embed
 
 def debug_embeddings():
-    client = LLMClient()
+    manager = EmbeddingsManager()
     
     # Test single embedding
     text = "Test document for debugging"
     try:
-        embedding = client.embed(text)
+        embedding = manager.generate_embeddings(text)
         print(f"Embedding shape: {len(embedding)}")
         print(f"Sample values: {embedding[:5]}")
     except Exception as e:
@@ -575,10 +582,17 @@ def debug_embeddings():
     # Test batch embedding
     texts = ["Doc 1", "Doc 2", "Doc 3"]
     try:
-        embeddings = client.embed_batch(texts)
+        embeddings = manager.generate_embeddings(texts)
         print(f"Batch embeddings: {len(embeddings)} x {len(embeddings[0])}")
     except Exception as e:
         print(f"Batch embedding error: {e}")
+    
+    # Test direct LLM client
+    try:
+        embedding = embed(model_key="openai:embed_small", texts=text)
+        print(f"Direct embed: {len(embedding)} dimensions")
+    except Exception as e:
+        print(f"Direct embed error: {e}")
 ```
 
 ---
@@ -592,22 +606,22 @@ def debug_embeddings():
 ```python
 # backend/core/schemas.py
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class NewFeatureRequest(BaseModel):
     input_data: str
-    options: Optional[dict] = None
+    options: Optional[Dict[str, Any]] = None
 
 class NewFeatureResponse(BaseModel):
     result: str
-    metadata: Optional[dict] = None
+    metadata: Optional[Dict[str, Any]] = None
 ```
 
 #### Step 2: Implement Business Logic
 
 ```python
 # backend/api/endpoints/new_feature.py
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from backend.core.schemas import NewFeatureRequest, NewFeatureResponse
 
 router = APIRouter()

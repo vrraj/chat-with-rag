@@ -141,6 +141,7 @@ class ChatRequest(BaseModel):
 - `top_p: float | null`  
 - `max_output_tokens: int | null`
 - `reasoning_effort: str | null` - Reasoning intensity for reasoning models ("minimal", "low", "medium", "high")
+- `render_html: bool | null` - Enable server-side Markdown to HTML rendering
 
 #### Query rewrite
 
@@ -155,16 +156,29 @@ class ChatRequest(BaseModel):
 
 #### Provider/model overrides (optional)
 
-- `inference_provider`, `inference_model`  
-- `rewrite_provider`, `rewrite_model`  
-- `summary_provider`, `summary_model`  
-- `rerank_provider`, `rerank_model`
+- `model_keys: object` - Stage-specific model overrides:
+  ```json
+  {
+    "inference": "gemini:gemini-2.5-flash",
+    "rewrite": "openai:gpt-4o-mini",
+    "rerank": "openai:gpt-4o-mini",
+    "summary": "openai:gpt-4o-mini",
+    "tools_synth": "openai:gpt-4o-mini"
+  }
+  ```
+- Legacy provider/model pairs (deprecated, use model_keys instead):
+  - `inference_provider`, `inference_model`  
+  - `rewrite_provider`, `rewrite_model`  
+  - `summary_provider`, `summary_model`  
+  - `rerank_provider`, `rerank_model`
 
 #### UX / observability
 
 - `query_id: str`  
 - `conversation_id: str`
+- `user_id: str` - Optional user identifier for token accounting
 - `show_sources: bool` - Source citation display control
+- `prompt_domain: str` - Domain for prompt registry resolution
 
 #### Processing-stage visibility
 
@@ -204,11 +218,32 @@ Typical response:
   "answer": "Final answer text",
   "response": "Final answer text",
   "answer_html": "<p>Final answer with HTML formatting</p>",
+  "reasoning": "Step-by-step reasoning process...",
   "metrics": {
     "vectors_retrieved": 8
   },
-  "turn_metrics": { },
-  "conversation_totals": { },
+  "turn_metrics": {
+    "tokens": {
+      "embedding": 1500,
+      "rewrite": 120,
+      "rerank": 80,
+      "inference": 250,
+      "reasoning": 100,
+      "total": 1950
+    },
+    "cost": {
+      "embedding": 0.003,
+      "rewrite": 0.002,
+      "rerank": 0.001,
+      "inference": 0.005,
+      "total": 0.011
+    }
+  },
+  "conversation_totals": {
+    "tokens": {"total": 5000},
+    "cost": {"total": 0.025},
+    "messages": 3
+  },
   "tools_used": ["get_weather"],
   "rewrite_display": {
     "enabled": true,
@@ -221,8 +256,7 @@ Typical response:
     "ambiguous": false,
     "reason": "",
     "changed": true
-  },
-  "reasoning": "Step-by-step reasoning process..."  // Only for reasoning models
+  }
 }
 ```
 
@@ -245,6 +279,7 @@ curl -X POST http://localhost:8000/chat \
       "temperature": 0.4,
       "max_output_tokens": 300,
       "reasoning_effort": "low",
+      "render_html": true,
       "enable_query_rewrite": true,
       "rewrite_confidence_threshold": 0.67,
       "rewrite_tail_turns": 1,
@@ -252,8 +287,13 @@ curl -X POST http://localhost:8000/chat \
       "show_processing_steps": true,
       "show_sources": true,
       "namespace": "default",
+      "prompt_domain": "default",
       "query_id": "abcd1234",
-      "conversation_id": "demo-convo-1"
+      "conversation_id": "demo-convo-1",
+      "user_id": "user123",
+      "model_keys": {
+        "inference": "openai:gpt-4o-mini"
+      }
     }
   }'
 ```
@@ -310,6 +350,7 @@ def call_chat(message: str, show_steps: bool = True):
             "top_p": 0.9,
             "max_output_tokens": 300,
             "reasoning_effort": "minimal",
+            "render_html": False,
             "enable_query_rewrite": True,
             "rewrite_confidence_threshold": 0.67,
             "rewrite_tail_turns": 1,
@@ -318,8 +359,15 @@ def call_chat(message: str, show_steps: bool = True):
             "show_processing_steps": show_steps,
             "show_sources": True,
             "namespace": "default",
+            "prompt_domain": "default",
             "query_id": query_id,
             "conversation_id": conversation_id,
+            "user_id": "demo-user",
+            "model_keys": {
+                "inference": "openai:gpt-4o-mini",
+                "rewrite": "openai:gpt-4o-mini",
+                "rerank": "openai:gpt-4o-mini"
+            }
         },
     }
 
@@ -327,13 +375,13 @@ def call_chat(message: str, show_steps: bool = True):
     resp.raise_for_status()
     data = resp.json()
     print("Answer:", data.get("answer") or data.get("response"))
-    print("Answer HTML:", data.get("answer_html"))  // When HTML rendering is enabled
+    print("Answer HTML:", data.get("answer_html"))  # When HTML rendering is enabled
+    print("Reasoning:", data.get("reasoning"))  # For reasoning models
     print("Metrics:", data.get("metrics"))
     print("Turn metrics:", data.get("turn_metrics"))
     print("Conversation totals:", data.get("conversation_totals"))
     print("Tools used:", data.get("tools_used"))
     print("Rewrite display:", data.get("rewrite_display"))
-    print("Reasoning:", data.get("reasoning"))  // For reasoning models
 
 if __name__ == "__main__":
     call_chat("Give me a short overview of how this RAG chat pipeline works.", show_steps=True)
@@ -517,7 +565,8 @@ curl -X POST http://localhost:8000/chat/session-id \
         "inference": "gemini:gemini-2.5-flash",
         "rewrite": "openai:gpt-4o-mini",
         "rerank": "openai:gpt-4o-mini",
-        "summary": "openai:gpt-4o-mini"
+        "summary": "openai:gpt-4o-mini",
+        "tools_synth": "gemini:gemini-2.5-flash"
       }
     }
   }'
@@ -531,6 +580,7 @@ curl -X POST http://localhost:8000/chat/session-id \
 | **rewrite** | `openai:gpt-4o-mini`, `gemini:gemini-2.5-flash` |
 | **rerank** | `openai:gpt-4o-mini`, `openai:gpt-4o` |
 | **summary** | `openai:gpt-4o-mini`, `gemini:gemini-2.5-flash` |
+| **tools_synth** | `openai:gpt-4o-mini`, `gemini:gemini-2.5-flash` |
 
 ---
 

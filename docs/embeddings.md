@@ -10,7 +10,7 @@ It is focused on:
 
 The backend logic (including `backend/chat/chat_manager.py` and `POST /chat` semantics) is unchanged and shared with the main `frontend/chat.html` app. For the low-level API details, see:
 
-👉 **[README_CHAT_API.md](README_CHAT_API.md)**
+👉 **[docs/api-reference.md](api-reference.md)**
 
 ---
 
@@ -23,7 +23,7 @@ Key properties:
 - **Embeddable** via `<iframe>` or a one-line `<script>` tag.
 - **No parameter sidebar or metrics bar** – those controls are hidden.
 - **Configuration via URL query parameters**.
-- Reuses the same `/chat` endpoint and `params` contract as documented in `README_CHAT_API.md`.
+- Reuses the same `/chat` endpoint and `params` contract as documented in `docs/api-reference.md`.
 
 The intent is to allow a host site to preconfigure behavior (retrieval, rewrite, tools, etc.) and expose a simple “chat with my docs/data” experience.
 
@@ -75,7 +75,7 @@ All behavior is driven by `static/chat-embed.js`.
 - Building a `ChatRequest` payload and calling `POST /chat`.
 - Rendering user and assistant messages in the embed UI.
 
-It uses the exact same request shape as `README_CHAT_API.md` describes:
+It uses the exact same request shape as `docs/api-reference.md` describes:
 
 ```jsonc
 {
@@ -113,6 +113,8 @@ All should be integers if provided.
 - `temperature` – float.
 - `top_p` – float.
 - `max_output_tokens` – integer.
+- `reasoning_effort` – string ("minimal", "low", "medium", "high").
+- `render_html` – boolean ("true"/"false").
 
 ### 4.4 Query rewrite
 
@@ -129,6 +131,18 @@ All should be integers if provided.
 
 These map directly to the stage-spec overrides used in `resolve_stage_specs`:
 
+**New format (recommended):**
+- `model_keys` – JSON object with stage-specific model overrides:
+  ```json
+  {
+    "inference": "gemini:gemini-2.5-flash",
+    "rewrite": "openai:gpt-4o-mini",
+    "rerank": "openai:gpt-4o-mini",
+    "summary": "openai:gpt-4o-mini"
+  }
+  ```
+
+**Legacy format (deprecated):**
 - `inference_provider`, `inference_model`
 - `rewrite_provider`, `rewrite_model`
 - `summary_provider`, `summary_model`
@@ -142,13 +156,21 @@ If provided, they are passed through as strings to the backend and interpreted t
   - Boolean-like string; defaults to `false` in the embed client.
   - When `true`, intermediate SSE processing steps will still be emitted by the backend, but `chat-embed.js` does not currently visualize them.
 
+- `show_sources` – Boolean-like string for source citation display.
+
 - `conversation_id`
   - Explicit conversation identifier to use.
   - Useful if the embedding site wants deterministic IDs.
 
+- `user_id`
+  - Optional user identifier for token accounting.
+
 - `namespace`
   - Alternative way to provide a conversation identifier.
   - If `conversation_id` is not provided, `namespace` will be used for `params.conversation_id`.
+
+- `prompt_domain`
+  - Domain for prompt registry resolution.
 
 - `mode`
   - Optional string tag, defaults to `embed`.
@@ -162,7 +184,7 @@ If provided, they are passed through as strings to the backend and interpreted t
   3. Else → use `sessionStorage['conversation_id_embed']` if set.
   4. Else → generate a new 8-character ID and store it in `sessionStorage` under `conversation_id_embed`.
 
-These align with the `params` contract in **`README_CHAT_API.md`**.
+These align with the `params` contract in **`docs/api-reference.md`**.
 
 ---
 
@@ -338,9 +360,9 @@ This appends an `<iframe>` pointing at `chat-embed.html` to the end of the page 
 ## 9. Relationship to the main chat UI
 
 - Both `chat.html` and `chat-embed.html` send requests to **the same** `POST /chat` endpoint.
-- Both use the same `params` keys as defined in **`README_CHAT_API.md`**.
+- Both use the same `params` keys as defined in **`docs/api-reference.md`**.
 - `chat-embed.html` is intentionally **minimal** and is suitable for iframes and third-party widgets.
-- Any future changes to the backend `/chat` contract should be reflected in **both** `README_CHAT_API.md` and this document, to keep embed integrators aligned.
+- Any future changes to the backend `/chat` contract should be reflected in **both** `docs/api-reference.md` and this document, to keep embed integrators aligned.
 
 ---
 

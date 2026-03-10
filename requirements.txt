@@ -9,7 +9,7 @@ uvicorn==0.27.0
 # Let PyMuPDF float to whatever pymupdf4llm wants
 pymupdf4llm>=0.2.0
 openai==2.8.1
-# Optional: only required when gemini SDK. The applicaiton currently uses OpenAI chat completions Adapter for gemini LLM
+# Optional: only required when gemini SDK. The application currently uses OpenAI chat completions Adapter for gemini LLM
 #google-genai>=0.5.0,<0.6.0
 google-genai==1.60.0
 trafilatura==1.12.2

@@ -13,7 +13,7 @@ This project implements Server-Sent Events (SSE) to enable real-time streaming o
   Manages the registry of active SSE consumers. It tracks which clients are subscribed to which query IDs and handles registration and deregistration.
 
 - **SSE Endpoint in `stream_stages.py`**  
-  Implements the HTTP endpoint that clients connect to for receiving SSE streams. It ties together the registry and emitter to provide live updates of pipeline stages.
+  Implements the HTTP endpoint that clients connect to for receiving SSE streams. The endpoint is mounted at `/chat/stream/stages` and ties together the registry and emitter to provide live updates of pipeline stages.
 
 - **`chat_manager.py`**  
   Coordinates the overall chat processing logic, triggering events at various stages and interacting with the SSE system to stream updates.
@@ -30,17 +30,9 @@ Events sent over SSE follow a JSON schema with different types depending on thei
   ```json
   {
     "type": "stage",
-    "stage": "embedding",
+    "stage": "Query Rewrite",
     "status": "completed",
     "data": { /* stage-specific data */ }
-  }
-  ```
-
-- **Keepalive Event**  
-  Sent periodically to keep the connection alive and prevent timeouts.
-  ```json
-  {
-    "type": "keepalive"
   }
   ```
 
@@ -49,30 +41,55 @@ Events sent over SSE follow a JSON schema with different types depending on thei
   ```json
   {
     "type": "debug",
-    "message": "Debug information here"
+    "stage": "_connected",
+    "id": "query_id_here",
+    "note": "sse-connected"
+  }
+  ```
+
+- **Keepalive Event**  
+  Sent periodically to keep the connection alive and prevent timeouts.
+  ```json
+  {
+    "type": "keepalive",
+    "id": "query_id_here"
+  }
+  ```
+
+- **Final Answer Event**  
+  Contains the final chat response.
+  ```json
+  {
+    "type": "stage",
+    "stage": "Final Answer",
+    "final": true,
+    "finalContent": "The actual answer text",
+    "finalHtml": "<p>Formatted answer</p>"
   }
   ```
 
 ## 4. Lifecycle of an SSE Stream
 
-1. **Client Connects:** The frontend establishes an SSE connection to the server's SSE endpoint with a unique `query_id`.
+1. **Client Connects:** The frontend establishes an SSE connection to the server's SSE endpoint at `/chat/stream/stages` with a unique `query_id`.
 
 2. **Registration:** The server registers the client in `stream_registry.py` to track the subscription.
 
-3. **Event Emission:** As the chat pipeline progresses, `chat_manager.py` emits events via `stream_emit.py` to the registered client.
+3. **Event Emission:** As the chat pipeline progresses, `chat_manager.py` emits events via `stream_emit.py` to the registered client. Events are placed in a queue associated with the `query_id`.
 
-4. **Keepalive Messages:** Periodic keepalive events are sent to maintain the connection.
+4. **Queue Pre-drain:** When a client connects, any events already in the queue are sent first to provide immediate context.
 
-5. **Client Disconnects:** When the client closes the connection or navigates away, the server deregisters the client, cleaning up resources.
+5. **Keepalive Messages:** If no events are received for 12 seconds, a keepalive event is automatically sent to maintain the connection and prevent timeouts.
 
-6. **Server Cleanup:** The registry ensures no stale consumers remain, preventing resource leaks.
+6. **Client Disconnects:** When the client closes the connection or navigates away, the server detects disconnection via `request.is_disconnected()` and deregisters the client.
+
+7. **Server Cleanup:** The registry ensures no stale consumers remain, preventing resource leaks. A close sentinel (`None`) can be sent to explicitly end the stream.
 
 ## 5. Testing from CLI
 
 You can test the SSE endpoint using `curl`:
 
 ```bash
-curl -N http://localhost:8000/sse?query_id=12345
+curl -N http://localhost:8000/chat/stream/stages?query_id=12345
 ```
 
 The `-N` flag disables buffering to stream events as they arrive.
@@ -83,7 +100,7 @@ Alternatively, use Python to test and time events:
 import requests
 import time
 
-response = requests.get('http://localhost:8000/sse?query_id=12345', stream=True)
+response = requests.get('http://localhost:8000/chat/stream/stages?query_id=12345', stream=True)
 
 start = time.time()
 for line in response.iter_lines():
@@ -99,11 +116,15 @@ Inspect the `stream_registry.py` to check active consumers. The registry maintai
 
 You can add debug logs or expose an admin endpoint to report current registry state for verification.
 
-## 7. Notes on Keepalives and Normal “Unregistered Consumer Loop” Messages
+## 7. Notes on Keepalives and Connection Management
 
-- **Keepalives:** Sent periodically to prevent client or proxy timeouts. These events carry minimal data and are of type `keepalive`.
+- **Keepalives:** Sent automatically every 12 seconds when no other events are present. These events carry the `query_id` and are of type `keepalive` to prevent client or proxy timeouts.
 
-- **Unregistered Consumer Loop Messages:** If a consumer is no longer registered (e.g., client disconnected), the server may send a message indicating this state before closing the stream. This informs clients about disconnection reasons.
+- **Queue Pre-drain:** When a client connects, any events already queued for that `query_id` are sent immediately. This ensures the client sees relevant context even if it connected after processing started.
+
+- **Connection Detection:** The server continuously checks `request.is_disconnected()` to detect when clients have disconnected and cleanup resources promptly.
+
+- **Close Sentinel:** A `None` payload can be sent to explicitly close the stream. This is used for graceful shutdown of specific streams.
 
 ## 8. Future Extension: Streaming the Final Model Answer
 

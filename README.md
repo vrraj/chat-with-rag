@@ -1,7 +1,7 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
 
-A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate **grounded answers with citations** from unstructured documents.
+A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate grounded answers with **citations** from structured and unstructured knowledge sources.
 
 Unlike simple vector-search demos, this project provides a **multi-stage RAG pipeline** with configurable retrieval, prompts, models, tools, and observability.
 
@@ -91,7 +91,7 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 %%{init: {'themeVariables': { 'fontSize': '16px', 'subgraphFontSize': '20px', 'subgraphTitleColor': '#1e6bb8'}}}%%
 graph LR
     %% Theme Styling from your finalized Hub
-    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
+    classDef core fill:#dcebe8,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
     classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
     classDef highlight fill:#159957,stroke:#159957,stroke-width:2px,color:#fff,font-weight:bold;
 
@@ -135,16 +135,16 @@ graph LR
 This project serves as a **reference architecture for Retrieval-Augmented Generation (RAG) systems**. Typical use cases include:
 
 - **Document-grounded chat assistants** for PDFs, HTML pages, internal documentation, or MediaWiki sources
-- **Multi-model experimentation** comparing OpenAI and Gemini models across different pipeline stages
+- **Multi-model experimentation** A/B testing OpenAI and Gemini models across different pipeline stages
 - **Prompt and retrieval experimentation** using query rewrite, reranking, and domain-specific prompts
 - **Embedded knowledge assistants** for websites using the embeddable chat widget
 - **API-driven RAG workflows** where chat sessions, document ingestion, embeddable chat, and pipeline stage parameters can be invoked programmatically from external applications or automation workflows
 - **Domain-specific knowledge bases** (e.g., travel, healthcare, finance) with separate collections, embeddings, and prompt domains
 - **Observability-focused RAG development** where each stage of the pipeline can be inspected, tuned, and cost-tracked
 
-### 📸 Inference Pipeline in Action 
+### 📸 Inference Pipeline in Action
 
-The screenshot below shows the **chat orchestration pipeline in action** during a live conversation. It demonstrates key capabilities of the system:
+The screenshot below shows a **live chat** run through the inference pipeline, highlighting key system capabilities:
 
 - Query rewrite for improved retrieval
 - Multi‑turn context preservation
@@ -185,7 +185,7 @@ The screenshot below illustrates the two configuration options for the chat widg
 See the **[Embeddable Widget Configuration](#-embeddable-widget-configuration)** section below for implementation examples.
 
 ### 🖥️ Application Workspace
-This workspace provides a **simple navigation menu** to access the main parts of the application. From here you can open the chat interface, manage documents, inspect the vector store, run batch ingestion, and generate embeddable chat experiences.
+The workspace provides a central entry point to the main parts of the application. From here you can open the chat interface, manage documents, inspect the vector store, run batch ingestion, and configure embeddable chat experiences.
 
 <p align="center">
   <a href="images/content-ingestion-primary-actions.png">
@@ -203,74 +203,53 @@ This workspace provides a **simple navigation menu** to access the main parts of
 
 ## Features
 
-### 1. Dual Chat Architecture
-- **Stateless** (`/chat`) - Client-managed history for web frontends
-- **Stateful** (`/chat/{session_id}`) - Server-managed sessions for mobile/backend
-- **Identical RAG Pipeline** - Same quality orchestration for both
+### 1. Dual Chat Modes
+- **Stateless** (`/chat`) — Client-managed history for web frontends
+- **Stateful** (`/chat/{session_id}`) — Server-managed sessions for backend and mobile integrations
+- **Shared orchestration** — Both modes use the same RAG pipeline
 
 > **See details:** [Session-Based Chat API](#-session-based-stateful-chat-api)
 
 ### 2. High-Fidelity Ingestion
-- **Multi-Source Extraction** — High-fidelity parsing for **PDFs**, **MediaWiki**, and **HTML**.
-- **Intelligent Processing** — Smart chunking, structure preservation, and configurable **noise filtering** for cleaner retrieval context.
-> **Batch & Scale:** Process local directories (`file://`) or remote URLs with built-in token and cost estimation before indexing.
+- **Multi-source extraction** — Parse **PDFs**, **MediaWiki**, and **HTML**
+- **Structured processing** — Smart chunking, structure preservation, and configurable noise filtering
+- **Batch ingestion** — Process local directories (`file://`) or remote URLs with optional token and cost estimation
 
-### 3. Advanced Chat Orchestration
+### 3. Advanced Orchestration
 
-Advanced Chat Orchestration coordinates retrieval, context management, prompt selection, model execution, tool integration, observability, and output rendering into a deterministic multi-stage pipeline.
+Coordinates retrieval, context management, prompt selection, model execution, tool use, observability, and output rendering in a deterministic multi-stage pipeline.
 
-#### 3.1. Pipeline Control & Execution Flow
-*Defines how models, prompts, providers, tools, and post-processing stages are orchestrated for each request.*
+#### 3.1 Pipeline Orchestration
+- **Stage-aware execution** — Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing
+- **Stage-specific models** — Configure models per stage based on cost, capabilities, and task suitability
+- **API-driven control** — Runtime pipeline configuration via FastAPI endpoints
+- **Provider abstraction** — Uses **vrraj-llm-adapter** and the YAML prompt registry to decouple models and prompts from application code
 
-- **LLM Pipeline Orchestration**  
-  Granular control across pipeline stages — Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing — with stage-specific model selection. Models are configurable per stage based on cost, capabilities, and task suitability at runtime - via the UI or API.
+#### 3.2 Context Management
+Long-running conversations remain coherent through a hybrid strategy combining a persistent summary with a bounded recent-history window, keeping context stable and cache-efficient.
 
-- **API-Level Control**  
-  Pipeline configuration is available programmatically via FastAPI endpoints for automation, integrations, and workflows.
+#### 3.3 Query Rewrite
+Improves retrieval accuracy by selectively refining user intent before search. Rewrites are confidence-gated, context-aware, and configurable per request.
 
-- **Provider & Prompt Abstraction**  
-  The pipeline uses the **vrraj-llm-adapter** and the YAML **prompt registry** to keep model selection, provider differences, and prompt behavior configurable without changing application code.
+#### 3.4 Retrieval, Inference & Tools
+- **Vector retrieval** — Configurable Qdrant search with top-k and score thresholds
+- **Context assembly** — Builds prompts from instructions, retrieved context, documents, and tool results
+- **Tool execution** — Native function calling (web search, weather, airports)
+- **Verified citations** — Final responses include citations to source URLs and document sections where available
 
+#### 3.5 Observability & Cost Tracking
+- **Real-time observability** — SSE stream exposing pipeline stage execution and intermediate events
+- **Per-stage accounting** — Token usage and cost metrics for every turn
 
+#### 3.6 Post-Processing
+- **HTML rendering** — Markdown → scoped HTML conversion for rich display
+- **Isolated stage** — Output formatting evolves independently from core inference
+- **Extensible pipeline** — Supports custom post-processing workflows
 
-#### 3.2. Context & Memory Management
-*Maintains long-running conversational continuity while keeping context size bounded and cache-efficient.*
-
-Long-running conversations remain coherent without exceeding context limits by combining a persistent conversation summary with a short verbatim recent history window. As the conversation grows, older turns are automatically **summarized into the active context**, preserving continuity while keeping context size stable and cache-efficient.
-
-
-#### 3.3. Query Intelligence & Rewrite
-Improves retrieval accuracy by selectively refining user intent before search. Rewrites are confidence-gated, context-aware (verbatim turns or summaries), and fully configurable or disable-able per request.
-
-
-#### 3.4. Retrieval, Inference & Tool Augmentation
-*Combines retrieved knowledge, context assembly, tool use, and model inference to produce grounded answers.*
-
-- **Vector Search** - Configurable retrieval via Qdrant with top-k and score thresholds
-- **Context Assembly** - Builds prompts from instructions, context, documents, and web results  
-- **Tool Execution** - Native function calling (web search, weather, airports) with merged outputs
-- **Verified Citations** — Final answers include citations to source URLs and document sections where available.
-
-
-#### 3.5. Observability & Cost Management
-*Provides real-time visibility into pipeline execution, token usage, and per-stage costs.*
-
-- **Real-Time Observability**  
-  Live **SSE (Server-Sent Events)** stream exposing pipeline stage execution and intermediate processing events in real time.
-
-- **Granular Cost Tracking**  
-  Per-stage token usage and cost metrics for every turn.
-
-#### 3.6. Postprocessing & Output Rendering
-*Transforms raw LLM output into presentation-ready responses without affecting core inference behavior.*
-
-- **HTML Conversion** - Markdown to scoped HTML for rich display
-- **Isolated Stage** - Output formatting evolves independently from core inference
-- **Extensible** - Support for custom post-processing workflows
-
-### 4. Embeddable Chat Widget
-**Embeddable chat** for any website with full access to pipeline configuration controls.
-
+### 4. Embeddable Chat Experience
+- **Website-ready widget** — Embed the full RAG experience into external sites
+- **Configurable behavior** — Control pipeline parameters through runtime configuration
+- **Domain-aware isolation** — Support separate knowledge bases and prompt domains per deployment
 
 
 ---

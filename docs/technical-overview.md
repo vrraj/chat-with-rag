@@ -629,83 +629,105 @@ This section will describe how user queries flow through the multi-stage chat pi
 At a high level, the chat orchestration pipeline processes queries as follows:
 
 1. **Query Reception** – Accept the user query from the frontend.
-2. **Preprocessing** – Normalization, cleaning, lowercasing, and optional heuristics.
-   This stage also includes an optional **user-query rewrite pass**, where the system corrects spelling mistakes, expands abbreviations, and normalizes phrasing to improve retrieval quality. The rewritten query is used internally but the user's original query is preserved for context. In ambiguous cases, this stage may trigger a clarification question instead of proceeding directly to retrieval, and the pipeline returns early after emitting a `Clarification Needed` stage.
-3. **Retrieval** – Perform semantic search on the indexed vectors in Qdrant. Gather top-K chunks and prepare prompt context
-4. **Reranking** – Apply metadata filters and score-based reranking.
-5. **Context Assembly** – Context is assembled by with configurable raw tail turns, summary turns, and retrieved context.
-6. **Context Augmentation** – The context is augmented with the system prompt and user query to generate the final context for final LLM Inference.
-7. **LLM Reasoning** – The context, LLM Inference and Tool Calls (if needed) are combined to generate the final response.
-8. **SSE Stage Emission** – Stream intermediate results to the frontend.
-9. **Response Delivery** – Send the final answer back to the user.
+2. **Query Rewrite (optional)** – Uses heuristics and LLM to improve query quality for better retrieval. May trigger clarification if ambiguous.
+3. **Query Embedding** – Generate embedding for the (potentially rewritten) query.
+4. **Vector Retrieval** – Perform semantic search on Qdrant with configurable top-k and score thresholds.
+5. **Reranking (conditional)** – Apply intelligent decision policy to determine if expensive LLM reranking is needed based on result quality.
+6. **Web Context (optional)** – Augment with web search results if enabled.
+7. **Context Assembly** – Combine retrieved chunks, conversation history (chunked + summarized), and web context using token-aware management.
+8. **LLM Inference** – Generate response using configurable models and prompt registry.
+9. **Tool Execution (optional)** – Execute tool calls if the LLM requests them and tools are enabled.
+10. **Response Synthesis** – Merge tool outputs and LLM response into final answer.
+11. **Post-processing (optional)** – Convert Markdown to HTML if enabled.
+12. **SSE Stage Emission** – Stream intermediate results to the frontend throughout the pipeline.
+13. **Response Delivery** – Send final answer with sources, metrics, and metadata.
 
-### 3. Retrieval
+### 3. Query Rewrite (Optional)
 
-- Queries the vector store with the processed user query
-- Applies metadata filters and score thresholds
-- Returns top-K relevant chunks for downstream reasoning
+The system uses an intelligent query rewrite mechanism that:
+- **Triggers only after first turn** (requires conversation history)
+- **Applies heuristics** to determine if rewriting is beneficial
+- **Uses LLM-assisted rewriting** with configurable confidence thresholds
+- **May request clarification** when queries are ambiguous or confidence is low
+- **Preserves original query** for context while using rewritten version for retrieval
 
-### 4. Reranking
+#### Rewrite Decision Logic
+- **Heuristic filtering** - Only attempts rewrite for queries that benefit from it
+- **History context** - Uses recent turns (configurable tail + summary) for context
+- **Confidence threshold** - Accepts rewrite only if confidence >= threshold (default 0.6-0.7)
+- **Clarification path** - If rejected due to ambiguity or low confidence, asks user to clarify
 
-- Uses additional heuristics or secondary models to reorder chunks
-- Supports user or system preferences for filtering
+#### Configuration Parameters
+- `enable_query_rewrite`: Master toggle (default: true)
+- `rewrite_tail_turns`: Recent turns to consider verbatim (default: 1-3)
+- `rewrite_summary_turns`: Older turns to summarize (default: 3)
+- `rewrite_confidence_threshold`: Minimum confidence for acceptance (default: 0.6-0.7)
+- `rewrite_cache_ttl_s`: Cache duration for rewrite results (default: 300s)
+
+### 4. Vector Retrieval
+
+Performs semantic search using the (potentially rewritten) query:
+- **Query Embedding** - Generates embedding using the configured embedding model
+- **Qdrant Search** - Searches with cosine similarity, top-k limit, and score threshold
+- **Rate Limit Handling** - Gracefully handles embedding provider rate limits with user-friendly messages
+- **Metadata Preservation** - Returns full payload with document metadata for downstream processing
+
+#### Key Parameters
+- `top_k`: Maximum documents to retrieve (default: 8)
+- `score_threshold`: Minimum similarity score (default: 0.35)
+- `exact_match`: Use exact match mode (default: false)
+
+### 5. Intelligent Reranking (Conditional)
+
+Applies a sophisticated decision policy to avoid expensive LLM reranking when unnecessary:
+
+#### Rerank Decision Policy
+The system **skips reranking** when:
+1. **≤1 candidates** - Nothing to rerank
+2. **Fewer than re_ranker_input_rows** (default 5) - Insufficient candidates
+3. **Exact match found** - High-confidence exact match in top 5 (score ≥ 0.80)
+4. **Clear winner detected** - Top result meets both criteria:
+   - Score ≥ rerank_clear_winner_min_top1 (default 0.65)
+   - Margin over 5th result ≥ rerank_clear_winner_min_delta (default 0.15)
+
+#### When Reranking Occurs
+- Uses LLM to reorder candidates based on query relevance
+- Limited to re_ranker_input_rows (default 5) candidates
+- Applies prompt registry for domain-specific rerank instructions
+- Configurable chunk size for candidate text (default 600 chars)
+
+#### Configuration
+- `re_ranker_model`: Model used for reranking (default: inference_model)
+- `re_ranker_input_rows`: Max candidates to consider (default: 5)
+- `rerank_clear_winner_min_top1`: Minimum score for clear winner (default: 0.65)
+- `rerank_clear_winner_min_delta`: Minimum margin for clear winner (default: 0.15)
+- `rerank_exact_match_min_score`: Minimum score for exact match (default: 0.80)
 
 
-### 5. Context Assembly
+### 6. Context Assembly & History Management
 
-- Concatenates retrieved chunks into a coherent context window
-- Inserts system prompts and user query information
+Builds the final inference context using multiple sources with token-aware management:
 
-Context assembly builds the inference context using two inputs: **raw tail turns** (a configurable number of the most recent user/assistant turns) and **summarized history** (a condensed representation of earlier conversation state). These controls are configurable so deployments can tune for cost, context window pressure, and answer quality.
+#### Conversation History Strategy
+Uses a **chunked history approach** for efficient multi-turn conversations:
+- **Raw Tail Turns** - Most recent N turns kept verbatim (default: 10)
+- **Summarized History** - Older turns condensed into evolving summary
+- **Chunk Rollover** - When tail limit reached, current chunk is summarized and added to accumulated summary
+- **Namespace Isolation** - Separate state per conversation/session
+- **TTL Eviction** - Idle conversations automatically cleaned up (default: 1 hour)
 
-#### Chunked Conversation History (cache-efficient)
+#### Context Components
+1. **System Instructions** - From prompt registry based on domain
+2. **Conversation Summary** - Accumulated summary of older turns
+3. **Recent Conversation** - Verbatim turns from current chunk
+4. **Retrieved Documents** - Reranked search results
+5. **Web Context** - Optional web search results
+6. **User Query** - Original (or rewritten) user message
 
-For multi-turn chats, the backend uses a chunked history strategy designed to improve cache efficiency and avoid re-summarizing the entire conversation on every turn.
-
-- **Chunk size**: `raw_tail_turns` controls the number of turns per chunk.
-- **State per conversation**: chunk state is keyed by a request namespace (typically `user_id:conversation_id` or `conversation_id`).
-- **What is persisted per namespace** (in-process today):
-  - `accumulated_summary`: merged summary of all completed chunks
-  - `current_chunk_start` / `summarized_until_turn`: boundary used to slice `history` into “verbatim recent chunk”
-  - `current_chunk_size`: number of turns accumulated in the current chunk
-
-On each request:
-
-1. The orchestrator loads (or creates) a chunk manager for the namespace.
-2. If the chunk limit is reached, it runs a `summary_update` prompt that merges `accumulated_summary` with the chunk being closed.
-3. The chunk boundary advances and the recent chunk resets.
-4. The inference prompt is built as:
-   - `<conversation_summary>` = accumulated summary
-   - `<recent_conversation>` = verbatim messages from the current chunk only
-
-This keeps prompts stable across turns inside a chunk and improves the likelihood of cache hits.
-
-##### Stateless `POST /chat` and required client identifiers
-
-The stateless chat API expects the client to send the growing `history` each turn. To benefit from chunking, the client must also provide a stable namespace via `params.conversation_id` (and optionally `params.user_id`). Without a stable namespace, state may collide or reset.
-
-##### Clear Chat (`POST /chat/clear`)
-
-The frontend Clear Chat action calls `POST /chat/clear` with `conversation_id` (and optionally `user_id`). The backend uses this to clear namespace-scoped in-memory state so the next turn starts fresh for that conversation:
-
-- summary cache entries for the namespace
-- chunked-history state (chunk manager / accumulated summary)
-- per-conversation totals accumulator
-
-##### Eviction / TTL (bounded memory)
-
-Namespace-scoped chunk managers are evicted after an idle TTL to bound process memory usage. The default is 1 hour and can be tuned via `chunk_manager_idle_ttl_seconds`.
-
-##### Current Limitations
-
-- **Single Process**: Only works with single worker deployment (no multi-worker scaling)
-- **Memory Only**: No persistence across server restarts - state is lost on process restart
-- **TTL Eviction**: State lost after idle timeout (default 1 hour) for memory management
-- **Namespace Required**: Requires stable `conversation_id`/`user_id` namespace - without it, state may collide or reset
-
-##### Migration to Redis / SQLite / Postgres
-
-The chunking mechanism is intentionally modeled as “state keyed by namespace”. To support multi-worker deployments or persistence across restarts, the in-process state can be replaced with a shared store (Redis/SQLite/Postgres) while keeping the same state shape and keying.
+#### Token Budget Management
+- **Token Counting** - Uses model-specific tokenizers (tiktoken for OpenAI)
+- **Intelligent Truncation** - Preserves recent messages, truncates older content
+- **Configurable Limits** - Per-stage token limits (summarizer, inference, etc.)
 
 #### Summarization and Token Budgeting
 
@@ -783,45 +805,44 @@ By default, the registry logs which domain was resolved and a short tail snippet
 
 This is intentionally opt-in because it can log sensitive prompt content and can produce large logs.
 
-### 6. LLM Reasoning
+### 7. LLM Inference & Tool Execution
 
-- Invokes the language model with assembled context
-- Supports multi-turn interactions and state management
+#### Inference Stage
+- **Model Selection** - Uses configurable model per stage (rewrite, rerank, inference, summarization)
+- **Prompt Registry** - Domain-aware prompts from YAML registry
+- **Streaming Support** - Real-time token streaming via SSE
+- **Multi-Provider** - Supports OpenAI, Gemini, and other providers via llm-adapter
 
-### 7. Tool Calls During Inference
+#### Tool Execution (Optional)
+When enabled and the LLM requests tools:
+- **Tool Registry** - Available tools (weather, airports, web search, custom)
+- **Parameter Validation** - Safe tool argument parsing and validation
+- **Execution** - Parallel or sequential tool execution based on requirements
+- **Response Synthesis** - Merge tool outputs with LLM response
 
-The orchestration layer supports LLM-initiated **tool calls** during the reasoning phase when tools are enabled. Tool calls are intended for **external data augmentation** (outside the vector store) that complements retrieved document context—for example, live lookups, structured datasets, or organization-specific APIs. Vector-store retrieval is handled by the retrieval stage and does not typically require tool calls.
+#### Configuration
+- `enable_tools`: Master toggle for tool calling (default: true)
+- `max_tool_passes`: Maximum tool loops per turn (default: 2)
+- `tools_with_document_context`: Tools that receive retrieved context
+- `inference_temperature`, `inference_top_p`: Sampling parameters
+- `max_inference_output_tokens`: Response length limit
 
-Tools are used for enriching the final answer with operations such as:
+### 8. Post-Processing & Response Delivery
 
-- retrieving live or dynamic data (e.g., weather, nearby airports, schedules)
-- calling internal or enterprise APIs (e.g., ticketing systems, inventory, CRM)
-- performing structured computations or validation steps
-- running project-specific utilities that add value to the final answer
+#### Markdown to HTML (Optional)
+- **Server-side Rendering** - Converts Markdown to sanitized HTML
+- **Safety** - Uses bleach for HTML sanitization with allowlist
+- **Features** - Table rendering, link hardening, source formatting
+- **Conditional** - Only applied when `params.render_html=true`
 
-When the LLM requests a tool call, the orchestrator:
-
-1. extracts tool calls from the model output
-2. validates tool names and arguments
-3. executes tools through a registry of executors
-4. aggregates tool outputs
-5. performs a final synthesis pass to merge retrieved context and tool results into the final response
-
-### 8. SSE Stage Emission
-
-For each major step in the pipeline, the orchestrator emits a human-readable SSE stage label so the frontend can display live progress. Typical stages include:
-
-- `Query Rewrite`
-- `Clarification Needed` (when ambiguity is detected and a follow-up question is asked)
-- `Retrieve Vectors`
-- `Rerank Retrieval Results`
-- `Summarize Chat History`
-- `Establish Web Context` (when web search is enabled)
-- `Inference Context Assembly`
-- `Generating Response`
-- `Tool Calls`
-
-The detailed wiring of SSE connections and reconnection behavior is described separately in the **SSE Streaming** section, but the orchestration logic here defines *what* gets emitted and *when*.
+#### Final Response
+Includes:
+- **Answer** - Generated response (text or HTML)
+- **Sources** - Document citations with URLs and metadata
+- **Metrics** - Per-stage token usage and costs
+- **Conversation Totals** - Running usage metrics
+- **Tools Used** - List of tools executed (if any)
+- **Rewrite Display** - Query rewrite information (if applicable)
 
 ### 9. Web Search Context (DuckDuckGo Instant Answer)
 
@@ -1126,7 +1147,7 @@ _SUMMARY_NS_INDEX[namespace].add(cache_key)
 
 ---
 
-## �🔎 Retrieval and Ranking
+## �� Retrieval and Ranking
 
 The retrieval and ranking subsystem identifies the most semantically relevant document chunks to support the LLM's answer generation. It operates in two phases: vector retrieval and optional LLM-based reranking.
 
@@ -1298,65 +1319,99 @@ Models for each pipeline stage are defined in `stage_specs` and can be overridde
 
 ### Domain-Based Collection Management
 
-Collections and embedding models are tightly coupled to prevent dimension drift:
+The system uses **domain-based configuration** to automatically link collections with compatible embedding models:
 
 ```python
+# In backend/core/config.py
 DOMAIN_EMBEDDING_CONFIG = {
     "default": {
         "collection_name": "document_index",
         "embedding_model_key": "openai:embed_small"
     },
+    "mountains": {
+        "collection_name": "document_index", 
+        "embedding_model_key": "openai:embed_small"
+    },
     "oceans": {
-        "collection_name": "document_index_gemini", 
+        "collection_name": "document_index_gemini",
         "embedding_model_key": "gemini:native-embed"
     }
 }
+
+# Single change point for domain selection
+active_domain: str = "mountains"  # Default
 ```
 
-**Benefits:**
-- **Automatic Model Selection**: Choosing a domain automatically sets the compatible embedding model
-- **Dimension Safety**: Vector sizes derived from model registry prevent mismatches
-- **Single Change Point**: Switch domains with one configuration change
+##### **Computed Properties**
+Collection and model configuration are resolved automatically:
+
+```python
+@property
+def collection_name(self) -> str:
+    return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["collection_name"]
+
+@property  
+def embedding_model_key(self) -> str:
+    return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["embedding_model_key"]
+
+@property
+def vector_size(self) -> int:
+    from backend.llm.llm_client import get_model_info
+    model_info = get_model_info(model_key=self.embedding_model_key)
+    return int(model_info.capabilities.get("dimensions"))
+```
+
+##### **Benefits**
+- **🎯 Single Change Point**: Only change `active_domain` to switch both collection and model
+- **🔗 Automatic Linking**: Collection and embedding model are always correctly paired
+- **📏 Dynamic Vector Size**: Automatically computed from the embedding model's dimensions
+- **🌐 Provider Flexibility**: Each domain can use different providers (OpenAI, Gemini)
+- **🔄 Zero Breaking Changes**: All existing code continues to work unchanged
 
 ### Key Configuration Categories
 
-- **Model selection (per stage):** embedding, reranking, inference, and tool-synthesis models used across ingestion and chat.
-- **Extraction behavior (by source type):** source-specific controls for HTML, MediaWiki, and PDF extraction.
-- **Chunking controls:** chunk size and overlap, section-aware chunking behavior, and per-document safety caps.
-- **Table and structured data handling:** enable/disable table indexing and structured versus flattened strategies.
-- **Retrieval and ranking behavior:** top-k retrieval limits, similarity thresholds, and optional reranking toggles.
-- **Context assembly knobs:** configuration for conversation history incorporation and context-window limits.
-- **Stability and safeguards:** retry policies, timeouts, and failure caps.
-- **Feature flags:** enable/disable optional capabilities such as tools, web search, and experimental features.
+#### **Model Selection (Per Stage)**
+Models are configured via stage-specific keys and can be overridden at runtime:
+- **Rewrite Stage**: `rewrite_model_key` - Query optimization model
+- **Rerank Stage**: `rerank_model_key` - Relevance scoring model  
+- **Inference Stage**: `inference_model_key` - Final response generation model
+- **Summarization Stage**: `summarizer_model_key` - Conversation summarization model
+- **Embedding Stage**: `embedding_model_key` - Vector embedding model (domain-based)
+- **Tools Synthesis**: `tools_synth_model_key` - Tool execution model (defaults to inference)
 
-### Chat Pipeline Settings
+#### **Retrieval & Ranking**
+- `top_k`: Maximum documents to retrieve (default: 8)
+- `score_threshold`: Minimum similarity score (default: 0.35)
+- `exact_match`: Use exact match mode (default: false)
+- `re_ranker_input_rows`: Max candidates for reranking (default: 5)
+- Reranking decision thresholds (clear winner, exact match)
 
-#### Conversation History Management
-- **`raw_tail_turns`** (default: 10): Number of recent turns kept verbatim in the current chunk. When exceeded, triggers chunk rollover with summary update.
-- **`summary_update_model`**: Model used for chunk rollover summaries (empty = use summarizer_model).
+#### **Conversation Management**
+- `raw_tail_turns`: Recent turns kept verbatim (default: 10)
+- `summary_update_model`: Model for chunk summaries (default: summarizer_model)
+- `enable_query_rewrite`: Enable query rewriting (default: true)
+- `rewrite_*`: Rewrite behavior parameters (tail turns, confidence, cache)
+- `max_history_tokens`: Maximum history tokens (default: 4000)
 
-#### Query Rewrite Configuration
-- **`enable_query_rewrite`** (default: true): Enable/disable query rewriting.
-- **`rewrite_tail_turns`** (default: 3): How many recent turns the rewriter sees verbatim.
-- **`rewrite_summary_turns`** (default: 3): How many older turns to summarize before the tail (set to 0 to disable pre-summary).
-- **`rewrite_confidence_threshold`** (default: 0.7): Minimum confidence (0–1) required before a rewritten query replaces the original.
-- **`rewrite_cache_ttl_s`** (default: 300): Cache rewrites for this many seconds to avoid repeat calls.
+#### **Inference & Generation**
+- `inference_temperature`, `inference_top_p`: Sampling parameters
+- `max_inference_output_tokens`: Response length limit
+- `inference_reasoning_effort`: Reasoning effort for supported models
+- `enable_tools`: Enable tool calling (default: true)
+- `max_tool_passes`: Maximum tool loops per turn (default: 2)
 
-#### Retrieval and Inference
-- **`top_k`**: Maximum number of documents to retrieve.
-- **`score_threshold`**: Minimum similarity score for retrieved documents.
-- **`inference_temperature`**, **`inference_top_p`**: Sampling parameters for inference.
-- **`max_inference_output_tokens`**: Limit on inference response length.
+#### **Content Processing**
+- **Chunking**: `default_chunk_size`, `default_chunk_overlap`
+- **PDF**: `pdf_chunk_size`, `pdf_use_pymupdf4llm`, table indexing
+- **HTML**: `html_chunk_size`, table indexing options
+- **MediaWiki**: `mediawiki_chunk_size`, table processing
+- **Safeguards**: `max_chunks_per_doc`, embedding retry policies
 
-#### Summarization
-- **`summarizer_model`**: Model used for summarization tasks.
-- **`summarizer_max_input_tokens`**, **`summarizer_max_output_tokens`**: Token limits for summarization.
-- **`summarizer_temperature`**: Sampling parameter for summarization.
-
-#### Tools and Features
-- **`enable_tools`**: Enable/disable tool calling.
-- **`use_web_search`**: Enable automatic web search context.
-- **`display_sources_for_chat`**, **`display_sources_for_embed`**: UI display toggles.
+#### **Features & UI**
+- `use_web_search`: Enable automatic web search (default: false)
+- `display_sources_for_chat/embed`: UI source display toggles
+- `show_processing_steps`: Show pipeline stages in UI
+- `debug_verbose`: Enable verbose debug logging
 
 ### Runtime Overrides
 
@@ -1504,7 +1559,8 @@ The `Makefile` includes specialized targets essential for debugging, maintenance
 | Target | Description | Usage |
 | :--- | :--- | :--- |
 | `make seed` | **Ingests sample data** into the current Qdrant collection. Requires the local `venv` to be active. | `make seed` |
-| `make smoke_api` | Runs an **OpenAI API smoke test** to verify `OPENAI_API_KEY` authentication and connectivity. | `make smoke_api` |
+| `make seed --force` | **Ingests sample data** without interactive prompts (recommended for scripts). | `make seed --force` |
+| `make smoke-api` | Runs an **OpenAI API smoke test** to verify `OPENAI_API_KEY` authentication and connectivity. | `make smoke-api` |
 | `make start-qdrant` | Starts only the **Qdrant vector database** container in detached mode. | `make start-qdrant` |
 | `make stop-qdrant` | Stops and removes the Qdrant container and resources. | `make stop-qdrant` |
 | `make stop-uvicorn` | Gracefully kills the local running FastAPI application process (SIGTERM) without affecting Qdrant. | `make stop-uvicorn` |
