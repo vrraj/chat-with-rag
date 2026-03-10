@@ -270,9 +270,12 @@ Ensure your environment meets these requirements before proceeding:
 - **LLM Provider API Key(s):** Supports **OpenAI** and **Gemini**. For the model configuration details, see the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
 
 > [!TIP]
-> Before installing the application, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure **usage limits or alerts**. See the section [Configure API Keys and Budget Controls](#configure-api-keys-and-budget-controls) for more details.
+> > [!TIP]
+> The system requires an **OpenAI** or **Gemini** API key for LLM inference.  
+> Add your key(s) to the `.env` file during setup.  
+> See **[Configure API Keys and Budget Controls](#configure-api-keys-and-budget-controls)** for guidance.
 
-### ⚡ 2 Automated Setup- Preferred
+### ⚡2 Automated Setup- Preferred
 
 To bootstrap the environment quickly, run the setup script below.
 
@@ -996,7 +999,7 @@ This application includes a **domain-based access control framework** for APIs a
 
 These security controls help prevent unauthorized access and ensure that different domains or websites can only access their designated knowledge bases and configurations.
 
---
+---
 ## 📡 API Usage
 
 For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](docs/api-reference.md)**.
