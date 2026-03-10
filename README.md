@@ -375,6 +375,23 @@ Use the following Make targets to manage the application lifecycle:
 
   ```
 
+#### 🔄 Updating the Docker Images
+
+If you pull new changes, rebuild the application image so your local stack reflects the latest code and dependency updates. You do **not** need to stop the containers first — Docker Compose will rebuild the image and recreate the service automatically.
+
+```bash
+git pull
+docker compose up --build -d
+```
+
+Because rebuilding can leave behind unused `<none>` images over time, it is a good idea to periodically prune dangling images:
+
+```bash
+docker image prune -f
+```
+
+> **Tip:** Use `docker compose up --build -d` after pulling changes to Dockerfiles, Python dependencies, or other container-related files.
+
 For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
 - the `Makefile` in the project root
 - **[docs/technical-overview.md](docs/technical-overview.md#developer--operator-utilities-makefile)**
@@ -394,17 +411,18 @@ If you pull new changes from the repository, update your environment before rest
 git pull
 ```
 
-Restart the application stack:
+For most updates, restart the application stack:
 
 ```bash
 make stop
 make start
 ```
 
-If changes affect container dependencies (for example `Dockerfile` or `requirements.txt`), rebuild the containers (you may also use the `make rebuild` target):
+If changes affect container dependencies (for example `Dockerfile` or `requirements.txt`), rebuild the Docker image instead:
 
 ```bash
-docker compose up -d --build
+docker compose up --build -d
+docker image prune -f
 ```
 
 If Python dependencies for local scripts changed, refresh the virtual environment:
