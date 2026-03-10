@@ -246,9 +246,9 @@ kill-uvicorn:
 # Seed Qdrant with sample data from JSONL file
 seed:
 	@echo "Seeding Qdrant with sample data..."
-	@. venv/bin/activate && python scripts/seed_qdrant.py
+	@. venv/bin/activate && python scripts/seed_qdrant.py 2>/dev/null
 	@echo "Seeding Gemini collection..."
-	@. venv/bin/activate && python scripts/seed_qdrant_gemini.py
+	@. venv/bin/activate && python scripts/seed_qdrant_gemini.py 2>/dev/null
 	@echo " Qdrant seed completed successfully."
 
 # Run OpenAI API smoke test (verifies API key, auth, and connectivity)
