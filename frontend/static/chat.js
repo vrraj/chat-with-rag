@@ -1228,6 +1228,27 @@
             }
           });
 
+          // Display active collection information
+          try {
+            const activeCollectionEl = document.getElementById('active_collection');
+            if (activeCollectionEl && config.collection_name) {
+              // Map collection names to user-friendly names
+              const collectionNames = {
+                'document_index': 'OpenAI (document_index)',
+                'document_index_gemini': 'Gemini (document_index_gemini)'
+              };
+              const displayName = collectionNames[config.collection_name] || config.collection_name;
+              activeCollectionEl.textContent = displayName;
+              
+              // Also show the active domain if available
+              if (config.active_domain) {
+                activeCollectionEl.textContent += ` [domain: ${config.active_domain}]`;
+              }
+            }
+          } catch (e) {
+            console.debug('Could not display active collection:', e);
+          }
+
           // Hydrate stageModelConfig from *_model_key fields when present.
           // These keys are the source of truth for default model selection.
           try {

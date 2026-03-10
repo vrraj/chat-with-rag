@@ -20,6 +20,10 @@
           <label for="show_processing_steps" style="margin:0;">Show Processing Steps</label>
           <input id="show_processing_steps" type="checkbox" checked />
         </div>
+        <div class="form-field" style="margin-bottom: 0.5rem; display:flex; align-items:center; gap:8px;">
+          <label for="active_collection" style="margin:0;">Active Collection:</label>
+          <span id="active_collection" style="font-weight: normal; color: #666;">Loading...</span>
+        </div>
         <h2 class="section-title">Parameters</h2>
         <form id="params_form" autocomplete="off">
           <!-- Retrieval group -->
@@ -155,10 +159,7 @@
           <div class="group-box ux-11px collapsible-group" id="models_section">
             <div class="collapsible-header models-header" tabindex="0" aria-expanded="true" role="button" onclick="toggleCollapsible(this, event)">
               <span class="subsection-title">Models Used</span>
-              <span class="chevron" aria-hidden="true">▲</span>
-            </div>
-            <div class="collapsible-body">
-              <div style="display:flex; justify-content:flex-start; margin-bottom:6px;">
+              <span style="margin-left: 8px;">
                 <a
                   id="change_models_btn"
                   href="#"
@@ -166,9 +167,12 @@
                   role="button"
                   onclick="if (window.__openModelsModal) { window.__openModelsModal(); } else { var m=document.getElementById('models_modal'); if(m){m.style.display='block';} } return false;"
                 >
-                  Change Models
+                  [Customize]
                 </a>
-              </div>
+              </span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </div>
+            <div class="collapsible-body">
               <div class="form-field model-row">
                 <span class="model-label">Embedding:</span>
                 <div id="model_embedding" class="model-value" style="width:100%">text-embedding-3-small</div>

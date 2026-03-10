@@ -112,7 +112,8 @@ pip install -r requirements.txt
 
 echo
 echo "🌱 Seeding sample data ..."
-make seed
+# Suppress config warnings during seeding (API keys not required for seeding)
+make seed 2>/dev/null
 
 deactivate
 
@@ -172,11 +173,12 @@ deactivate
 
 echo
 echo "🎉 Setup complete!"
-echo "   Open: http://localhost:8000"
 echo
 echo "📝 Next step: Add your API keys to .env:"
 echo "   OPENAI_API_KEY=your_openai_key_here"
 echo "   GEMINI_API_KEY=your_gemini_key_here"
+echo "   Restart the app: make stop && make start"
+echo "   Open the Application in your browser: http://localhost:8000"
 
 # Quick sanity check (non-fatal): show compose tool detected
 echo "   Compose detected: $COMPOSE_CMD"

@@ -1544,6 +1544,10 @@ class ModelConfig(BaseModel):
     summarizer_model_key: Optional[str] = None
     inference_model_key: Optional[str] = None
 
+    # Collection and domain information
+    collection_name: Optional[str] = None
+    active_domain: Optional[str] = None
+
     # Runtime defaults exposed for frontend controls
     score_threshold: Optional[float] = None
     top_k: Optional[int] = None
@@ -1597,6 +1601,10 @@ async def get_model_config():
         rerank_model_key=get_model_setting("rerank_model_key"),
         summarizer_model_key=get_model_setting("summarizer_model_key"),
         inference_model_key=get_model_setting("inference_model_key"),
+
+        # Collection and domain information
+        collection_name=get_model_setting("collection_name"),
+        active_domain=get_model_setting("active_domain"),
 
         # Runtime defaults so the frontend can pre-populate form fields
         score_threshold=get_model_setting("score_threshold"),
