@@ -45,7 +45,11 @@ try:
     DEFAULT_VECTOR_FALLBACK = getattr(settings, "vector_size", 1536)
 except (ValueError, ImportError) as e:
     # Fallback defaults if config validation fails
-    print(f"Warning: Could not load config ({e}), using defaults")
+    if "validation error" in str(e).lower() and "api key" in str(e).lower():
+        # Suppress API key validation warnings during seeding
+        pass
+    else:
+        print(f"Warning: Could not load config ({e}), using defaults")
     DEFAULT_HOST = "localhost"
     DEFAULT_PORT = 6333
     DEFAULT_COLLECTION = "document_index_gemini"
