@@ -310,7 +310,7 @@ make stop
 make start
 ```
 
-Visit: 👉 http://localhost:8000
+**Launch Application:** 👉 http://localhost:8000
 
 > **Note:** API keys are loaded when the application starts. If you add or change keys later, restart the application for the changes to take effect.
 
@@ -359,7 +359,7 @@ deactivate
 
 **Step 5 — Open the application**
 
-Visit: 👉 http://localhost:8000
+**Visit:** 👉 http://localhost:8000
 
 
 ### ▶️ 2.2 Running & Managing the Application
@@ -401,7 +401,7 @@ For additional Make targets (logs, reset, reseed, maintenance utilities), refer 
 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter options, see:
 
-👉 **[docs/api-reference.md](docs/api-reference.md)**
+**👉 [docs/api-reference.md](docs/api-reference.md)**
 
 ---
 
