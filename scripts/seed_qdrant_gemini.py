@@ -35,29 +35,41 @@ try:
 except ImportError:
     pass
 
-# Import Qdrant configuration from backend/core/config.py
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from backend.core.config import settings
+# Import only Qdrant configuration to avoid API key validation
+try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from backend.core.config import settings
+    DEFAULT_HOST = settings.qdrant_host
+    DEFAULT_PORT = settings.qdrant_port
+    DEFAULT_COLLECTION = "document_index_gemini"  # Override for Gemini collection
+    DEFAULT_VECTOR_FALLBACK = getattr(settings, "vector_size", 1536)
+except (ValueError, ImportError) as e:
+    # Fallback defaults if config validation fails
+    print(f"Warning: Could not load config ({e}), using defaults")
+    DEFAULT_HOST = "localhost"
+    DEFAULT_PORT = 6333
+    DEFAULT_COLLECTION = "document_index_gemini"
+    DEFAULT_VECTOR_FALLBACK = 1536
 
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
 
 # ---- Gemini-specific configuration ----
-# Temporarily switch to oceans domain to get Gemini collection settings
-original_domain = settings.active_domain
-settings.active_domain = "oceans"
-
-# Now get the Gemini-specific settings
-DEFAULT_HOST = settings.qdrant_host
-DEFAULT_PORT = settings.qdrant_port
-DEFAULT_COLLECTION = settings.collection_name  # This will be "document_index_gemini"
-DEFAULT_VECTOR_FALLBACK = getattr(settings, "vector_size", 1536)
 DEFAULT_DISTANCE = models.Distance.COSINE
 DEFAULT_BATCH = 256
 DEFAULT_PATH = "data/docs-index-seed-gemini.jsonl"
 
-# Restore original domain
-settings.active_domain = original_domain
+# Try to get vector size from settings if available
+try:
+    if 'settings' in locals():
+        original_domain = settings.active_domain
+        settings.active_domain = "oceans"
+        DEFAULT_VECTOR_FALLBACK = getattr(settings, "vector_size", 1536)
+        settings.active_domain = original_domain
+    else:
+        DEFAULT_VECTOR_FALLBACK = 1536
+except:
+    DEFAULT_VECTOR_FALLBACK = 1536
 
 
 def iter_jsonl(path: str) -> Iterable[Dict[str, Any]]:

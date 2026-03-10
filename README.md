@@ -272,7 +272,7 @@ Ensure your environment meets these requirements before proceeding:
 > [!TIP]
 > Before installing the application, set up your **OpenAI API key** and/or **Gemini API key**. It is also a good idea to configure **usage limits or alerts**. See the section [Configure API Keys and Budget Controls](#configure-api-keys-and-budget-controls) for more details.
 
-### ⚡ 2.0 Automated Setup- Preferred
+### ⚡ 2 Automated Setup- Preferred
 
 To bootstrap the environment quickly, run the setup script below.
 
@@ -359,7 +359,7 @@ deactivate
 Visit: 👉 http://localhost:8000
 
 
-### ▶️ 2.3 Running & Managing the Application
+### ▶️ 2.2 Running & Managing the Application
 
 Use the following Make targets to manage the application lifecycle:
 
@@ -809,9 +809,9 @@ Tool usage can be enabled per request via the application configuration and is i
 
 ## 📚 Knowledge Base and Sample Data
 
-When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **70 Wikipedia pages** in two collections (OpenAI and Gemini): `document_index` and `document_index_gemini`. This focus on world-renowned mountains, oceans and seas - providing a rich environment to test the RAG pipeline's accuracy.
+When you run `make seed`, the system populates Qdrant with a curated dataset derived from approximately **70 Wikipedia pages** focused on mountains and related geography topics. The dataset is indexed into two collections — `document_index` (OpenAI embeddings) and `document_index_gemini` (Gemini embeddings) — allowing you to test the same content across different embedding models.
 
-> **Note:** You can access these collections by switching between the active_domain keys (mountains - OpenAI, oceans - Gemini) in the `config.py` file.
+> **Note:** The active collection is selected through the `active_domain` setting in `backend/core/config.py`, which determines both the Qdrant collection and the embedding model used by the system.
 
 ### 📄 Data Attribution
 This project includes a sample knowledge base derived from Wikipedia.
