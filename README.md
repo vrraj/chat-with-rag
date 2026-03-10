@@ -377,10 +377,12 @@ source venv/bin/activate
 # Install dependencies and seed Qdrant
 pip install -r requirements.txt 
 make seed
-deactivate
 
 ```
-
+```bash
+# Optional: deactivate virtual environment after seeding
+deactivate
+```
 > **Note for Gemini users:** The seeded sample data is built with the default OpenAI embedding configuration.
 
 If you want to use Gemini embeddings instead of OpenAI, update the embedding model in `backend/core/config.py` and then re-index the seeded dataset (or your own collection) so the stored vector dimensions remain consistent.
