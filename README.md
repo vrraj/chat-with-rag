@@ -354,6 +354,10 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 make seed
+```
+
+**Optional:** Deactivate the virtual environment after seeding
+```bash
 deactivate
 ```
 
