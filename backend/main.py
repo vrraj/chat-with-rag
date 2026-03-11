@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 # Precedence: OS env vars win; .env is a fallback.
 load_dotenv(override=False)
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Any
 import uvicorn
 import re
 import requests
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, urlparse
 from qdrant_client.http import models
 from backend.core import settings
 from backend.embeddings.embeddings_manager import EmbeddingsManager
@@ -36,6 +36,9 @@ from pydantic import BaseModel, Field
 from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from pydantic import BaseModel
+from backend.api.endpoints import model_keys as model_keys_endpoint
+from backend.llm.llm_client import generate, embed, get_pricing_for_model
+
 
 class ClearChatRequest(BaseModel):
     conversation_id: str | None = None
@@ -46,6 +49,107 @@ from backend.core.logging import LOGGING_CONFIG
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
+
+
+# --- Origin / host allowlist helper (initial protection for critical routes) ---
+
+def _parse_allowed_list(raw: str | None) -> set[str]:
+    """Return a set of stripped items from a comma-separated config string."""
+    try:
+        if not raw:
+            return set()
+        return {item.strip() for item in str(raw).split(',') if item and item.strip()}
+    except Exception:
+        return set()
+
+
+_ALLOWED_ORIGINS = _parse_allowed_list(getattr(settings, "allowed_origins", None))
+_ALLOWED_HOSTS = _parse_allowed_list(getattr(settings, "allowed_hosts", None))
+
+
+def _get_embedding_rate_per_mm_tokens() -> float:
+    """Return the embedding cost (USD) per 1M tokens for the active embedding model.
+
+    Preference order (non-breaking):
+      1) Use pricing.input_per_mm from model_registry for settings.embedding_model_key
+      2) Fall back to 0.0 when registry/pricing is unavailable or misconfigured.
+    """
+    # Safe default when no pricing is available
+    default_rate = 0.0
+
+    try:
+        embedding_key = str(getattr(settings, "embedding_model_key", "")).strip()
+        if not embedding_key:
+            return default_rate
+
+        pricing = get_pricing_for_model(model_key=embedding_key)
+        if pricing is None:
+            return default_rate
+
+        rate = getattr(pricing, "input_per_mm", None)
+        if rate is None:
+            return default_rate
+        return float(rate)
+    except Exception:
+        # Any lookup or config issue should silently fall back to the prior behavior.
+        return default_rate
+
+
+def enforce_origin_host(request: Request) -> None:
+    """Best-effort origin/host check for critical FastAPI routes.
+
+    When no allowlists are configured, this is a no-op. Otherwise, it will allow
+    a request if either the full Origin header value matches an entry in
+    settings.allowed_origins OR the parsed origin host / Host header matches an
+    entry in settings.allowed_hosts.
+    """
+
+    # Fast path: no configuration => no additional enforcement
+    
+    if not _ALLOWED_ORIGINS and not _ALLOWED_HOSTS:
+        logger.warning("SECURITY: Origin/Host Blocked; ALLOWLIST origins=%s hosts=%s; got origin=%s host=%s",
+               _ALLOWED_ORIGINS, _ALLOWED_HOSTS, origin, host_hdr)
+        return
+
+    try:
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        host_hdr = request.headers.get("host") or ""
+
+        origin_ok = False
+        host_ok = False
+
+        # Direct Origin match (scheme + host[:port])
+        if origin and _ALLOWED_ORIGINS:
+            origin_ok = origin in _ALLOWED_ORIGINS
+
+        # Host-based checks
+        if _ALLOWED_HOSTS:
+            origin_host = ""
+            if origin:
+                try:
+                    parsed = urlparse(origin)
+                    if parsed.hostname:
+                        origin_host = parsed.hostname
+                        if parsed.port:
+                            origin_host = f"{parsed.hostname}:{parsed.port}"
+                except Exception:
+                    origin_host = ""
+
+            if origin_host and origin_host in _ALLOWED_HOSTS:
+                host_ok = True
+            elif host_hdr and host_hdr in _ALLOWED_HOSTS:
+                host_ok = True
+
+        if not (origin_ok or host_ok):
+            logger.warning("SECURITY: origin not ok or host not ok Origin/Host Blocked; ALLOWLIST origins=%s hosts=%s; got origin=%s host=%s",
+               _ALLOWED_ORIGINS, _ALLOWED_HOSTS, origin, host_hdr)
+            raise HTTPException(status_code=403, detail="Origin/host not allowed")
+    except HTTPException:
+        raise
+    except Exception:
+        # On any unexpected error in enforcement, fail open to avoid breaking dev.
+        return
+
 
 # --- Swagger/OpenAPI tags & UI ordering ---
 tags_metadata = [
@@ -73,6 +177,9 @@ try:
     app.include_router(stream_stages_router, prefix="/chat")
 except Exception as _e:
     logger.warning("SSE stream routes could not be registered: %s", _e)
+
+# Expose backend model registry for frontend consumption
+app.include_router(model_keys_endpoint.router, tags=["3. Search & Chat"])
 
 # Configure static file serving
 # This allows the frontend to be served from the same server as the API
@@ -262,15 +369,45 @@ async def chat_page():
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "chat.html"))
 
+
+@app.get(
+    "/chat-embed.html",
+    tags=["1. UI Pages"],
+    summary="Embedded chat page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Embedded Chat Page</body></html>"}}}},
+)
+async def chat_embed_page():
+    """Serve the minimal embeddable chat page (chat-embed.html)."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "chat-embed.html"))
+
+
+@app.get(
+    "/chat-embed-example.html",
+    tags=["1. UI Pages"],
+    summary="Embedded chat example page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Chat Embed Example</body></html>"}}}},
+)
+async def chat_embed_example_page():
+    """Serve the example page demonstrating the embeddable chat popup."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "chat-embed-example.html"))
+
 from typing import Optional
 @app.post("/mediawiki/url", tags=["2. Ingest"], summary="1. Index MediaWiki URL")
 async def index_mediawiki_url(
-    mediawiki_input: MediaWikiURLInput
+    mediawiki_input: MediaWikiURLInput,
+    request: Request,
 ):
     """
     Index content from MediaWiki wikitext, optionally limiting number of chunks indexed by max_chunks.
     You can override the target MediaWiki API with `api_url` and the User-Agent with `ua` per request.
     """
+    # Enforce origin/host allowlist for this ingestion endpoint.
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         #logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
@@ -342,8 +479,9 @@ async def index_mediawiki_url(
                     tokens_used += embeddings_manager.estimate_tokens(chunk)
                     
             # logger.info("Estimate only; planned chunks: %d, tokens: %d", len(chunks), tokens_used)
-            # Calculate estimated embedding cost
-            estimated_cost = (tokens_used * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            # Calculate estimated embedding cost using provider/model-aware rate
+            rate_per_mm = _get_embedding_rate_per_mm_tokens()
+            estimated_cost = (tokens_used * rate_per_mm) / 1_000_000.0
             return {
                 "message": "Estimate only", 
                 "chunks_planned": len(chunks),
@@ -361,7 +499,8 @@ async def index_mediawiki_url(
             result.get('vectors_indexed', 0),
             result.get('tokens_used', 0),
         )
-        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        rate_per_mm = _get_embedding_rate_per_mm_tokens()
+        embedding_cost = (result.get("tokens_used", 0) * rate_per_mm) / 1_000_000.0
         return {
             "message": "MediaWiki content indexed successfully",
             "chunks_indexed": len(chunks),
@@ -375,7 +514,7 @@ async def index_mediawiki_url(
 
 
 @app.post("/chat/clear", tags=["3. Search & Chat"], summary="6. Clear conversation summaries (stateless)")
-async def clear_chat_summaries(payload: ClearChatRequest):
+async def clear_chat_summaries(payload: ClearChatRequest, request: Request):
     """Clear server-side summary cache for a conversation namespace.
 
     Namespace rule (Option A):
@@ -383,6 +522,8 @@ async def clear_chat_summaries(payload: ClearChatRequest):
     - Else: conversation_id only
     - If conversation_id missing/empty: no-op
     """
+    enforce_origin_host(request)
+
     try:
         from backend.chat import chat_manager as cm
         cid = (payload.conversation_id or "").strip()
@@ -391,6 +532,13 @@ async def clear_chat_summaries(payload: ClearChatRequest):
             return JSONResponse({"removed": 0, "remaining": 0, "reclaimed_bytes": 0})
         ns = f"{uid}:{cid}" if uid and cid else (cid or "")
         stats = cm.clear_summaries_for_namespace(ns)
+        # Also clear chunked history state for this namespace so the conversation truly resets.
+        try:
+            chunk_stats = cm.clear_chunk_manager_for_namespace(ns)
+            if isinstance(stats, dict) and isinstance(chunk_stats, dict):
+                stats["chunked_history"] = chunk_stats
+        except Exception:
+            pass
         # Also reset per-conversation totals for this namespace so a new conversation_id starts at zero
         try:
             totals_stats = cm.clear_convo_totals_for_namespace(ns)
@@ -404,9 +552,12 @@ async def clear_chat_summaries(payload: ClearChatRequest):
 
 @app.post("/pdf", tags=["2. Ingest"], summary="1c. Index PDF (upload or URL)")
 async def index_pdf(
-    pdf_input: PDFInput
+    pdf_input: PDFInput,
+    request: Request,
 ):
     """Index a PDF either by uploaded file or by URL."""
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
@@ -541,8 +692,9 @@ async def index_pdf(
                 elif isinstance(chunk, str):
                     tokens_used += embeddings_manager.estimate_tokens(chunk)
                     
-            # Calculate estimated embedding cost
-            estimated_cost = (tokens_used * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            # Calculate estimated embedding cost using provider/model-aware rate
+            rate_per_mm = _get_embedding_rate_per_mm_tokens()
+            estimated_cost = (tokens_used * rate_per_mm) / 1_000_000.0
             return {
                 "message": "Estimate only", 
                 "chunks_planned": len(chunks),
@@ -556,7 +708,8 @@ async def index_pdf(
             max_chunks=pdf_input.max_chunks,
         )
         
-        embedding_cost = (result.get("tokens_used", 0) * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        rate_per_mm = _get_embedding_rate_per_mm_tokens()
+        embedding_cost = (result.get("tokens_used", 0) * rate_per_mm) / 1_000_000.0
         return {
             "message": "PDF content indexed successfully",
             "chunks_indexed": len(chunks),
@@ -644,7 +797,7 @@ class ChatSessionManager:
 chat_session_manager = ChatSessionManager()
 
 @app.post("/chat/session", tags=["3. Search & Chat"], summary="1. Create chat session")
-async def create_chat_session():
+async def create_chat_session(request: Request):
     """Create a new chat session"""
     session_id = chat_session_manager.create_session()
     return {"session_id": session_id}
@@ -656,11 +809,13 @@ async def create_chat_session():
     summary="Reset chat totals/state",
     status_code=200
 )
-async def reset_chat_totals():
+async def reset_chat_totals(request: Request):
     """
     Reset conversation-level metrics/state for the stateless chat path used by chat.html.
     This resets the chat history, parameters, and clears the conversation window.
     """
+    enforce_origin_host(request)
+
     global chat_manager
     if chat_manager is None:
         chat_manager = ChatManager()
@@ -674,8 +829,15 @@ async def reset_chat_totals():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{session_id}", tags=["3. Search & Chat"], summary="2. Chat (session)")
-async def chat_endpoint(session_id: str, chat_request: ChatRequest):
+async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Request):
     """Process a chat message with context"""
+    enforce_origin_host(request)
+    
+    # Initialize chat_manager if needed
+    global chat_manager
+    if chat_manager is None:
+        chat_manager = ChatManager()
+    
     try:
         # Get session context
         session = chat_session_manager.get_session(session_id)
@@ -683,12 +845,16 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest):
         # Get relevant context from chat history
         context = chat_session_manager.get_context(session_id)
         
-        # Process chat message with context
-        response = await chat_manager.chat(
+        # Process chat message with context (wrap synchronous call in thread)
+        # Add session_id to params for namespace/token accounting
+        chat_params = chat_request.params or {}
+        chat_params["session_id"] = session_id
+        
+        response = await asyncio.to_thread(chat_manager.chat,
             message=chat_request.message,
             context=context,
             use_web_search=chat_request.use_web_search,
-            params=(chat_request.params or {})
+            params=chat_params
         )
         
         # Update session with new message and response
@@ -707,7 +873,12 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest):
         return ChatResponse(
             response=response["response"],
             sources=response["sources"],
-            tools_used=response.get("tools_used", [])
+            tools_used=response.get("tools_used", []),
+            answer=response.get("answer"),
+            metrics=response.get("metrics", {}),
+            turn_metrics=response.get("turn_metrics", {}),
+            conversation_totals=response.get("conversation_totals", {}),
+            rewrite_display=response.get("rewrite_display", {})
         )
     except Exception as e:
         # logger.error("Error processing chat: %s", e)
@@ -727,8 +898,9 @@ async def get_chat_history(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/{session_id}/reset", tags=["3. Search & Chat"], summary="Reset chat session state")
-async def reset_chat_session(session_id: str):
+async def reset_chat_session(session_id: str, request: Request):
     """Reset server-side chat session messages/context for the given session."""
+    enforce_origin_host(request)
     try:
         chat_session_manager.reset_session(session_id)
         return {"ok": True}
@@ -737,8 +909,10 @@ async def reset_chat_session(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index", tags=["2. Ingest"], summary="2. Index URLs / PDFs")
-async def index_content(url_input: URLInput):
+async def index_content(url_input: URLInput, request: Request):
     """Index content from URLs (HTML or PDF)"""
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
@@ -918,8 +1092,9 @@ async def index_content(url_input: URLInput):
             #                 )
             #                 planned_chunks_total += result.get("vectors_indexed", 0)
             #                 tokens_total += result.get("tokens_used", 0)
+        rate_per_mm = _get_embedding_rate_per_mm_tokens()
         if url_input.estimate:
-            estimated_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+            estimated_cost = (tokens_total * rate_per_mm) / 1_000_000.0
             return {
                 "message": "Estimate only", 
                 "chunks_planned": planned_chunks_total,
@@ -927,7 +1102,7 @@ async def index_content(url_input: URLInput):
                 "embedding_cost": round(estimated_cost, 8),
                 "errors": all_errors,
             }
-        embedding_cost = (tokens_total * float(settings.embedding_cost_per_MM_tokens)) / 1_000_000.0
+        embedding_cost = (tokens_total * rate_per_mm) / 1_000_000.0
         return {
             "message": "Content indexed successfully",
             "vectors_indexed": planned_chunks_total,
@@ -996,8 +1171,10 @@ async def search_content(search_request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat", tags=["3. Search & Chat"], summary="5. Chat (stateless)")
-async def chat_with_content(chat_request: ChatRequest):
+async def chat_with_content(chat_request: ChatRequest, request: Request):
     """Chat with the indexed content"""
+    enforce_origin_host(request)
+
     global chat_manager
     if chat_manager is None:
         chat_manager = ChatManager()
@@ -1019,8 +1196,10 @@ async def chat_with_content(chat_request: ChatRequest):
 
 
 @app.post("/embed", tags=["2. Ingest"], summary="3. Embed single document")
-async def generate_embedding(embedding_request: EmbeddingRequest):
+async def generate_embedding(embedding_request: EmbeddingRequest, request: Request):
     """Generate embedding for a specific document"""
+    enforce_origin_host(request)
+
     global embeddings_manager
     if embeddings_manager is None:
         embeddings_manager = EmbeddingsManager()
@@ -1279,6 +1458,7 @@ def delete_preview(url: str = Query(..., description="Full URL of the document t
     - Counts all matching chunks via `base_url_lower`.
     - Returns up to `sample_limit` example chunks for review.
     """
+
     global qdrant_db
     if qdrant_db is None:
         qdrant_db = QdrantDB(
@@ -1317,7 +1497,7 @@ def delete_preview(url: str = Query(..., description="Full URL of the document t
     tags=["4. Index Admin"],
     summary="Delete Qdrant chunks by base_url_lower",
 )
-def delete_by_base_url(request: DeleteByBaseURLRequest):
+def delete_by_base_url(request: DeleteByBaseURLRequest, http_request: Request):
     """Delete all Qdrant chunks whose `base_url_lower` matches the derived base URL.
 
     You can provide either:
@@ -1350,23 +1530,38 @@ def delete_by_base_url(request: DeleteByBaseURLRequest):
 
 class ModelConfig(BaseModel):
     """Model configuration response model."""
+    # Concrete model names (for debug / compatibility)
     embedding_model: Optional[str] = None
     re_ranker_model: Optional[str] = None
     query_rewrite_model: Optional[str] = None
     summarizer_model: Optional[str] = None
     inference_model: Optional[str] = None
-    # runtime defaults exposed for frontend
+
+    # Stable model profile keys from Settings (source of truth for defaults)
+    embedding_model_key: Optional[str] = None
+    rewrite_model_key: Optional[str] = None
+    rerank_model_key: Optional[str] = None
+    summarizer_model_key: Optional[str] = None
+    inference_model_key: Optional[str] = None
+
+    # Collection and domain information
+    collection_name: Optional[str] = None
+    active_domain: Optional[str] = None
+
+    # Runtime defaults exposed for frontend controls
     score_threshold: Optional[float] = None
     top_k: Optional[int] = None
     summarizer_max_input_tokens: Optional[int] = None
     summarizer_max_output_tokens: Optional[int] = None
     inference_temperature: Optional[float] = None
     inference_top_p: Optional[float] = None
-    chat_history_window_turns: Optional[int] = None
     raw_tail_turns: Optional[int] = None
     max_inference_output_tokens: Optional[int] = None
     enable_tools: Optional[bool] = None
     enable_query_rewrite: Optional[bool] = None
+    rewrite_confidence_threshold: Optional[float] = None
+    rewrite_tail_turns: Optional[int] = None
+    rewrite_summary_turns: Optional[int] = None
     inference_context_rows: Optional[int] = None
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
@@ -1380,24 +1575,51 @@ async def get_model_config():
         value = getattr(settings, name, None)
         return value if value is not None else None
     
+    # Resolve embedding model from provider key to actual model name
+    embedding_model_display = None
+    try:
+        from backend.embeddings.specs import resolve_embedding_spec
+        emb_spec = resolve_embedding_spec(settings)
+        if emb_spec and emb_spec.get("model"):
+            embedding_model_display = emb_spec["model"]
+    except Exception as e:
+        logger.debug("Failed to resolve embedding spec for display: %s", e)
+        # Fallback to model key if resolution fails
+        embedding_model_display = get_model_setting("embedding_model_key")
+    
     return ModelConfig(
-        embedding_model=get_model_setting("embedding_model"),
+        # Concrete model names
+        embedding_model=embedding_model_display,
         re_ranker_model=get_model_setting("re_ranker_model"),
         query_rewrite_model=get_model_setting("rewrite_model"),
         summarizer_model=get_model_setting("summarizer_model"),
         inference_model=get_model_setting("inference_model"),
-        # expose a small set of runtime defaults so the frontend can pre-populate form fields
+
+        # Stable model profile keys from Settings
+        embedding_model_key=get_model_setting("embedding_model_key"),
+        rewrite_model_key=get_model_setting("rewrite_model_key"),
+        rerank_model_key=get_model_setting("rerank_model_key"),
+        summarizer_model_key=get_model_setting("summarizer_model_key"),
+        inference_model_key=get_model_setting("inference_model_key"),
+
+        # Collection and domain information
+        collection_name=get_model_setting("collection_name"),
+        active_domain=get_model_setting("active_domain"),
+
+        # Runtime defaults so the frontend can pre-populate form fields
         score_threshold=get_model_setting("score_threshold"),
         top_k=get_model_setting("top_k"),
         summarizer_max_input_tokens=get_model_setting("summarizer_max_input_tokens"),
         summarizer_max_output_tokens=get_model_setting("summarizer_max_output_tokens"),
         inference_temperature=get_model_setting("inference_temperature"),
         inference_top_p=get_model_setting("inference_top_p"),
-        chat_history_window_turns=get_model_setting("chat_history_window_turns"),
         raw_tail_turns=get_model_setting("raw_tail_turns"),
         max_inference_output_tokens=get_model_setting("max_inference_output_tokens"),
         enable_tools=get_model_setting("enable_tools"),
         enable_query_rewrite=get_model_setting("enable_query_rewrite"),
+        rewrite_confidence_threshold=get_model_setting("rewrite_confidence_threshold"),
+        rewrite_tail_turns=get_model_setting("rewrite_tail_turns"),
+        rewrite_summary_turns=get_model_setting("rewrite_summary_turns"),
         inference_context_rows=get_model_setting("inference_context_rows"),
     )
 
@@ -1617,7 +1839,7 @@ async def process_item(item, request, settings):
         500: {"description": "Internal server error"}
     }
 )
-async def batch_process_docs(request: BatchRequest):
+async def batch_process_docs(batch_request: BatchRequest, request: Request):
     """
     Process multiple documents (PDFs, web pages, or MediaWiki) with streaming updates.
     
@@ -1626,8 +1848,10 @@ async def batch_process_docs(request: BatchRequest):
     - Per-document skip_sections customization
     - Streams progress updates in real-time
     """
+    enforce_origin_host(request)
+
     async def stream_results():
-        total_items = len(request.items)
+        total_items = len(batch_request.items)
         successful = 0
         errors = 0
         total_chunks = 0
@@ -1635,7 +1859,7 @@ async def batch_process_docs(request: BatchRequest):
         total_cost = 0.0
         
         # Process each item one by one
-        for i, item in enumerate(request.items):
+        for i, item in enumerate(batch_request.items):
             # Send progress update
             progress = (i / total_items) * 100
             yield json.dumps({
@@ -1674,7 +1898,7 @@ async def batch_process_docs(request: BatchRequest):
         # Send final summary
         summary = {
             "summary": {
-                "type": "estimate" if request.estimate else "index",
+                "type": "estimate" if batch_request.estimate else "index",
                 "total_items": total_items,
                 "successful_items": successful,
                 "failed_items": errors,
@@ -1690,7 +1914,7 @@ async def batch_process_docs(request: BatchRequest):
     return StreamingResponse(stream_results(), media_type="text/event-stream")
 
 @app.post("/batch/list-pdfs", tags=["2. Ingest"])
-async def list_pdfs(folder_path: str = Form(...)):
+async def list_pdfs(request: Request, folder_path: str = Form(...)):
     """
     List all PDF files in the specified directory.
     
@@ -1700,6 +1924,8 @@ async def list_pdfs(folder_path: str = Form(...)):
     Returns:
         List of PDF files with their paths and metadata
     """
+    enforce_origin_host(request)
+
     if not os.path.isdir(folder_path):
         raise HTTPException(status_code=400, detail="Invalid directory path")
     
@@ -1727,10 +1953,12 @@ if __name__ == "__main__":
 from fastapi import HTTPException
 
 @app.post("/update_payload", tags=["4. Index Admin"], summary="1. Bulk update payload by URL")
-async def update_payload_field(update_request: PayloadUpdateRequest):
+async def update_payload_field(update_request: PayloadUpdateRequest, request: Request):
     """
     Update a specific payload field for all chunks matching the given URL.
     """
+    enforce_origin_host(request)
+
     global qdrant_db
     if qdrant_db is None:
         qdrant_db = QdrantDB(

@@ -42,8 +42,41 @@ body {
   border-radius: 8px;
   background: var(--surface);
 }
+.collapsible-group {
+  padding-top: 6px;
+}
+.collapsible-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.collapsible-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.collapsible-body {
+  margin-top: 2px;
+}
+.collapsible-group.is-collapsed .collapsible-body {
+  display: none;
+}
+.collapsible-header .chevron {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.collapsible-group.is-collapsed .collapsible-header .chevron {
+  transform: rotate(180deg);
+}
 .subsection-title {
-  margin: 0 0 8px;
+  margin: 0 0 1px;
   font-weight: 600;
   font-size: 12px; /* smaller than main Parameters title */
   color: var(--muted);
@@ -143,6 +176,7 @@ label { color: var(--muted); font-size: 11px; }
 #models_section .model-row {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   margin-bottom: 8px;
 }
 #models_section .model-row .model-value {
@@ -170,6 +204,99 @@ input[type="number"] {
   color: var(--text);
 }
 input[type="number"]:focus { outline: none; border-color: var(--accent); }
+
+/* Link-style button used for Change Models */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-button:hover { opacity: 0.9; }
+
+/* Simple modal/backdrop for Models configuration */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45); /* slate overlay */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.modal-dialog {
+  background: var(--surface);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  max-width: 768px;
+  width: 100%;
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.25);
+  padding: 12px 14px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px 2px 8px;
+}
+
+/* Make form fields in the modal stack vertically and use wider controls */
+.modal-section .form-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 10px;
+  padding-left: 12px; /* indent fields under each stage heading */
+}
+
+.modal-section .form-field label {
+  margin-bottom: 4px;
+}
+
+.modal-section .form-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.modal-section + .modal-section {
+  margin-top: 10px;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.secondary-button {
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  font-size: 12px;
+  cursor: pointer;
+}
 
 /* Main column */
 #main { flex: 1; display: flex; flex-direction: column; height: 100vh; gap: 12px; padding: 12px; }
@@ -246,6 +373,30 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
   background: var(--panel);
 }
 
+/* Assistant reasoning toggle/panel */
+.msg.assistant .reasoning-toggle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.msg.assistant .reasoning-toggle:hover {
+  text-decoration: underline;
+}
+
+.msg.assistant .reasoning-panel {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 .msg { display: flex; gap: 8px; margin: 8px 0; max-width: 75%; }
 .msg.user { margin-left: auto; justify-content: flex-end; }
 .msg.assistant { margin-right: auto; }
@@ -269,7 +420,106 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
   white-space: pre-wrap; /* keep user newlines */
 }
 .msg.user .bubble { background: #eff6ff; border-color: #bfdbfe; }
-.msg.assistant .bubble { background: none; border: none; padding: 10px 0; }
+.msg.assistant .bubble { background: none; border: none; padding: 5px 7px; }
+
+/* Tighter spacing for backend-rendered HTML/Markdown inside assistant bubbles */
+ .msg.assistant .bubble.markdown {
+   white-space: normal;
+ }
+ .msg.assistant .bubble.markdown p,
+ .msg.assistant .bubble.markdown ul,
+ .msg.assistant .bubble.markdown ol,
+ .msg.assistant .bubble.markdown pre,
+ .msg.assistant .bubble.markdown blockquote {
+   margin: 0 0 8px;
+ }
+ .msg.assistant .bubble.markdown p:last-child,
+ .msg.assistant .bubble.markdown ul:last-child,
+ .msg.assistant .bubble.markdown ol:last-child,
+ .msg.assistant .bubble.markdown pre:last-child,
+ .msg.assistant .bubble.markdown blockquote:last-child {
+   margin-bottom: 0;
+ }
+ .msg.assistant .bubble.markdown li {
+   margin: 2px 0;
+ }
+
+ /* Tighten markdown list layout: Python-Markdown often renders li>p which adds extra vertical gaps */
+ .msg.assistant .bubble.markdown li > p {
+   margin: 0;
+ }
+
+ .msg.assistant .bubble.markdown li > ul,
+ .msg.assistant .bubble.markdown li > ol {
+   margin-top: 4px;
+   margin-bottom: 4px;
+ }
+
+ .msg.assistant .bubble.markdown ul,
+ .msg.assistant .bubble.markdown ol {
+   padding-left: 18px;
+ }
+
+ .msg.assistant .bubble.markdown li:empty {
+   display: none;
+ }
+ .msg.assistant .bubble.markdown h1,
+ .msg.assistant .bubble.markdown h2,
+ .msg.assistant .bubble.markdown h3,
+ .msg.assistant .bubble.markdown h4,
+ .msg.assistant .bubble.markdown h5,
+ .msg.assistant .bubble.markdown h6 {
+   margin: 10px 0 6px;
+ }
+ .msg.assistant .bubble.markdown h1:first-child,
+ .msg.assistant .bubble.markdown h2:first-child,
+ .msg.assistant .bubble.markdown h3:first-child,
+ .msg.assistant .bubble.markdown h4:first-child,
+ .msg.assistant .bubble.markdown h5:first-child,
+ .msg.assistant .bubble.markdown h6:first-child {
+   margin-top: 0;
+ }
+
+ .msg.assistant .bubble.markdown .sources {
+   margin: 0 0 8px;
+ }
+
+ /* Thoughts dropdown (backend reasoning) */
+ .msg.assistant .bubble.markdown details.thoughts {
+   margin: 0 0 10px;
+ }
+
+ .msg.assistant .bubble.markdown details.thoughts > summary {
+   cursor: pointer;
+   user-select: none;
+ }
+
+ .msg.assistant .bubble.markdown details.thoughts > pre {
+   max-height: 180px;
+   overflow: auto;
+   white-space: pre-wrap;
+   margin: 8px 0 0;
+   padding-bottom: 10px;
+   border-bottom: 1px solid rgba(0, 0, 0, 0.5);
+ }
+
+/* Table alignment and spacing fixes */
+ .msg.assistant .bubble.markdown table {
+   margin: 1em 0;
+   background-color: rgb(240, 244, 249);
+ }
+ .msg.assistant .bubble.markdown .md-table-wrap {
+   padding-left: 8px;
+ }
+ .msg.assistant .bubble.markdown table th,
+ .msg.assistant .bubble.markdown table td {
+   text-align: left;
+   vertical-align: top;
+   padding-left: 8px;
+   padding-right: 5px;
+   padding-top: 5px;
+   padding-bottom: 4px;
+ }
 
 /* Dimmed tools-used indicator under assistant messages */
 .tools-used {

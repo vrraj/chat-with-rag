@@ -4,9 +4,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from backend.core.schemas import PayloadUpdateRequest
 import logging
-import openai
 from backend.core.config import settings
-from openai import OpenAI
+from backend.embeddings.specs import resolve_embedding_spec
+from backend.llm.llm_client import embed
 import math
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,6 @@ class QdrantDB:
         """
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
-        self._openai_client = None  # lazy init
         self.last_embedding_usage: Dict[str, int] = {"input_tokens": 0, "total_tokens": 0}
         
         # Ensure target exists. Use get_collection so aliases resolve correctly.
@@ -41,17 +40,7 @@ class QdrantDB:
                 logger.exception("Failed to create collection %s", collection_name)
                 raise
 
-    def get_openai_client(self):
-        """Lazily initialize and return the OpenAI client."""
-        if self._openai_client is None:
-            logger.debug("Initializing OpenAI client for embeddings")
-            try:
-                self._openai_client = OpenAI(api_key=settings.openai_api_key)
-            except Exception as e:
-                logger.exception("Failed to create OpenAI client: %s", e)
-                raise
-        return self._openai_client
-
+    
     def _build_filter(self, query_filter: Optional[Dict]) -> Optional[models.Filter]:
         """Translate a simple dict (e.g., {"url": "...", "source": "..."})
         into a Qdrant Filter. Special-case: `url` maps to `url_lower` and is
@@ -139,20 +128,52 @@ class QdrantDB:
             raise
 
     def generate_embeddings(self, text: str) -> List[float]:
-        """
-        Generate embeddings using OpenAI's API
-        
-        Args:
-            text: Text to generate embeddings for
-            
-        Returns:
-            List of floats representing the embedding vector
+        """Generate embeddings for USER QUERIES (search/retrieval).
+
+        Uses gemini_embed_type_query config for optimal query performance.
+        Uses embedding_model_key to resolve model via model registry.
         """
         try:
-            response = self.get_openai_client().embeddings.create(
-                input=text,
-                model=settings.embedding_model
-            )
+            spec = resolve_embedding_spec(settings)
+            provider = spec.get("provider", "openai")
+            model = spec.get("model")
+
+            # Route via embed() for all embedding providers
+            try:
+                from backend.core.config import settings as _settings  # type: ignore
+                model_key = getattr(_settings, "embedding_model_key", model)
+            except Exception:
+                model_key = model
+
+            kwargs: Dict[str, Any] = {
+                "provider": provider,
+                "model": model_key,
+                "input": text,
+            }
+            dims = spec.get("dimensions")
+            if provider == "gemini" and isinstance(dims, int) and dims > 0:
+                kwargs["dimensions"] = dims
+                # Apply config-driven task type for user queries
+                try:
+                    from backend.core.config import settings as _settings  # type: ignore
+                    task_type = getattr(_settings, "gemini_embed_type_query", "RETRIEVAL_QUERY")
+                    kwargs["task_type"] = task_type
+                    logger.debug(f"[GEMINI QUERY] Using task_type={task_type} for user query")
+                except Exception:
+                    pass
+                # Apply the same config-driven normalization flag used for
+                # indexing so that Gemini query embeddings are treated
+                # consistently with content embeddings.
+                try:
+                    from backend.core.config import settings as _settings  # type: ignore
+
+                    kwargs["normalize_embedding"] = bool(getattr(_settings, "gemini_embedding_normalize", False))
+                except Exception:
+                    pass
+            # Remove provider from kwargs since it's inferred from model_key
+            kwargs_for_embed = {k: v for k, v in kwargs.items() if k != "provider"}
+            
+            response = embed(model_key=model_key, texts=text, **kwargs_for_embed)
             # Record token usage if the SDK returns it
             try:
                 usage = getattr(response, "usage", None)
@@ -176,7 +197,14 @@ class QdrantDB:
                 # If anything goes wrong reading usage, fall back to zeros
                 self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}
 
-            return response.data[0].embedding
+            # Handle different response structures
+            embedding_data = response.data[0]
+            if hasattr(embedding_data, 'embedding'):
+                return embedding_data.embedding
+            elif isinstance(embedding_data, list):
+                return embedding_data
+            else:
+                raise ValueError(f"Unexpected embedding response structure: {type(embedding_data)}")
         except Exception as e:
             logger.exception("Error generating embeddings: %s", e)
             self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}

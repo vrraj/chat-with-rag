@@ -32,4 +32,4 @@ jobs:
 
       - name: Syntax check (compile project Python files)
         run: |
-          python -m compileall backend scripts qdrant_scripts
+          python -m compileall backend scripts scripts/qdrant_scripts

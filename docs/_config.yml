@@ -1,0 +1,72 @@
+# --- Site Metadata & SEO Defaults ---
+title: "Chat with RAG"
+tagline: "Advanced RAG system with multi-provider LLM support"
+description: "Retrieval-Augmented Generation system with streaming capabilities, multi-provider support, and comprehensive API documentation."
+url: "https://vrraj.github.io"
+baseurl: "/chat-with-rag"
+
+# --- Theme Configuration ---
+theme: jekyll-theme-cayman
+show_downloads: true
+
+# --- Plugins ---
+plugins:
+  - jekyll-seo-tag
+  - jekyll-gist
+
+# --- Google Analytics (GA4) ---
+google_analytics: G-KBYFPBJ1MG
+
+# --- SEO Specifics ---
+# GitHub profile: vrraj/chat-with-rag
+
+# --- Build Settings ---
+markdown: kramdown
+highlighter: rouge
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+
+# --- Defaults for SEO and navigation ---
+defaults:
+  - scope:
+      path: "" # Applies to all files
+    values:
+      layout: "default"
+
+  - scope:
+      path: "index.md"
+    values:
+      title: "Chat with RAG: Advanced RAG System"
+      description: "Multi-provider RAG system with streaming capabilities and comprehensive documentation."
+
+  - scope:
+      path: "api-reference.md"
+    values:
+      title: "API Reference | Chat with RAG"
+      description: "Complete REST API documentation including endpoints, request/response formats, and streaming implementation."
+
+  - scope:
+      path: "embeddings.md"
+    values:
+      title: "Embeddings Guide | Chat with RAG"
+      description: "Comprehensive guide to embedding providers, configuration, and optimization strategies."
+
+  - scope:
+      path: "server-sent-events.md"
+    values:
+      title: "Server-Sent Events | Chat with RAG"
+      description: "Real-time streaming implementation using Server-Sent Events for live response delivery."
+
+  - scope:
+      path: "technical-overview.md"
+    values:
+      title: "Technical Overview | Chat with RAG"
+      description: "Architecture, design patterns, and technical implementation details of the RAG system."
+
+  - scope:
+      path: "attributions.md"
+    values:
+      title: "Attributions | Chat with RAG"
+      description: "Credits, licenses, and attributions for third-party components and resources."
