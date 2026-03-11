@@ -20,13 +20,9 @@ description: "Modular tool-assisted Retrieval-Augmented Generation (RAG) framewo
 
 A modular **Python framework for building Retrieval‑Augmented Generation (RAG) systems**.
 
-Chat with RAG implements a **tool‑assisted, multi‑stage RAG pipeline** that connects knowledge ingestion, retrieval, and LLM reasoning into a configurable architecture for building knowledge‑grounded AI applications.
-
 ## What This Project Provides
 
-Chat with RAG implements a modular architecture for building **tool‑assisted Retrieval‑Augmented Generation (RAG) systems**.
-
-The framework combines:
+Chat with RAG implements a modular architecture for building **tool‑assisted Retrieval‑Augmented Generation (RAG) systems**. The framework combines:
 
 - **Document ingestion and vector search** for building knowledge bases
 - **Multi‑stage RAG pipelines** for retrieval, reranking, and response synthesis
@@ -44,41 +40,41 @@ This framework separates knowledge preparation from runtime reasoning and orches
 
 A robust workflow designed to transform unstructured data into a structured, queryable knowledge base:
 
-**Native Parsing & Hierarchy:** Purpose-built extractors for MediaWiki, HTML, and PDFs that preserve document structural hierarchy.
+- **Native Parsing & Hierarchy:** Purpose-built extractors for MediaWiki, HTML, and PDFs that preserve document structural hierarchy.
 
-**Smart Chunking & Embedding:** Strategic segmentation that maintains semantic relationships while optimizing for vector search in Qdrant.
+- **Smart Chunking & Embedding:** Strategic segmentation that maintains semantic relationships while optimizing for vector search in Qdrant.
 
-**Metadata Augmentation:** Injects section headers and anchor-link mapping during the ingestion phase to enable granular retrieval later.
+- **Metadata Augmentation:** Injects section headers and anchor-link mapping during the ingestion phase to enable granular retrieval later.
 
-**Batch Ingestion:** Process multiple documents via JSON configuration (URLs, types, processing options) for scalable knowledge base indexing.
+- **Batch Ingestion:** Process multiple documents via JSON configuration (URLs, types, processing options) for scalable knowledge base indexing.
 
 ### 2. Tool-Assisted Response Pipeline (The "Brain")
 
 A modular execution flow where the system determines the best path to an answer in real-time:
 
-**Tool-Augmented Reasoning:** Native execution of external functions like Web Search, Weather, and Airport Lookup to bridge gaps in static knowledge.
+- **Tool-Augmented Reasoning:** Native execution of external functions like Web Search, Weather, and Airport Lookup to bridge gaps in static knowledge.
 
-**Query Intelligence:** Context-aware rewriting to refine user intent and determine when to trigger a tool vs. a knowledge base query.
+- **Query Intelligence:** Context-aware rewriting to refine user intent and determine when to trigger a tool vs. a knowledge base query.
 
-**Multi-LLM Strategy:** Use the vrraj-llm-adapter to orchestrate different models (e.g., OpenAI, Gemini) for specific tasks like reranking or final synthesis.
+- **Multi-LLM Strategy:** Use the vrraj-llm-adapter to orchestrate different models (e.g., OpenAI, Gemini) for specific tasks like reranking or final synthesis.
 
 ### 3. Runtime Intelligence
 
-**Deep-Link Citations:** Leveraging the metadata created during ingestion, the system provides citations with deep-links directly to the relevant document section (via anchor links).
+- **Deep-Link Citations:** Leveraging the metadata created during ingestion, the system provides citations with deep-links directly to the relevant document section (via anchor links).
 
-**Contextual Memory Management:** A hybrid runtime strategy combining conversation summaries with a rolling verbatim window to maintain long-term coherence.
+- **Contextual Memory Management:** A hybrid runtime strategy combining conversation summaries with a rolling verbatim window to maintain long-term coherence.
 
-**Registry-Driven Logic:** Centralized YAML registries for prompts and LLM configurations, allowing you to change system behavior without touching code.
+- **Registry-Driven Logic:** Centralized YAML registries for prompts and LLM configurations, allowing you to change system behavior without touching code.
 
 ## Operational Observability
 
 Designed for developers who need visibility into each stage of the system's operation:
 
-**Real-time SSE Streams:** Watch the pipeline execute stage-by-stage (Rewrite → Retrieve → Tool Use → Synthesis).
+- **Real-time SSE Streams:** Watch the pipeline execute stage-by-stage (Rewrite → Retrieve → Tool Use → Synthesis).
 
-**Per-Turn Accounting:** Precise tracking of token usage and actual cost for every single interaction.
+- **Per-Turn Accounting:** Precise tracking of token usage and actual cost for every single interaction.
 
-**Domain Isolation:** Securely serve different knowledge bases and prompt configurations to different websites from a single backend.
+- **Domain Isolation:** Securely serve different knowledge bases and prompt configurations to different websites from a single backend.
 
 
 ## High-Level Pipeline Orchestration

@@ -26,11 +26,11 @@ This release evolves the Chat-with-RAG application from a single‑provider prot
 - **Application configuration now references registry keys** instead of provider-specific model parameters
 
 ### **🌐 Embeddable Chat Widget**
-- **Production-ready embeddable chat** for any website
+- **Embeddable chat widget** designed for integration into websites
 - **Simple integration** – Single script tag deployment
 - **Configurable via HTML attributes** (model selection, prompt domain, retrieval settings, citations, namespace)
 - **Responsive iframe design** with isolated styling
-- **Streaming support** for real-time processing visualization
+- **Pipeline event streaming** for real-time stage visualization
 - **Same pipeline configuration options** as the main application
 
 ### **🔒 Comprehensive Security Framework**
