@@ -88,6 +88,7 @@ For complete model registry documentation, see: https://vrraj.github.io/llm-adap
 ## What's Next
 
 ### **Planned Enhancements**
+- **User Authentication & Login Process** - Secure user management system for multi-tenant deployments
 - Additional provider support (Anthropic, Cohere)
 - User query expansion for better retrieval
 - Enhanced security features
