@@ -14,6 +14,9 @@ plugins:
   - jekyll-seo-tag
   - jekyll-gist
 
+# --- Google Analytics (GA4) ---
+google_analytics: G-KBYFPBJ1MG
+
 # --- SEO Specifics ---
 # GitHub profile: vrraj/chat-with-rag
 
