@@ -1,65 +1,161 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
-![CI Status](https://github.com/vrraj/chat-with-rag/actions/workflows/python-ci.yml/badge.svg)
+
+A modular **Tool-Assisted Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate grounded answers with **citations** from structured and unstructured knowledge sources.
+
+Unlike simple vector-search demos, this project provides a **multi-stage RAG pipeline** with configurable retrieval, prompts, models, tools, and observability.
 
 
-A modular RAG framework that transforms unstructured data into **actionable intelligence** through sophisticated retrieval-reranking pipelines, real-time observability, and tool-augmented reasoning.
+**🚀 Get Started:** See section **[Getting Started](#-getting-started)** to run the system locally.
+
+### 🆕 What's New in v2.0
+
+- **Multi‑LLM Pipeline Orchestration**  
+Use different LLM providers and models across pipeline stages through the **vrraj‑llm‑adapter**, based on cost, capabilities, and task suitability.
+
+- **Stage-Specific Model Selection**  
+Runtime model selection per pipeline stage (rewrite, rerank, summarization, inference) via UI or API.
+
+- **Registry-Driven LLM Integration**  
+Model capabilities, pricing, and parameter policies are referenced from the adapter’s (**[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)**) registry. This can be extended/overridden with a **custom registry**.
+
+- **Domain-Aware Prompt Registry**  
+Centralized prompt control layer that decouples prompts from application code. Prompts are grouped by domain/pipeline stage in a **YAML-driven registry** enabling rapid prompt experimentation and domain‑specific pipeline behavior.
+
+- **Advanced Context Window Management**  
+Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
+
+- **Cost Tracking and Observability**  
+Real-time stage visibility, token accounting, and per-stage cost tracking across the pipeline.
+
+- **Response Post-processing**  
+Configurable output transformation layer, currently supporting Markdown → scoped HTML conversion and extensible post-processing workflows.
+
+- **Embeddable Chat Experience**  
+Drop-in widget with comprehensive configuration via API params.
+
+- **Domain-Based Access Controls**  
+Isolation and authorization enforced consistently across APIs and embedded clients.
+
+- **Dual Chat Modes: Stateful and Stateless**  
+Support for both **stateless** (`/chat`) and **stateful** (`/chat/{session_id}`) chat patterns.
+
+**For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
+
+```mermaid
+%%{init: {'themeVariables': { 'nodePadding': '5', 'mainBkg': '#fff'}, 'flowchart': { 'curve': 'basis', 'rankSpacing': 30, 'nodeSpacing': 20}}}%%
+graph LR
+    %% Lightened Theme Styling
+    %% Core: Light Mint/White (#f0fff4) with Teal border (#159957)
+    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold,fsize:18px;
+    
+    %% Features: Clean white with softer Blue borders (#1e6bb8)
+    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,fsize:14px;
+
+    %% Left-side spokes
+    F1[Multi-LLM Pipeline Orchestration] --- Core
+    F2[Stage-Specific Model Selection] --- Core
+    F3[Registry-Driven LLM Integration] --- Core
+    F4[Domain-Aware Prompt Registry] --- Core
+    F5[Dual Chat Modes: Stateful and Stateless] --- Core
+
+    %% The Hub (Now Light & Airy)
+    Core((Chat with RAG v2.0))
+
+    %% Right-side spokes
+    Core --- F5[Context Window Management]
+    Core --- F6[Cost Tracking & Observability]
+    Core --- F7[Response Post-processing]
+    Core --- F8[Embeddable Chat Experience]
+    Core --- F9[Domain-Based Access Controls]
+
+    %% Applying styles
+    class Core core;
+    class F1,F2,F3,F4,F5,F6,F7,F8,F9 feat;
+```
+
+> **Auth & Security Note**  
+This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** for more details.
 
 
-This system goes beyond basic vector search by implementing a multi-stage LLM orchestration layer. It ingests complex formats (MediaWiki, PDFs, HTML), preserves document structure, and provides a fully verifiable chat experience with live-streamed **pipeline execution stages** and direct **source citations**.
 
-<p align="center">
-  <a href="images/content-ingestion-primary-actions.png">
-    <img
-      src="images/content-ingestion-primary-actions.png"
-      style="max-width: 100%; height: auto;"
-      alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
-    />
-  </a>
-</p>
+---
 
-*Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
+## High-Level RAG Pipeline Overview
 
-**Project Scope & Intent**
-
-This project explores end-to-end RAG system design, prioritizing transparency and modularity over abstraction-heavy frameworks to make pipeline behavior explicit and observable.
-
-## Table of Contents
-
-- [High-Level RAG Pipeline Overview](#-high-level-rag-pipeline-overview)
-- [Features](#-features)
-- [🚀 Getting Started](#-getting-started)
-  - [1. Prerequisites](#-1-prerequisites)
-  - [⚡ 2.0 One-command setup](#-20-one-command-setup-macoslinux)
-  - [2.1 Manual setup](#-21-manual-setup-step-by-step)
-  - [ 2.2 Running & Managing the Application](#-22-running--managing-the-application)
-- [Knowledge Base and Sample Data](#-knowledge-base-and-sample-data)
-  - [Data Attribution](#-data-attribution)
-  - [Explore the Data](#-explore-the-data)
-  - [Managing Your Collections](#-managing-your-collections)
-- [Example Queries](#example-queries)
-- [Batch Ingestion](#batch-ingestion)
-- [Technical Overview](#technical-overview)
-- [Project Structure](#project-structure)
-- [License & Usage](#license--usage)
+The system runs through two parallel workflows: an **Ingestion Pipeline** (build the knowledge base) and a **Chat Orchestration Pipeline** (retrieve + answer).
 
 
-## 🧠 High-Level RAG Pipeline Overview
+| Pipeline | Flow |
+|---|---|
+| **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
+| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
-  The system operates through two primary parallel workflows: an **Ingestion Pipeline** for knowledge base construction and a **Chat Pipeline** for real-time retrieval and response generation.
+```mermaid
+%%{init: {'themeVariables': { 'fontSize': '16px', 'subgraphFontSize': '20px', 'subgraphTitleColor': '#1e6bb8'}}}%%
+graph LR
+    %% Theme Styling from your finalized Hub
+    classDef core fill:#dcebe8,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold;
+    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
+    classDef highlight fill:#159957,stroke:#159957,stroke-width:2px,color:#fff,font-weight:bold;
 
-| **Ingestion Pipeline** (Data → Vector) | **Chat Pipeline** (Prompt → Answer) |
-| :--- | :--- |
-| 1. **Documents** (Single or Batch) | 1. **User Prompt** |
-| 2. **Extraction** (PDF, HTML, Wiki) | 2. **Query Rewrite** (Optimization) |
-| 3. **Processing & Normalization** | 3. **Document Retrieval** (Qdrant Search) |
-| 4. **Metadata Augmentation** | 4. **Relevance Reranking** |
-| 5. **Embedding Generation** (OpenAI) | 5. **Context Construction** (History + reranked chunks) |
-| 6. **Vector Storage** (Qdrant) | 6. **LLM Inference** (GPT-4o-mini) |
-| | 7. **Tool Execution** (e.g., Weather, Maps) |
-| | 8. **Final Response** (with Citations) |
+    subgraph "CHAT ORCHESTRATION"
+        direction LR
+        U[User Prompt] --> QR[Query Rewrite]
+        QR --> Search[Retrieval]
 
-The screenshot below illustrates how these **pipeline stages** surface in the multi-turn live chat interface.
+        %% Return path from Ingestion back to Chat
+        R[Rerank] --> Ctx[Context Assembly] --> Inf[LLM Inference]
+
+        Inf --> Tools{Tool Execution?}
+        Tools -- "Yes" --> API[Tool Calls] --> Synth[Response Synthesis] --> Post[Post-Processing]
+        Tools -- "No" --> Synth
+        Synth --> Post
+        Post --> Out[Final Response]
+    end
+
+    subgraph "INGESTION PIPELINE"
+        direction LR
+        S[Sources] --> P[Parse] --> C[Chunk] --> D[Add Metadata] --> E[Embed] --> DB[(Vector DB)]
+    end
+
+    %% PHYSICAL CONNECTIONS
+    Search -- "Query" --> DB
+    DB -- "Results" --> R
+
+    %% Apply Themes
+    %% Using 'core' style for the main entry/exit and database
+    class U,Out,DB core;
+    %% Using 'feat' style for standard logic steps
+    class QR,Search,R,Ctx,API,Post,S,P,C,D,E feat;
+    %% Using 'highlight' (Cayman Green) for the critical LLM stages
+    class Inf,Synth highlight;
+```
+
+---
+
+## Example Use Cases
+
+This project serves as a **reference architecture for production-style Tool-Assisted RAG systems**. Typical use cases include:
+
+- **Document-grounded assistants** for PDFs, HTML pages, internal documentation, and MediaWiki-based knowledge sources
+- **Multi-LLM experimentation** across pipeline stages for retrieval, reranking, summarization, and inference
+- **Prompt and retrieval tuning** using query rewrite, reranking, and domain-specific prompt configurations
+- **Embeddable knowledge assistants** for websites and internal portals
+- **API-driven Tool-Assisted RAG workflows** for chat, ingestion, embedded experiences, and runtime pipeline control
+- **Domain-specific knowledge bases** with separate collections, embeddings, and prompt domains
+- **Observable Tool-Assisted RAG systems** where each pipeline stage can be inspected, tuned, and cost-tracked
+
+### 📸 Inference Pipeline in Action
+
+The screenshot below shows a **live chat** run through the inference pipeline, highlighting key system capabilities:
+
+- Query rewrite for improved retrieval
+- Multi‑turn context preservation
+- Retrieval + inference working together
+- Optional tool calls
+- Multi‑model execution (OpenAI and Gemini)
+- HTML‑formatted responses with citations
 
 <p align="center">
   <a href="images/chat-pipeline-rewrite-context-tools-inference.png">
@@ -73,37 +169,101 @@ The screenshot below illustrates how these **pipeline stages** surface in the mu
 
 *Chat pipeline UI showing query rewriting, multi-turn context handling, explicit pipeline stages, tool invocation, and cited responses.*
 
+### 📦 Embedded RAG Chat Experience
 
-## ✨ Features
+The screenshot below illustrates the two configuration options for the chat widget:
 
-An end-to-end modular RAG ecosystem that orchestrates advanced LLM workflows to synthesize raw documents into structured intelligence, featuring a high-fidelity ingestion engine and live observability for verifiable, context-grounded insights.
+- **Direct iframe embedding** (simplest)
+- **Embed loader script** using HTML `data-*` attributes (advanced configuration)
 
-### 📥 High-Fidelity Ingestion
-* **Multi-Source Extraction**: Native support for high-fidelity parsing of **PDFs**, **MediaWiki**, and **HTML**.
-* **Intelligent Processing**: 
-    * **Smart Chunking**: Configurable strategies to preserve semantic context across fragments.
-    * **Structure Preservation**: Maintains the integrity of complex tables and structured layouts.
-    * **Noise Filtering**: Automated removal of headers, footers, and irrelevant boilerplate for cleaner context.
-* **Batch & Scale**: Process local directories (`file://`) or remote URLs with built-in **token and cost estimation** before committing to storage.
+<p align="center">
+  <a href="images/chat-embedding-options.png">
+    <img
+      src="images/chat-embedding-options.png"
+      style="max-width: 100%; height: auto;"
+      alt="Chat embedding options iframe and inline page"
+    />
+  </a>
+</p>
 
-### 🧠 Advanced Chat Orchestration
-* **Multi-Stage LLM Pipeline**: Granular control with independent model configuration for every stage: *Query Rewrite, Reranking, Summarization, and Final Inference.*
-* **Dynamic Context Control**: Fine-tune conversation history using a hybrid approach of **raw tail-turns** and **summary turns** to perfectly balance memory depth and token efficiency.
-* **Retrieval Optimization**:
-    * **Vector Search**: Powered by **Qdrant** with configurable Top-K and distance thresholds.
-    * **Semantic Reranking**: Secondary relevance scoring applied to retrieved candidates to eliminate "hallucination noise."
-    * **Query Rewriting**: Intelligent expansion of user prompts with confidence-based filtering for better search hits.
-* **Verified Citations**: Final answers include direct deep-linked citations across multiple source documents.
+See the **[Embeddable Widget Configuration](#-embeddable-widget-configuration)** section below for implementation examples.
 
-### 🛠️ Developer & Ops Experience
-* **Real-Time Observability**: Live **SSE (Server-Sent Events)** stream providing a window into the "thoughts" and progress of the RAG flow as it happens.
-* **Granular Cost Tracking**: Instant transparency with per-stage token usage and dollar-cost metrics for every request.
-* **Extensible Tooling**: Built-in support for function calling (e.g., weather, local APIs) to augment responses with live, real-time data.
+### 🖥️ Application Workspace
+The workspace provides a central entry point to the main parts of the application. From here you can open the chat interface, manage documents, inspect the vector store, run batch ingestion, and configure embeddable chat experiences.
 
+<p align="center">
+  <a href="images/content-ingestion-primary-actions.png">
+    <img
+      src="images/content-ingestion-primary-actions.png"
+      style="max-width: 100%; height: auto;"
+      alt="Content ingestion UI with primary actions and indexing tools for PDFs, HTML, and MediaWiki"
+    />
+  </a>
+</p>
+
+*Content ingestion UI showing primary actions and indexing tools (batch upload, PDF/HTML/MediaWiki), estimation mode, and metadata controls.*
+
+---
+
+## Features
+
+### 1. Dual Chat Modes
+- **Stateless** (`/chat`) — Client-managed history for web frontends
+- **Stateful** (`/chat/{session_id}`) — Server-managed sessions for backend and mobile integrations
+- **Shared orchestration** — Both modes use the same RAG pipeline
+
+> **See details:** [Session-Based Chat API](#-session-based-stateful-chat-api)
+
+### 2. High-Fidelity Ingestion
+- **Multi-source extraction** — Parse **PDFs**, **MediaWiki**, and **HTML**
+- **Structured processing** — Smart chunking, structure preservation, and configurable noise filtering
+- **Batch ingestion** — Process local directories (`file://`) or remote URLs with optional token and cost estimation
+
+### 3. Advanced Orchestration
+
+Coordinates retrieval, context management, prompt selection, model execution, tool use, observability, and output rendering in a deterministic multi-stage pipeline.
+
+#### 3.1 Pipeline Orchestration
+- **Stage-aware execution** — Query Rewrite → Retrieval → Rerank → Summarization → Inference → Tools → Post-processing
+- **Stage-specific models** — Configure models per stage based on cost, capabilities, and task suitability
+- **API-driven control** — Runtime pipeline configuration via FastAPI endpoints
+- **Provider abstraction** — Uses **vrraj-llm-adapter** and the YAML prompt registry to decouple models and prompts from application code
+
+#### 3.2 Context Management
+Long-running conversations remain coherent through a hybrid strategy combining a persistent summary with a bounded recent-history window, keeping context stable and cache-efficient.
+
+#### 3.3 Query Rewrite
+Improves retrieval accuracy by selectively refining user intent before search. Rewrites are confidence-gated, context-aware, and configurable per request.
+
+#### 3.4 Retrieval, Inference & Tools
+- **Vector retrieval** — Configurable Qdrant search with top-k and score thresholds
+- **Context assembly** — Builds prompts from instructions, retrieved context, documents, and tool results
+- **Tool execution** — Native function calling (web search, weather, airports)
+- **Verified citations** — Final responses include citations to source URLs and document sections where available
+
+#### 3.5 Observability & Cost Tracking
+- **Real-time observability** — SSE stream exposing pipeline stage execution and intermediate events
+- **Per-stage accounting** — Token usage and cost metrics for every turn
+
+#### 3.6 Post-Processing
+- **HTML rendering** — Markdown → scoped HTML conversion for rich display
+- **Isolated stage** — Output formatting evolves independently from core inference
+- **Extensible pipeline** — Supports custom post-processing workflows
+
+### 4. Embeddable Chat Experience
+- **Website-ready widget** — Embed the full RAG experience into external sites
+- **Configurable behavior** — Control pipeline parameters through runtime configuration
+- **Domain-aware isolation** — Support separate knowledge bases and prompt domains per deployment
+
+
+---
 
 ## 🚀 Getting Started
 
 Get the system running in minutes using the provided `Makefile`. This setup uses Docker for the core infrastructure while maintaining a developer-friendly local environment through volume mounting.
+
+> **Provider Note:** The system supports both **OpenAI** and **Gemini**, and providers can be switched or mixed **per pipeline stage** after setup.
+
 
 ### 📋 1. Prerequisites
 Ensure your environment meets these requirements before proceeding:
@@ -111,136 +271,106 @@ Ensure your environment meets these requirements before proceeding:
 - **Git** – required to clone the repository. Install: https://git-scm.com/downloads
 - **Docker & Docker Compose:** Required for the Qdrant v1.14.1 database and the web app container. [Get Docker here](https://docs.docker.com/get-started/)
 - **Python 3.10+:** Required for local development, IDE support, and ingestion scripts.
-- **OpenAI API Key:** Required for embeddings and chat pipeline. [Get one here](https://platform.openai.com/api-keys)
+- **LLM Provider API Key(s):** Supports **OpenAI** and **Gemini**. For the model configuration details, see the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
 
+> [!TIP]
+> > [!TIP]
+> The system requires an **OpenAI** or **Gemini** API key for LLM inference.  
+> Add your key(s) to the `.env` file during setup.  
+> See **[Configure API Keys and Budget Controls](#configure-api-keys-and-budget-controls)** for guidance.
 
+### ⚡2 Automated Setup- Preferred
 
-### ⚡ 2.0 One-command setup (macOS/Linux)
+To bootstrap the environment quickly, run the setup script below.
 
-If you prefer fewer copy/paste steps, you can **run the setup in one go**.
-
-This script will:
-- Create `.env` (if missing) and prompt you for `OPENAI_API_KEY`
-- Start Docker services (`make start`)
-- Create a Python venv, install dependencies, and seed sample data (`make seed`)
-
-> [!IMPORTANT]
-> The API key is written to your local `.env` file. Treat it like a password (don't commit it).
->
-> Before running the setup, create an **OpenAI API Platform** key and set a **hard usage limit** (budget + alerts) in your OpenAI Dashboard.
-> See: [2.1.3 Configure OpenAI API & Costs](#213-configure-openai-api--costs)
-
-Paste the commands below into your terminal.
-
-**Step 1 — Clone the repo**
+**Step 1 — Run the bootstrap script**
 
 ```bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
-
-
-```
-
-> **Note:** You will be prompted to enter your OpenAI API key when you run the setup script. The API key is stored in `.env`. Treat it like a password — never commit it to Git.
-
-**Step 2 — Run the setup**
-
-```bash
 bash scripts/rag_setup.sh
-
 ```
 
-> **Troubleshooting (macOS):** If `make smoke_api` or `python3 scripts/api_smoke_test.py` fails with `SSL: CERTIFICATE_VERIFY_FAILED`, your Python install may be missing trusted root certificates.
->
-> Run:
+The script will automatically:
+
+- create `.env` from `.env.example` (if it does not already exist)
+- start Docker services (`make start`)
+- create a Python virtual environment and install dependencies
+- seed the sample data (`make seed`)
+
+**Step 2 — Add your API keys and restart the application**
+
+Open `.env` and add one or both keys:
+
+```
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+Then restart the application:
+
 ```bash
-open "/Applications/Python 3.12/Install Certificates.command"
+make stop
+make start
 ```
 
+**Launch Application:** 👉 http://localhost:8000
 
-### 🛠️ 2.1 Manual setup (step-by-step)
+> **Note:** API keys are loaded when the application starts. If you add or change keys later, restart the application for the changes to take effect.
 
-> If you ran the **2.0 One-command setup** above, you can skip this entire section.
 
-**2.1.1) Verify Docker Installation**
+### 🛠️ 2.1 Manual Setup
+
+Use this path if you want full control over each setup step instead of the bootstrap script.
+
+**Step 1 — Clone the repository**
+
 ```bash
-# Verify Docker
- docker --version
-
-# Verify Docker Compose (v2 or v1)
- docker compose version || docker-compose --version
-```
- You should see version numbers if Docker is installed correctly.
-
-> **Note for Linux Users:** If you get "permission denied," add your user to the docker group: `sudo usermod -aG docker $USER` and then log out/in.
-
-**2.1.2) Clone the Repository**
-``` bash
 git clone https://github.com/vrraj/chat-with-rag.git
 cd chat-with-rag
-
 ```
 
-#### 2.1.3 Configure OpenAI API & Costs
-
-> [!IMPORTANT]
-> This application requires an **OpenAI API Platform** account (different from a ChatGPT Plus subscription). It is strongly recommended to set a **hard usage limit** in your [OpenAI Dashboard](https://platform.openai.com/api-keys) to stay within your desired budget.
-
-| Recommendation | Action | Rationale |
-| :--- | :--- | :--- |
-| **Budget** | Set a limit of **$5–$10**. | Establishes a safety ceiling for testing. |
-| **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
-| **Alerts** | Set a 50% notification. | Provides proactive cost control. |
-
-
-
-#### 2.1.4) Set up local environment variables
-
-Copy the example environment file and add your API key.
-
-> **Note:** Optional: Advanced users may instead set `OPENAI_API_KEY` as an OS environment variable.  
-> If set, it will take precedence over the value in `.env`.
-> If you used the one-command setup script above, it will prompt for the key and write it into your local .env automatically.
+**Step 2 — Create `.env` and add your API keys**
 
 ```bash
 cp .env.example .env
-# IMPORTANT: Open .env and add your OPENAI_API_KEY
-vi .env   # or use 'nano .env' / your preferred text editor
-
 ```
 
-#### 2.1.5) Start Infrastructure
-This launches the Qdrant vector database and the FastAPI web application.
+Then edit `.env` and add one or both keys:
 
+```
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+**Step 3 — Start the application stack**
 
 ```bash
 make start
-
 ```
-> **Note for macOS Users:**
-> `make start` will automatically attempt to launch Docker Desktop if it isn't running. The script will pause briefly while the daemon initializes.
 
+> **Note for macOS users:** `make start` will attempt to launch Docker Desktop if it is not already running.
 
-#### 2.1.6) Initialize environment and seed data
-
-To see the RAG system in action immediately, load the sample dataset (~50 outdoor-themed Wikipedia pages). This requires a local Python environment.
+**Step 4 — Seed sample data (need local Python environment)**
 
 ```bash
-# Create and activate virtual environment
 python3 -m venv venv
 source venv/bin/activate
-# Install dependencies and seed Qdrant
-pip install -r requirements.txt 
+pip install -r requirements.txt
 make seed
-deactivate
-
 ```
 
-#### 2.1.7) Access the interface
-Once the seeding is complete, open your browser and start chatting: 👉 http://localhost:8000
+ **Optional:** Deactivate the virtual environment after seeding
+```bash
+deactivate
+```
+
+**Step 5 — Open the application**
+
+**Visit:** 👉 http://localhost:8000
 
 
-### ▶️ 2.3 Running & Managing the Application
+### ▶️ 2.2 Running & Managing the Application
 
 Use the following Make targets to manage the application lifecycle:
 
@@ -256,36 +386,452 @@ Use the following Make targets to manage the application lifecycle:
 
   ```
 
-These commands are the recommended way to run and shut down the system locally.
+#### 🔄 Updating the Docker Images
+
+If you pull new changes, rebuild the application image so your local stack reflects the latest code and dependency updates. You do **not** need to stop the containers first — Docker Compose will rebuild the image and recreate the service automatically.
+
+```bash
+git pull
+docker compose up --build -d
+```
+
+Because rebuilding can leave behind unused `<none>` images over time, it is a good idea to periodically prune dangling images:
+
+```bash
+docker image prune -f
+```
+
+> **Tip:** Use `docker compose up --build -d` after pulling changes to Dockerfiles, Python dependencies, or other container-related files.
 
 For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
 - the `Makefile` in the project root
-- **TECHNICAL_OVERVIEW.md**
+- **[docs/technical-overview.md](docs/technical-overview.md#developer--operator-utilities-makefile)**
 
-### 🧪 2.4 Developer Mode (Optional)
+For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter options, see:
 
-To enable **hot-reload** (Uvicorn reload) for active development:
-
-1.  **Open `docker-compose.yml`**.
-2.  **Change the command** from `python start.py` to `python run.py`.
-3.  **Restart the container** (run `make start` again).
-
-> [!TIP]
-> Because the webapp is a **volume mount**, any changes you make to your local `.py` files will reflect instantly inside the container. `run.py` detects these changes and triggers an automatic Uvicorn restart.
+**👉 [docs/api-reference.md](docs/api-reference.md)**
 
 ---
 
 
+### 🔄 Updating Your Local Copy
+
+If you pull new changes from the repository, update your environment before restarting the application.
+
+```bash
+git pull
+```
+
+For most updates, restart the application stack:
+
+```bash
+make stop
+make start
+```
+
+If changes affect container dependencies (for example `Dockerfile` or `requirements.txt`), rebuild the Docker image instead:
+
+```bash
+docker compose up --build -d
+docker image prune -f
+```
+
+If Python dependencies for local scripts changed, refresh the virtual environment:
+
+```bash
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Configure API Keys and Budget Controls
+
+Set up your LLM Provider, OpenAI and / or Gemini (API Keys and Budget Limits).
+>The setup instructions in this section use OpenAI for reference. You may follow the same steps for Gemini. 
+
+##### Option A: OpenAI (Getting Started)
+
+| Recommendation | Action | Rationale |
+| :--- | :--- | :--- |
+| **Budget** | Set a limit of **$5–$10**. | Establishes a safety ceiling for testing. |
+| **Dedicated Key** | Name it `chat-with-rag`. | Isolates usage tracking for this specific project. |
+| **Alerts** | Set a 50% notification. | Provides proactive cost control. |
+
+##### Option B: Gemini 
+
+
+| Recommendation | Action | Rationale |
+| :--- | :--- | :--- |
+| **Quota** | Set a **daily quota limit** based on your budget. | Prevents unexpected cost overruns. |
+| **Dedicated Key** | Name it `chat-with-rag-gemini`. | Isolates usage tracking for this project. |
+| **Monitoring** | Enable **usage alerts** in Google Cloud Console. | Provides proactive cost visibility. |
+
+> **Note:** Gemini uses quota-based limits instead of hard dollar limits. Configure quotas in Google AI Studio or Google Cloud Console.
+
+---
+## 🧩 Prompt Registry (YAML)
+
+This repo uses a YAML-based prompt registry to keep prompts centralized and avoid drift between code paths.
+
+### 📝 Registry file
+
+- **Path:** `prompts/prompt_registry.yaml`
+- **Role:** Source of truth for stage prompt text and templates.
+- **Implementation Detail:** All default prompts and domain-specific overrides are defined in `prompts/prompt_registry.yaml`, which acts as the single source of truth for prompt behavior across the pipeline.
+- **Current coverage:** Inference and query rewrite are registry-driven; rerank and summarization use the registry for their fixed instructions/templates.
+
+### 🎯 Prompt domains (`params.prompt_domain`)
+
+You can select a prompt domain per request using `params.prompt_domain`.
+
+- If `prompt_domain` is empty or omitted, the system uses `global_defaults`.
+- If `prompt_domain` is set (example: `mountains`), the system applies domain-specific overrides (currently by appending additional domain system instructions).
+
+In the UI (`frontend/chat.html`), the **Prompt Domain** dropdown under **Inference** controls the value sent on every chat request.
+
+For detailed configuration options, see the [Configuration Reference](docs/configuration.md#prompt-registry).
+
+
+---
+
+## 📦 Batch Ingestion
+
+Batch ingestion is the recommended way to build or refresh a **knowledge base** from multiple sources at once. It supports local documents, remote URLs, and mixed source sets, with optional estimation before indexing.
+
+> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
+
+### 🎯 What It Does
+
+Each source in the batch is processed through the same ingestion pipeline used elsewhere in the application:
+
+`load` → `extract` → `chunk` → `augment metadata` → `embed` → `store`
+
+This makes it the easiest way to populate or refresh Qdrant collections consistently at scale.
+
+### 📁 How to Organize Documents
+
+A practical pattern is to organize source files by topic or domain before ingestion.
+
+```text
+data/
+├── mountains/
+│   ├── everest.pdf
+│   ├── kilimanjaro.pdf
+│   └── whitney.html
+├── oceans/
+│   ├── pacific.html
+│   └── atlantic.html
+└── travel/
+    ├── italy-guide.pdf
+    └── rome.html
+```
+
+This makes it easier to:
+
+- build domain-specific collections
+- keep metadata consistent
+- re-index a single topic area without rebuilding everything
+
+### 💡 Typical Uses
+
+- ingest a folder of PDFs
+- index a curated list of webpages
+- process mixed source sets in a single batch
+- rebuild a collection after changing chunking or embedding settings
+
+### 📄 Example Batch Configuration
+
+```json
+{
+  "items": [
+    {
+      "url": "file:///app/data/mountains/everest.pdf",
+      "doc_type": "pdf",
+      "skip_sections": ["References", "External links"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Mount_Whitney",
+      "doc_type": "mediawiki"
+    }
+  ],
+  "max_chunks": 100,
+  "estimate": true,
+  "force_delete": false
+}
+```
+
+>Start with **`"estimate": true`** to preview cost and processing behavior **before committing** a batch to storage.
+
+See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
+
+---
+## 🪟 Embeddable Widget Configuration
+
+A lightweight widget that embeds the **full RAG pipeline** into any website.
+
+The widget exposes the same orchestration used by the main application — **retrieval, reranking, context management, tool calling, and response post‑processing** — while remaining easy to deploy and configure.
+
+> Supports **domain isolation** so different websites can use different knowledge bases and prompt domains.
+
+> **For complete documentation on the embedded chat UI, see the [Embedded Chat Guide](docs/embedded-chat.md).**
+
+### ⚙️ Configuration Options
+
+The widget can be configured in two ways:
+
+- **Direct iframe embedding** (simplest)
+- **Embed loader script** using HTML `data-*` attributes (advanced configuration)
+
+
+### 🖼️ Simple Example (iframe)
+
+```html
+<iframe 
+  src="https://your-server.com/chat-embed.html?top_k=5&show_citations=true&namespace=simple-chat"
+  width="100%" 
+  height="400px"
+  style="border: 0; border-radius: 8px;"
+  title="Embedded Chat">
+</iframe>
+```
+
+
+### 🔧 Advanced Example (Embed Loader)
+
+```html
+<!-- 1. Target container -->
+<div id="chat-embed" 
+     data-api-url="https://your-server.com"
+     data-model_key="openai:gpt-4o-mini"
+     data-temperature="0.7"
+     data-top_k="10"
+     data-show_processing_steps="true"
+     data-show_citations="true"
+     data-namespace="oceans">
+</div>
+
+<!-- 2. Embed loader script -->
+<script src="https://your-server.com/static/embed-loader.js"
+        data-target="#chat-embed"
+        data-api-url="https://your-server.com"
+        data-model_key="openai:gpt-4o-mini"
+        data-temperature="0.7"
+        data-top_k="10"
+        data-show_processing_steps="true"
+        data-show_citations="true"
+        data-namespace="oceans">
+</script>
+```
+
+>The embed loader automatically initializes the widget and connects it to the configured backend API.
+
+---
+## 🔄 Session-Based (Stateful) Chat API
+
+The system supports both **stateless** and **stateful** chat architectures. The current web UI uses a stateless pattern with client-managed history, while the session-based API is better suited for backend, mobile, and multi-client integrations that benefit from server-managed conversation state.
+
+### 🎯 Quick Overview
+
+| Feature | Stateless (`/chat`) | Session-Based (`/chat/{session_id}`) |
+|---------|-------------------|-------------------------------------|
+| **History Management** | Client sends full history each request | Server maintains history automatically |
+| **Use Case** | Web frontend, simple integrations | Mobile apps, backend systems, multi-device |
+| **Pipeline Quality** | Identical RAG pipeline | Identical RAG pipeline |
+| **Setup** | No setup required | Create session first |
+
+
+```mermaid
+%%{init: {'themeVariables': { 'nodePadding': '5', 'mainBkg': '#fff'}, 'flowchart': { 'curve': 'basis', 'rankSpacing': 30, 'nodeSpacing': 20}}}%%
+graph TD
+    %% Theme Styling - All borders unified to #1e6bb8
+    classDef core fill:#e1f0f0,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:normal;
+    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
+    classDef logic fill:#f0fff4,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:normal;
+    classDef stateful fill:#cae3e3,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8;
+    classDef spacer opacity:0;
+
+    %% Entry
+    Start[User Message] --> Mode{Chat Mode}
+
+    %% Stateless Path
+    Mode -- "Stateless" --> SL[Stateless Flow]
+    SL --> Hist[Send Full History + user_id]
+
+    %% Stateful Path
+    Mode -- "Stateful" --> SF[Stateful Flow]
+    SF --> Sess[Create/Get Session]
+    Sess --> Ctx[Get Session Context]
+
+    %% Shared Orchestration
+    Hist --> Pipe
+    Ctx --> Pipe
+
+   
+        Pipe[🔄 Shared Orchestrator Pipeline] --> Steps
+Steps[Query Rewrite → Retrieval → Rerank → Inference → Tools]
+ 
+
+    %% Exit Logic
+    Steps --> Res[Response + Metrics]
+    Res --> Out1[Return to Client]
+    Res --> Out2[Update Session + Return]
+
+    %% Applying Styles
+    class Start core;
+    class Mode,SL,Hist,Out1 feat;
+    class SF,Sess,Ctx,Out2 stateful;
+    class Pipeline,Pipe,Steps,Res logic;
+```
+
+### 🚀 Session-Based Chat API Examples
+
+#### 1. Create a Session
+```bash
+curl -X POST http://localhost:8000/chat/session
+# Response: {"session_id": "12d8cd79-0ee8-4dcd-97a5-5983effcbccd"}
+```
+
+#### 2. Send Messages (Context Preserved)
+```bash
+# First message
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is Mount Everest?",
+    "history": [],
+    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
+  }'
+
+# Follow-up (understands context from previous message)
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How tall is it?",
+    "history": [],
+    "params": {"top_k": 5, "temperature": 0.7, "max_output_tokens": 500}
+  }'
+```
+
+#### 3. Use Different Models
+```bash
+curl -X POST http://localhost:8000/chat/session-id \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Explain quantum computing",
+    "history": [],
+    "params": {
+      "top_k": 5,
+      "temperature": 0.7,
+      "max_output_tokens": 500,
+      "model_keys": {
+        "inference": "gemini:gemini-2.5-flash"
+      }
+    }
+  }'
+```
+
+### 📚 When to Use Session-Based API
+
+| Scenario | Recommended API | Reason |
+|----------|----------------|--------|
+| **Web frontend** | Stateless (`/chat`) | Simpler, client-managed state |
+| **Mobile apps** | Session-based (`/chat/{session_id}`) | Server-side persistence |
+| **Backend integrations** | Session-based | Automatic context management |
+| **Multi-device access** | Session-based | Shared conversation state |
+| **Long-running conversations** | Session-based | Automatic history management |
+
+### 🔧 Key Benefits
+
+- **Automatic context management** - No need to send history in each request
+- **Token-aware truncation** - Prevents context overflow automatically  
+- **Multi-device support** - Same session accessible from different clients
+- **Identical pipeline quality** - Same retrieval, rewrite, and inference as stateless
+- **Model override support** - Per-request model selection via `model_keys`
+- **Session-based token accounting** - Isolated cost tracking per session
+
+### 📊 Token Accounting & Namespaces
+
+#### Stateless vs Session-Based Token Tracking
+
+| Approach | Namespace Pattern | Token Isolation | Use Case |
+|----------|------------------|-----------------|---------|
+| **Stateless** | `user_id:conversation_id` | Per conversation | Web frontend, client-managed |
+| **Session-Based** | `session:{session_id}` | Per session | Mobile apps, backend systems |
+
+#### How Token Accounting Works
+
+**Stateless (`/chat`):**
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",
+      "conversation_id": "conv456",
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `user123:conv456`
+- **Token tracking:** Isolated per conversation
+
+**Session-Based (`/chat/{session_id}`):**
+```bash
+curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is RAG?",
+    "history": [],
+    "params": {
+      "user_id": "user123",  # Optional
+      "top_k": 5
+    }
+  }'
+```
+- **Namespace:** `session:12d8cd79-0ee8-4dcd-97a5-5983effcbccd`
+- **Token tracking:** Isolated per session
+
+#### Benefits of Namespace Isolation
+
+- **Cost tracking** - Monitor tokens per user/conversation/session
+- **Cache management** - Separate caches for different contexts
+- **Resource isolation** - Prevent cross-contamination of data
+- **Usage analytics** - Track patterns per namespace
+
+### 📖 Learn More
+
+- **[Technical Overview](docs/technical-overview.md#session-based-stateful-chat)** - Detailed architecture and implementation
+- **[API Reference](docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
+
+---
+
+## 🛠️ Included Tools
+
+The chat pipeline supports optional tool use during inference.
+
+Current built-in tools include:
+
+- **Web Search** — Adds external web results to the inference context when enabled
+- **Weather** — Returns current weather and forecast data for requested locations
+- **Airport Lookup** — Returns nearby airport information for travel- and location-based queries
+
+Tool usage can be enabled per request via the application configuration and is integrated into the final response synthesis stage.
+
+---
+
 ## 📚 Knowledge Base and Sample Data
 
-When you run `make seed`, the system populates Qdrant with a high-quality sample dataset of approximately **50 Wikipedia pages**. This focus on world-renowned mountains, national parks, and trails provides a rich environment to test the RAG pipeline's accuracy.
+When you run `make seed`, the system populates Qdrant with a curated dataset derived from approximately **70 Wikipedia pages** focused on mountains and related geography topics. The dataset is indexed into two collections — `document_index` (OpenAI embeddings) and `document_index_gemini` (Gemini embeddings) — allowing you to test the same content across different embedding models.
+
+> **Note:** The active collection is selected through the `active_domain` setting in `backend/core/config.py`, which determines both the Qdrant collection and the embedding model used by the system.
 
 ### 📄 Data Attribution
-To demonstrate multi-source RAG capabilities, this project includes a sample knowledge base derived from Wikipedia.
-* **Source:** 55 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
+This project includes a sample knowledge base derived from Wikipedia.
+* **Source:** ~70 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
 * **Integrity:** Source URLs and author metadata are preserved within the vector payloads to enable **verified citations**.
 * **License:** Distributed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-* **Full Credits:** Detailed source links and compliance information can be found in [ATTRIBUTIONS.md](./ATTRIBUTIONS.md).
+* **Full Credits:** Detailed source links and compliance information can be found in [docs/attributions.md](docs/attributions.md).
 
 ### 🔍 Explore the Data
 
@@ -298,46 +844,45 @@ You can verify the indexed documents through the web interface or the command li
 
 ```bash
 source venv/bin/activate
-python qdrant_scripts/qdrant_ops.py --list-titles --limit 100
+python scripts/qdrant_scripts/qdrant_ops.py --list-titles --limit 100
 
 ```
 
 ### 🔄 Managing Your Collections
 
-The default collection is named `document_index` (defined in `backend/core/config.py`). If you want to move beyond the sample data, choose one of the following paths:
+The system supports **domain-based collection management** where each domain is tightly coupled with its embedding model to prevent dimension drift and ensure consistency. Selecting a collection automatically sets the compatible embedding model and vector dimensions.
 
-#### Option A: Create a Fresh Collection (Recommended)
-This is the cleanest way to experiment with your own data (PDFs, URLs, etc.) without losing the original seed data.
+#### **Domain-Based Configuration**
 
-1.  **Open `backend/core/config.py`**.
-2.  **Update the `collection_name` variable**:
-    ```python
-    collection_name = "my_custom_knowledge_base"
-    ```
-3.  **Restart the app**. The system will automatically detect the missing collection and create a fresh, empty one in Qdrant.
+A single `active_domain` setting configures both the collection name and embedding model. This helps prevent dimension drift and ensures consistency.
+The default is set to `mountains` which uses the `openai:embed_small` model. You may modify or add to the configuration in `backend/core/config.py`.
+
+> *Only one domain can be active at a time, and that defines the Qdrant collection and embedding model.*
+>  This approach allows you to maintain multiple **"knowledge bases"** on the same database. You can swap between domains at any time just by changing the `active_domain` variable.
+
+```python
+# In backend/core/config.py
+DOMAIN_EMBEDDING_CONFIG = {
+    "default": {
+        "collection_name": "document_index",
+        "embedding_model_key": "openai:embed_small"
+    },
+    "mountains": {
+        "collection_name": "document_index", 
+        "embedding_model_key": "openai:embed_small"
+    },
+    "oceans": {
+        "collection_name": "document_index_gemini",
+        "embedding_model_key": "gemini:native-embed"
+    }
+}
+
+# Active domain selection (single change point)
+active_domain: str = "mountains"
+```
 
 > [!TIP]
-> This approach allows you to maintain multiple "knowledge bases" on the same server. You can swap back to the seed data at any time just by changing this variable back to `document_index`.
-
-#### Option B: Delete and Purge (Destructive)
-Use this if you want to completely clear the sample data but keep using the `document_index` name for your own knowledge base.
-
-> [!WARNING]
-> This action will permanently delete the collection and all vectors within it. This cannot be undone.
-
-1.  **Activate your environment**:
-    ```bash
-    source venv/bin/activate
-    
-    ```
-2.  **Run the deletion script**:
-    ```bash
-    python qdrant_scripts/qdrant_ops.py --delete-collection document_index
-
-    ```
-3.  **Verify or Re-seed**: 
-    If you visit the UI now, the collection will be gone. You can either start fresh by uploading your own files via the interface or run `make seed` to repopulate it from scratch.
-
+>
 
 ### 💬 Example Queries
 The following examples are based on the seed data.
@@ -397,71 +942,37 @@ Tools Used: get_weather
 
 ---
 
-## 📦 Batch Ingestion
 
-> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **TECHNICAL_OVERVIEW.md** for the recommended re-ingestion workflow.
+## LLM Integration
 
-The system supports batch processing of multiple documents (PDFs, web pages, MediaWiki) with the following directory structure and requirements:
+This system uses the Python package **[vrraj-llm-adapter](https://pypi.org/project/vrraj-llm-adapter/)** to provide a unified interface across multiple LLM providers.
 
-### Directory Structure for Local PDFs
-When using local file paths in batch processing, the backend expects the following structure:
+The adapter normalizes model configuration, requests, responses, tool calls, and usage metrics across providers while allowing different models to be used across pipeline stages.
 
-```
-chat-with-rag/
-├── data/
-│   └── pdf-files-for-upload/  # Recommended directory for PDFs
-│       ├── document1.pdf
-│       ├── document2.pdf
-│       └── document3.pdf
-```
+### 🔑 Key Capabilities
 
-### Path Handling for batch processing 
-- **Relative Paths (Recommended)**: Use paths relative to the project root
-  - Example: For batch processing documents (Front End: /process-batch-docs.html) from a folder: /app/data/pdf-files-for-upload 
-  - Example direct file reference: `./data/pdf-files-for-upload/document1.pdf`
+- **Multi-Provider Support** — Works with OpenAI and Gemini models
+- **Registry-Driven Model Configuration** — Model capabilities, pricing, and parameter policies are defined in a centralized model registry
+- **Provider-Agnostic Calls** — The same application code works across providers
+- **Custom Model Registries** — Users can extend or override models without changing application code
 
-- **Absolute Paths**: Must be accessible within the Docker container
-  - Example: `/app/data/pdf-files-for-upload/document1.pdf`
+### ⚙️ Custom Registry Path
 
-### Batch Processing Features
-- Process multiple PDFs, web pages, or MediaWiki articles in a single operation
-- Skip common sections (References, External links, etc.)
-- Set global or per-document chunking and processing options
-- Preview and edit configuration before processing
+To load a user-defined custom model registry, set:
 
-### Example Batch Configuration
-```json
-{
-  "items": [
-    {
-      "url": "file:///app/data/pdf-files-for-upload/document1.pdf",
-      "doc_type": "pdf",
-      "skip_sections": ["References", "External links"]
-    },
-    {
-      "url": "https://en.wikipedia.org/wiki/Example",
-      "doc_type": "mediawiki"
-    }
-  ],
-  "max_chunks": 100,
-  "estimate": true,
-  "force_delete": false
-}
+```bash
+export CUSTOM_REGISTRY_PATH=/path/to/your/custom_registry.py
 ```
 
-### Best Practices
-1. Place all PDFs in the `data/pdf-files-for-upload` directory
-2. Use relative paths when possible for better portability
-3. Start with `"estimate": true` to preview processing before actual ingestion
-4. Check the web interface's "View Documents" page to verify successful ingestion
+See the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)** for the models supported, default model definitions, reasoning model configurations, and guidance on extending the adapter with custom models.
 
---
+---
 
 ## 🏗️ Technical Overview
 
 Technical details about the system architecture, pipelines, design decisions, and engineering approach are available here:
 
-👉 **[TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md)**
+👉 **[docs/technical-overview.md](docs/technical-overview.md)**
 
 This overview covers module structure, extraction pipeline, embedding flow, Qdrant indexing, batch ingestion (local PDFs + URLs with optional cost estimation), chat orchestration, SSE streaming, and frontend–backend integration.
 
@@ -471,35 +982,63 @@ This overview covers module structure, extraction pipeline, embedding flow, Qdra
 
 ```text
 chat-with-rag/
-├── backend/               # Server-side application
-│   ├── api/              # HTTP routes (chat, ingestion)
-│   ├── chat/             # Chat orchestration, tools, SSE stages
-│   ├── core/             # Settings, logging, shared schemas
-│   ├── db/               # Qdrant client + vector store layer
-│   ├── embeddings/       # Embedding manager + model abstraction
-│   ├── extractor/        # HTML/MediaWiki/PDF extractors + splitters
-│   ├── crawler/          # URL & PDF fetch utilities
-│   └── utils/            # Shared helpers and admin scripts
-├── frontend/             # Browser UI
-│   ├── static/           # JS/CSS assets
-│   ├── index.html        # Landing page
-│   └── chat.html         # Chat interface
-├── scripts/              # Maintenance + ingestion scripts
-├── qdrant_scripts/       # Qdrant maintenance scripts
-├── data/                 # Seed / demo datasets
-├── images/               # Images for system use
-├── logs/                 # Rotating runtime logs
-└── qdrant_storage/       # Local Qdrant data volume
+├── backend/      # API, chat orchestration, ingestion pipeline, vector DB integration, tools
+├── frontend/     # Chat UI, embed pages, static assets
+├── scripts/      # Batch ingestion and maintenance utilities
+├── prompts/      # YAML prompt registry
+├── docs/         # Technical architecture and API documentation
+├── data/         # Seed/demo datasets
+└── images/       # README and documentation images
 ```
+
+See **docs/technical-overview.md** for a deeper architectural breakdown of the system modules and pipelines.
 
 
 
 ---
 
-## 📜 License & Usage
+## 🔐 Security & Deployment
+
+This application includes a **domain-based access control framework** for APIs and embedded widgets.
+
+### 🛡️ Included Security Controls
+
+- **Domain-Based API Access** — Chat and embedding endpoints can enforce domain-level access rules
+- **Embeddable Widget Restrictions** — `chat-embed.html` can be restricted to authorized domains
+- **Collection Isolation** — Separate domains can be mapped to different knowledge bases and prompt configurations
+
+These security controls help prevent unauthorized access and ensure that different domains or websites can only access their designated knowledge bases and configurations.
+
+---
+## 📡 API Usage
+
+For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](docs/api-reference.md)**.
+
+---
+
+## 🧰 Qdrant Operations
+
+Manage your vector collections with the **Qdrant Operations CLI**. Essential for backup, export, and collection maintenance.
+
+```bash
+# Export collection to JSONL (for backup/seeding)
+python scripts/qdrant_scripts/qdrant_ops.py export
+
+# List document titles and inspect collection
+python scripts/qdrant_scripts/qdrant_ops.py list-titles
+
+# Target specific collection (e.g., Gemini embeddings)
+python scripts/qdrant_scripts/qdrant_ops.py --collection document_index_gemini export -f docs-index-seed-gemini.jsonl
+```
+
+👉 **[Technical Overview: Qdrant Operations CLI](docs/technical-overview.md#qdrant-operations-cli)**
+
+---
+
+## ⚖️ License & Usage
 
 This project is **source-available** for **personal, educational, and evaluation purposes**.  
 It is permitted to **run, modify, and fork** the code for non-commercial use.
 
 **Redistribution, sublicensing, or commercial use** of this project or derivative works **requires explicit written permission** from the author.
-© 2025 Rajkumar Velliavitil — All Rights Reserved
+© 2026 Rajkumar Velliavitil — All Rights Reserved

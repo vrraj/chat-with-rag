@@ -66,7 +66,8 @@ class WebSearchClient:
                         for sub in topics:
                             yield _mk_item(sub.get("Text"), sub.get("FirstURL"))
 
-            results.extend(list(_extract_related(data.get("RelatedTopics"))))
+            # Removing RelatedTopics for now - these are a bunch related topics that do not need to be added to the context
+            # results.extend(list(_extract_related(data.get("RelatedTopics"))))
 
             # Deduplicate by URL then by title
             seen_urls = set()

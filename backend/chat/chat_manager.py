@@ -1,7 +1,7 @@
 """Chat Manager Module
 
 Entry Point:
-- handle_chat(payload: Dict) -> Dict: Main entry point for chat requests
+- handle_chat(payload: Dict) -> Dict: Main entry point for "statless" chat requests
 
 Pipeline Initialization:
 1. Initialize dependencies (DB, clients, tools)
@@ -9,44 +9,8 @@ Pipeline Initialization:
 3. Set up metrics and logging
 
 Chat Pipeline Stages (with History Integration):
-1. Query Rewrite (optional)
-   - Uses history to resolve ambiguous references (pronouns, etc.)
-   - Helps disambiguate queries based on conversation context
+1. Query Rewrite (optional) --> 2. Context (Document) Retrieval --> 3. Reranking --> 4. Context Summarization --> 5. Prompt Construction --> 6. LLM Inference --> 7. Tool Execution (if needed) --> 8. Final Response Generation
 
-2. Context (Document) Retrieval
-   - Qdrant vector database search
-   - Score and filter results
-   - Current query combined with history for better context
-
-3. Reranking
-   - Reranks results using both query and conversation history
-   - Improves relevance based on the full conversation context
-
-4. Context Summarization
-   - Processes conversation history:
-     - Keeps recent messages verbatim
-     - Condenses older messages to save tokens
-   - Uses `split_history_for_prompt()` to manage history window
-
-5. Prompt Construction
-   - Combines:
-     - System instructions
-     - Summarized history
-     - Verbatim recent messages
-     - Retrieved context
-     - Current query
-
-6. LLM Inference
-   - Processes the full prompt with history
-   - Generates response using conversation context
-
-7. Tool Execution (if needed)
-   - May use history for tool parameter resolution
-   - Maintains tool state across turns
-
-8. Response Generation
-   - Formats final response
-   - Updates conversation history with new exchange
 
 Conversation State:
 - Full history maintained in memory
@@ -55,7 +19,15 @@ Conversation State:
 - Automatic summarization of older messages
 """
 
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, TypedDict, Optional
+class StageSpec(TypedDict):
+    """Type definition for stage configuration dictionaries.
+
+    Each stage has a provider, model, and additional keyword arguments.
+    """
+    provider: str
+    model: str
+    kwargs: Dict[str, Any]
 import logging
 
 logger = logging.getLogger(__name__)
@@ -64,7 +36,6 @@ import re
 import uuid
 import tiktoken
 import time
-from openai import OpenAI
 from collections import defaultdict
 # NOTE: SSE stage emission is centralized in backend/stream_emit.py so chat_manager stays agnostic of registry details.
 # Stream emission helpers (centralized in backend/stream_emit.py)
@@ -72,29 +43,337 @@ from backend.stream_emit import emit_stage, close_stream
 from backend.core.config import settings
 from backend.db import QdrantDB
 from backend.chat.web_search import WebSearchClient
+from backend.embeddings.specs import resolve_embedding_spec
 from backend.tools import list_tools, get_executor
 
-# Lazy OpenAI client (initialized on first use)
-_client = None
+from backend.llm.llm_client import generate, embed, get_pricing_for_model, LLMError
+from backend.chat.simple_history_processor import SimpleHistoryProcessor
+from backend.chat.utils import _get_param_int, split_history_for_prompt
+from backend.chat.chunked_history_manager import ChunkedHistoryManager
+from backend.chat.prompt_registry import (
+    resolve_inference_prompt,
+    resolve_rewrite_prompt,
+    resolve_rerank_prompt,
+    resolve_summary_prompt,
+    render_full_payload,
+)
 
-# Module-level cache for summaries
+from backend.markdown_render import render_markdown_to_html
+
 _SUMMARY_CACHE: Dict[str, str] = {}
+_SUMMARY_CACHE_LAST_SEEN: Dict[str, float] = {}
+
+_CHUNK_MANAGERS_BY_NS: Dict[str, ChunkedHistoryManager] = {}
+_CHUNK_MANAGERS_LAST_SEEN: Dict[str, float] = {}
+
+
+def _evict_idle_chunk_managers(now: float | None = None, max_idle_seconds: int | None = None) -> Dict[str, int]:
+    try:
+        _now = float(now if now is not None else time.time())
+    except Exception:
+        _now = time.time()
+    try:
+        _ttl = int(max_idle_seconds) if max_idle_seconds is not None else int(getattr(settings, "chunk_manager_idle_ttl_seconds", 3600) or 3600)
+    except Exception:
+        _ttl = 3600
+
+    cleared = 0
+    try:
+        idle_keys = [k for k, ts in _CHUNK_MANAGERS_LAST_SEEN.items() if (_now - float(ts or 0.0)) > _ttl]
+        for k in idle_keys:
+            _CHUNK_MANAGERS_LAST_SEEN.pop(k, None)
+            if k in _CHUNK_MANAGERS_BY_NS:
+                _CHUNK_MANAGERS_BY_NS.pop(k, None)
+                cleared += 1
+    except Exception:
+        pass
+    return {"cleared": cleared, "active_namespaces": len(_CHUNK_MANAGERS_BY_NS)}
+
+
+def _get_chunk_manager_for_namespace(namespace: str, settings_obj: Any) -> ChunkedHistoryManager:
+    ns = str(namespace or "").strip()
+    key = ns or ""
+    try:
+        _evict_idle_chunk_managers()
+    except Exception:
+        pass
+
+    mgr = _CHUNK_MANAGERS_BY_NS.get(key)
+    if mgr is None:
+        try:
+            chunk_size_limit = int(getattr(settings_obj, "raw_tail_turns", 10) or 10)
+        except Exception:
+            chunk_size_limit = 10
+        mgr = ChunkedHistoryManager(chunk_size_limit=chunk_size_limit, session_id=(ns or "default"))
+        _CHUNK_MANAGERS_BY_NS[key] = mgr
+
+    try:
+        _CHUNK_MANAGERS_LAST_SEEN[key] = time.time()
+    except Exception:
+        pass
+    return mgr
+
+
+def clear_chunk_manager_for_namespace(namespace: str) -> Dict[str, Any]:
+    ns = str(namespace or "").strip()
+    key = ns or ""
+    existed = key in _CHUNK_MANAGERS_BY_NS
+    if existed:
+        _CHUNK_MANAGERS_BY_NS.pop(key, None)
+    _CHUNK_MANAGERS_LAST_SEEN.pop(key, None)
+    return {"cleared": bool(existed), "namespace": key, "active_namespaces": len(_CHUNK_MANAGERS_BY_NS)}
+
+
 # Option A support: index of namespace -> set of cache keys for precise clearing
 _SUMMARY_NS_INDEX: Dict[str, Set[str]] = defaultdict(set)
 # Option A support: last-seen timestamp per namespace for idle eviction
 _SUMMARY_NS_LAST_SEEN: Dict[str, float] = {}
 
 
-def get_client():
-    global _client
-    if _client is None:
-        logger.debug("Initializing OpenAI client")
+# --- LLM call helper ---
+
+
+def _responses_create(provider: str | None = None, **kwargs: Any):
+    """Compatibility shim for LLM calls."""
+    # Extract model from kwargs to use as model_key
+    model = kwargs.get("model")
+    if not model:
+        raise ValueError("model is required for LLM calls")
+    
+    # DEBUG: Log what model is being used
+    logger.info(f"[DEBUG] _responses_create called with model={model}, provider={provider}")
+    
+    # Filter out conflicting parameters
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['model', 'model_key']}
+    
+    # Use generate() - provider inferred from model
+    return generate(model_key=model, **filtered_kwargs)
+
+
+# --- Stage resolver (read-only; mirrors existing fields as-is) ---
+# Produces per-stage provider/model/kwargs, with provider defaulting to "openai".
+# Frontend params can override these later; for now we only read existing settings.
+
+def resolve_stage_specs(
+    *,
+    settings_obj: Any,
+    params: Dict[str, Any] | None,
+    enable_tools: bool,
+    prompt_input: Any,
+    message: str,
+    list_tools_fn: Any,
+) -> Dict[str, StageSpec]:
+    """Return stage specs using current flat settings (no behavior change).
+
+    Output shape:
+        {
+          "rewrite":   {"provider": "openai", "model": "...", "kwargs": {...}},
+          "summary":   {"provider": "openai", "model": "...", "kwargs": {...}},
+          "rerank":    {"provider": "openai", "model": "...", "kwargs": {...}},
+          "inference": {"provider": "openai", "model": "...", "kwargs": {...}},
+          "tools_synth": {"provider": "openai", "model": "...", "kwargs": {...}},
+          "embedding": {"provider": "openai", "model": "...", "kwargs": {...}},
+        }
+
+    """
+    p = params or {}
+
+    # Optional per-request overrides (from the frontend / API)
+    rerank_provider_override = str(p.get("rerank_provider") or "").strip()
+    rerank_model_override = str(p.get("rerank_model") or "").strip()
+    rewrite_provider_override = str(p.get("rewrite_provider") or "").strip()
+    rewrite_model_override = str(p.get("rewrite_model") or "").strip()
+    summary_provider_override = str(p.get("summary_provider") or "").strip()
+    summary_model_override = str(p.get("summary_model") or "").strip()
+    inference_provider_override = str(p.get("inference_provider") or "").strip()
+    inference_model_override = str(p.get("inference_model") or "").strip()
+
+    # Optional per-request model_keys map (stage -> registry key). When
+    # present, these override the model name for that stage so callers can
+    # select registry entries like "openai:chat_fast" while keeping
+    # provider settings/backwards compatibility intact.
+    model_keys = p.get("model_keys") or {}
+    
+    # DEBUG: Log model_keys received from frontend
+    logger.info(f"[DEBUG] model_keys from frontend: {model_keys}")
+    
+    try:
+        inference_model_key_override = str(model_keys.get("inference") or "").strip()
+        rewrite_model_key_override = str(model_keys.get("rewrite") or "").strip()
+        summary_model_key_override = str(model_keys.get("summary") or "").strip()
+        rerank_model_key_override = str(model_keys.get("rerank") or "").strip()
+        
+        # DEBUG: Log extracted overrides
+        logger.info(f"[DEBUG] extracted overrides: inference={inference_model_key_override}, rewrite={rewrite_model_key_override}, summary={summary_model_key_override}, rerank={rerank_model_key_override}")
+        
+    except Exception:
+        inference_model_key_override = ""
+        rewrite_model_key_override = ""
+        summary_model_key_override = ""
+        rerank_model_key_override = ""
+
+    # Base models from settings (stage defaults)
+    rewrite_model = getattr(settings_obj, "rewrite_model", getattr(settings_obj, "inference_model", ""))
+    summarizer_model = getattr(settings_obj, "summarizer_model", getattr(settings_obj, "inference_model", ""))
+    rerank_model = getattr(settings_obj, "re_ranker_model", getattr(settings_obj, "inference_model", ""))
+
+    # Inference model: allow per-request override to affect downstream defaults.
+    inference_model_key = getattr(settings_obj, "inference_model_key", "llm-adapter")
+    # Prefer explicit model_key override when present, then legacy name override,
+    # then settings default. This lets callers opt into registry keys such as
+    # "openai:chat_fast" without breaking existing configs.
+    effective_inference_model = (
+        inference_model_key_override
+        or inference_model_override
+        or inference_model
+    )
+    
+    # Inference provider: allow per-request override to affect downstream defaults.
+    inference_provider = getattr(settings_obj, "inference_provider", "openai")
+    effective_inference_provider = (inference_provider_override or inference_provider)
+
+    # Tools synthesis model uses the same model as inference
+    tools_synth_model = effective_inference_model
+
+    # Embedding spec: settings.embedding_model is a provider key (openai/gemini).
+    # Resolve it into a provider-specific embedding model name for stage_specs consistency.
+    try:
+        _emb = resolve_embedding_spec(settings_obj)  # {provider, model, dimensions}
+    except Exception:
+        _emb = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1536}
+
+    emb_provider = str((_emb or {}).get("provider") or "openai").strip() or "openai"
+    emb_model = str((_emb or {}).get("model") or "").strip()
+
+    # Existing flat temps/limits (read as-is)
+    rewrite_temp = float(getattr(settings_obj, "rewrite_temperature", 0.2))
+    rewrite_max_out = int(getattr(settings_obj, "rewrite_max_output_tokens", getattr(settings_obj, "rewrite_max_tokens", 128)))
+
+    summarizer_temp = float(getattr(settings_obj, "summarizer_temperature", 0.3))
+    summarizer_max_in = int(getattr(settings_obj, "summarizer_max_input_tokens", 512))
+    summarizer_max_out = int(getattr(settings_obj, "summarizer_max_output_tokens", 128))
+
+    try:
+        logger.debug(
+            "[STAGE SPECS] summary provider=%s model=%s temp=%.3f max_in=%d max_out=%d",
+            (summary_provider_override or "openai"),
+            (summary_model_override or summarizer_model),
+            summarizer_temp,
+            summarizer_max_in,
+            summarizer_max_out,
+        )
+    except Exception:
+        pass
+
+    rerank_temp = float(getattr(settings_obj, "re_ranker_temperature", 0.0))
+    rerank_max_out = int(getattr(settings_obj, "re_ranker_max_output_tokens", 64))
+
+    inference_temp = float(getattr(settings_obj, "inference_temperature", 0.2))
+    inference_top_p = float(getattr(settings_obj, "inference_top_p", 1.0))
+    inference_max_out = int(getattr(settings_obj, "max_inference_output_tokens", 800))
+    # Tools synthesis can optionally use its own output token budget.
+    # Back-compat default: fall back to inference_max_out when no dedicated setting exists.
+    tools_synth_max_out = int(getattr(settings_obj, "tools_synth_max_output_tokens", inference_max_out))
+
+    # Tools kwargs are attached at the inference call site today; mirror the current logic here.
+    tools_kwargs: Dict[str, Any] = {}
+    if enable_tools and isinstance(prompt_input, list):
         try:
-            _client = OpenAI(api_key=settings.openai_api_key)
-        except Exception as e:
-            logger.error("Failed to create OpenAI client: %s", e)
-            raise
-    return _client
+            tools = list_tools_fn()
+
+            def _is_web_search_requested(latest_user_msg: str) -> bool:
+                if not latest_user_msg:
+                    return False
+                txt = latest_user_msg.lower()
+                keys = [
+                    "use web search",
+                    "search the web",
+                    "web search",
+                    "search online",
+                    "browse the web",
+                    "do a web search",
+                    "google this",
+                    "bing this",
+                ]
+                return any(k in txt for k in keys)
+
+            if not _is_web_search_requested(message):
+                tools = [t for t in tools if (t.get("name") or t.get("function", {}).get("name")) != "web_search"]
+            tools_kwargs["tools"] = tools
+        except Exception:
+            tools_kwargs["tools"] = []
+
+    try:
+        logger.debug(
+            "[STAGE SPECS] inference provider=%s model=%s max_out=%d | tools_synth max_out=%d",
+            effective_inference_provider,
+            effective_inference_model,
+            inference_max_out,
+            tools_synth_max_out,
+        )
+    except Exception:
+        pass
+
+    return {
+        "embedding": {
+            "provider": emb_provider,
+            "model": emb_model,
+            "kwargs": {},
+        },
+        "rewrite": {
+            "provider": (rewrite_provider_override or "openai"),
+            "model": (rewrite_model_key_override or rewrite_model_override or rewrite_model),
+            "kwargs": {
+                "temperature": rewrite_temp,
+                "max_output_tokens": rewrite_max_out
+            },
+        },
+        "summary": {
+            "provider": (summary_provider_override or "openai"),
+            "model": (summary_model_key_override or summary_model_override or summarizer_model),
+            "kwargs": {
+                "temperature": summarizer_temp,
+                "max_output_tokens": summarizer_max_out,
+                # NOTE: summarizer input budgeting is handled by prompt construction, not API args.
+                "_max_input_tokens": summarizer_max_in,
+            },
+        },
+        "rerank": {
+            "provider": (rerank_provider_override or "openai"),
+            "model": (rerank_model_key_override or rerank_model_override or rerank_model),
+            "kwargs": {
+                "temperature": rerank_temp,
+                "max_output_tokens": rerank_max_out,
+            },
+        },
+        "inference": {
+            "provider": effective_inference_provider,
+            # Prefer the effective_inference_model, which already folds in model_keys.inference (registry key) when provided. 
+            "model": effective_inference_model,
+            "kwargs": {
+                "temperature": inference_temp,
+                "top_p": inference_top_p,
+                "max_output_tokens": inference_max_out,
+                "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
+                "debug_thoughts": getattr(settings, "debug_thoughts", True),
+                **tools_kwargs,
+            },
+        },
+        "tools_synth": {
+            # Tools synthesis uses the same provider as inference, but may have its own model.
+            # IMPORTANT: This is the final synthesis step. Do NOT add tool-calling params here
+            # (e.g., tools/tool_choice/parallel_tool_calls). Tool calls should only happen in
+            # the primary inference stage.
+            "provider": effective_inference_provider,
+            "model": tools_synth_model,
+            "kwargs": {
+                "temperature": inference_temp,
+                "max_output_tokens": tools_synth_max_out,
+                "reasoning_effort": getattr(settings, "inference_reasoning_effort", "low"),
+                "debug_thoughts": getattr(settings, "debug_thoughts", False),
+            },
+        },
+    }
 
 # ---- Conversation totals accumulator (per-namespace, module-level) ----
 COST_BASIS = float(getattr(settings, "cost_basis_tokens", 1_000_000))
@@ -118,7 +397,6 @@ CONVO_TOTALS = {
 
 # Per-conversation/session totals, keyed by namespace (typically user_id:conversation_id or conversation_id)
 _CONVO_TOTALS_BY_NS: Dict[str, Dict[str, Any]] = {}
-
 
 def _new_convo_totals() -> Dict[str, Any]:
     return {
@@ -186,83 +464,133 @@ def clear_convo_totals_for_namespace(namespace: str) -> Dict[str, Any]:
     if existed:
         _CONVO_TOTALS_BY_NS.pop(ns, None)
     return {"cleared": bool(existed), "namespace": ns, "active_namespaces": len(_CONVO_TOTALS_BY_NS)}
-# ---- end accumulator ----
+ # ---- end accumulator ----
 
-def _extract_text_from_responses(resp) -> str:
-    """Return response text from Responses API object.
 
-    Prefers `resp.output_text`. If absent, concatenates any `.text` parts
-    from `resp.output[...].content[...]` entries. Falls back to empty string.
+def _extract_text_from_responses(resp: Any) -> str:
+    """Return response text from a Responses-like object."""
+
+    # If it's already a normalized response (has 'text' field), extract directly
+    if isinstance(resp, dict) and resp.get("text"):
+        try:
+            return str(resp.get("text") or "")
+        except Exception:
+            pass
+    
+    # Handle raw responses - prefer adapter_response surface when present
+    base = getattr(resp, "adapter_response", resp)
+
+    # Try to extract text from the response
+    try:
+        if hasattr(base, "output_text"):
+            return str(base.output_text or "")
+        elif hasattr(base, "text"):
+            return str(base.text or "")
+        elif isinstance(base, dict):
+            return str(base.get("text") or base.get("output_text") or "")
+    except Exception:
+        pass
+
+    # Fallback - try common response attributes
+    for attr in ["output_text", "text", "content"]:
+        try:
+            val = getattr(resp, attr, None)
+            if val:
+                return str(val)
+        except Exception:
+            pass
+    
+    return ""
+
+
+def _extract_reasoning_from_responses(resp: Any) -> str | None:
+    """Return reasoning text from a Responses-like object."""
+    
+    # If it's already a normalized response (has 'reasoning' field), extract directly
+    if isinstance(resp, dict) and resp.get("reasoning"):
+        try:
+            reasoning = str(resp.get("reasoning") or "")
+            return reasoning if reasoning.strip() else None
+        except Exception:
+            pass
+    
+    # Handle raw responses - prefer adapter_response surface when present
+    base = getattr(resp, "adapter_response", resp)
+
+    # Try to extract reasoning from the response
+    try:
+        if hasattr(base, "reasoning"):
+            reasoning = str(base.reasoning or "")
+            return reasoning if reasoning.strip() else None
+        elif isinstance(base, dict):
+            reasoning = str(base.get("reasoning") or "")
+            return reasoning if reasoning.strip() else None
+    except Exception:
+        pass
+
+    return None
+
+
+def _extract_usage_from_responses(resp, provider: str = "openai") -> Dict[str, int] | None:
+    """Extract canonical usage fields from a response object.
+
+    Delegates to LLMHandler for provider-specific normalization.
+    Returns canonical fields: {input_tokens, cached_tokens, output_tokens,
+                               reasoning_tokens, completion_tokens, total_tokens}
+    All fields default to 0 if missing.
     """
-    #logger.debug(f"Full response object: {resp}")
-    # Prefer direct output_text if available
-    text = getattr(resp, "output_text", None)
-    if isinstance(text, str) and text:
-        return text
+    if resp is None:
+        return None
 
-    # Try to read from output -> content -> text
-    output = getattr(resp, "output", None)
-    if output is None and isinstance(resp, dict):
-        output = resp.get("output")
+    # If already an LLMResult-like dict with canonical usage, return it directly.
+    if isinstance(resp, dict) and "usage" in resp:
+        u = resp["usage"]
+        if isinstance(u, dict) and "input_tokens" in u:
+            return u
 
-    parts: List[str] = []
-    if output and isinstance(output, list):
-        for item in output:
-            content = getattr(item, "content", None)
-            if content is None and isinstance(item, dict):
-                content = item.get("content")
-            if not content or not isinstance(content, list):
+    # Prefer adapter_response surface when present (e.g., Gemini
+    # _GeminiResponsesWrapper); otherwise, use the response as-is.
+    base = getattr(resp, "adapter_response", resp)
+
+    # Try to extract usage from normalized response or raw response
+    try:
+        # If it's already a normalized response
+        if isinstance(resp, dict) and resp.get("usage"):
+            usage = resp.get("usage") or {}
+        else:
+            # For raw responses, try to extract usage directly
+            if hasattr(base, "usage"):
+                usage = base.usage or {}
+            elif isinstance(base, dict):
+                usage = base.get("usage") or {}
+            else:
+                usage = {}
+    except Exception:
+        try:
+            logger.exception("[USAGE DEBUG] failed to extract usage")
+        except Exception:
+            pass
+        usage = {}
+
+    # Normalize and ensure all canonical fields are present and numeric.
+    norm = {
+        "input_tokens": 0,
+        "cached_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    if isinstance(usage, dict):
+        for k in norm.keys():
+            v = usage.get(k)
+            try:
+                if isinstance(v, (int, float)):
+                    norm[k] = int(v)
+            except Exception:
                 continue
-            for c in content:
-                txt = getattr(c, "text", None)
-                if txt is None and isinstance(c, dict):
-                    txt = c.get("text")
-                if isinstance(txt, str) and txt:
-                    parts.append(txt)
 
-    return "".join(parts) if parts else ""
-
-
-
-def _extract_usage_from_responses(resp) -> Dict[str, int] | None:
-    """Extract usage fields. Supports both old (prompt/completion) and new (input/output) names.
-       Returns: {prompt_tokens, completion_tokens, total_tokens, cached_tokens?}
-    """
-    usage = getattr(resp, "usage", None)
-    if usage is None and isinstance(resp, dict):
-        usage = resp.get("usage")
-    if usage is None:
-        return None
-
-    def _get(u, name):
-        return getattr(u, name, None) if not isinstance(u, dict) else u.get(name)
-
-    # Accept both naming schemes
-    p = _get(usage, "prompt_tokens")
-    if p is None:
-        p = _get(usage, "input_tokens")
-
-    c = _get(usage, "completion_tokens")
-    if c is None:
-        c = _get(usage, "output_tokens")
-
-    t = _get(usage, "total_tokens")
-
-    # cached tokens can be in either prompt_tokens_details or input_tokens_details
-    details = _get(usage, "prompt_tokens_details") or _get(usage, "input_tokens_details")
-    cached = None
-    if details is not None:
-        cached = getattr(details, "cached_tokens", None) if not isinstance(details, dict) else details.get("cached_tokens")
-
-    if p is None and c is None and t is None and cached is None:
-        return None
-
-    out: Dict[str, int] = {}
-    if p is not None: out["prompt_tokens"] = int(p)
-    if c is not None: out["completion_tokens"] = int(c)
-    if t is not None: out["total_tokens"] = int(t)
-    if cached is not None: out["cached_tokens"] = int(cached)
-    return out
+    return norm
 
 
 # --- Small shared helpers for chat ---
@@ -329,34 +657,6 @@ def _pick(params: Dict[str, Any] | None, keys: List[str], default=None):
             return p[k]
     return default
 
-# Inserted helper: _get_param_int
-def _get_param_int(params: Dict[str, Any] | None, keys: List[str], default: int, minimum: int | None = None, maximum: int | None = None) -> tuple[int, str]:
-    """
-    Return (value, source) reading the first available key in `keys` from params, else the `default`.
-    Coerces to int and clamps to [minimum, maximum] if provided.
-    Source is 'param:<key>' or 'settings'.
-    """
-    p = params or {}
-    for k in keys:
-        if k in p and p[k] is not None:
-            try:
-                v = int(p[k])
-                if minimum is not None:
-                    v = max(minimum, v)
-                if maximum is not None:
-                    v = min(maximum, v)
-                return v, f"param:{k}"
-            except Exception:
-                continue
-    try:
-        v = int(default)
-    except Exception:
-        v = default if isinstance(default, int) else 0
-    if minimum is not None:
-        v = max(minimum, v)
-    if maximum is not None:
-        v = min(maximum, v)
-    return v, "settings"
 
 # Inserted helper: _get_param_float
 def _get_param_float(params: Dict[str, Any] | None, keys: List[str], default: float,
@@ -422,12 +722,16 @@ def _get_encoder_for_model(model_name: str):
                 def encode(self, s): return list(s or "")
             return _Shim()
 
-def _build_summary_prompt_with_budget(messages: List[Dict[str, str]], max_input_tokens: int | None, model_name: str) -> str:
+def _build_summary_prompt_with_budget(messages: List[Dict[str, str]], max_input_tokens: int | None, model_name: str, header: str | None = None) -> str:
     """
     Build a summary prompt that fits within `max_input_tokens` by trimming older lines first.
     Guarantees the most recent line is always included (clipped if necessary).
+    
+    NOTE: This function is currently ONLY used for rewrite stage pre-summarization.
+    Other stages (inference, rerank) do not use this token budgeting mechanism.
+    Chunked history mode bypasses this entirely and uses ChunkedHistoryManager.
     """
-    header = "Summarize the following conversation in a few sentences:\n\n"
+    header = (header if isinstance(header, str) and header else "Summarize the following conversation in a few sentences:\n\n")
     if not messages:
         return header
 
@@ -500,16 +804,24 @@ def _summarize_messages_with_cache(
     messages: List[Dict[str, str]],
     cache: Dict[str, str],
     *,
-    tag: str,
-    model: str,
-    temperature: float,
-    max_output_tokens: int | None = None,
+    tag: str = "",
+    model: str | None = None,
+    temperature: float | None = None,
     max_input_tokens: int | None = None,
+    max_output_tokens: int | None = None,
     log_prefix: str = "[SUMMARY]",
+    stage_spec: Dict[str, Any] | None = None,
+    provider: str | None = None,
+    prompt_domain: str = "",
 ) -> tuple[str, bool, Dict[str, int] | None]:
-    """Summarize a slice of messages with a tiny prompt, caching by (messages, tag).
+    """
+    Summarize a slice of messages with a tiny prompt, caching by (messages, tag).
 
     Returns: (summary_text, from_cache, usage_dict_or_none)
+    
+    NOTE: This function is currently ONLY used for rewrite stage pre-summarization.
+    The tag parameter is used to distinguish cache keys (e.g., 'rewrite' vs 'namespace|rewrite').
+    Other stages do not use this summarization mechanism.
     """
     # Log current cache size for observability
     if logger.isEnabledFor(logging.DEBUG):
@@ -553,18 +865,41 @@ def _summarize_messages_with_cache(
             logger.debug(f"{log_prefix} summary cache HIT ({tag}); len=%d", len(cached))
             return cached, True, None
 
-        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, model)
+        _ss = stage_spec or {}
+        _provider = str(_ss.get("provider") or "openai")
+        _model = str(_ss.get("model") or model)
+
+        registry_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip()
+        sum_spec = resolve_summary_prompt(registry_path=registry_path, domain=(prompt_domain or "").strip())
+        header = (sum_spec.system_instruction or "").strip()
+        if header:
+            header = header + "\n\n"
+        # Build the prompt using the effective model so token budgeting matches the selected provider/model.
+        sum_prompt = _build_summary_prompt_with_budget(cleaned_messages, max_input_tokens, _model, header=header)
         logger.debug(f"{log_prefix} applied local input budget; prompt_len_chars=%d", len(sum_prompt))
 
-        kwargs: Dict[str, Any] = {
-            "model": model,
-            "input": sum_prompt,
-            "temperature": float(temperature),
-        }
-        if max_output_tokens is not None:
-            kwargs["max_output_tokens"] = int(max_output_tokens)
+        _call_kwargs: Dict[str, Any] = dict(_ss.get("kwargs") or {})
+        if not _call_kwargs:
+            _call_kwargs = {"temperature": float(temperature)}
+            if max_output_tokens is not None:
+                _call_kwargs["max_output_tokens"] = int(max_output_tokens)
 
-        resp = get_client().responses.create(**kwargs)
+        # Strip internal-only keys (e.g., _max_input_tokens) so they are not sent to providers.
+        try:
+            _call_kwargs = {k: v for k, v in _call_kwargs.items() if not str(k).startswith("_")}
+        except Exception:
+            # Best-effort; if filtering fails, fall back to original kwargs.
+            pass
+
+        # DEBUG: Log summary stage details
+        logger.info(f"[DEBUG] SUMMARY stage: provider={_provider}, model={_model}")
+
+        resp = _responses_create(
+            provider=_provider,
+            model=_model,
+            input=sum_prompt,
+            **_call_kwargs,
+        )
         summary_text = _extract_text_from_responses(resp).strip()
         cache[key] = summary_text
         # Option A: record key under namespace (if tag includes namespace|...)
@@ -576,8 +911,12 @@ def _summarize_messages_with_cache(
         except Exception:
             pass
         logger.debug(f"{log_prefix} summary cache MISS -> stored; len=%d", len(summary_text))
-        usage = _extract_usage_from_responses(resp)
+        usage = _extract_usage_from_responses(resp, provider=_provider)
         return summary_text, False, usage
+    except LLMError:
+        # Let LLMError (including rate_limit) propagate so outer callers can
+        # apply consistent quota handling and surface clear messages.
+        raise
     except Exception as e:
         logger.warning(f"{log_prefix} summary failed: %s", e, exc_info=True)
         return "", False, None
@@ -686,42 +1025,85 @@ def _evict_idle_namespaces(now: float | None = None, max_idle_seconds: int | Non
 
 
 # --- Cost breakdown utility ---
-def _compute_stage_cost(stage: str, prompt_tokens: int = 0, completion_tokens: int = 0, cached_tokens: int = 0) -> Dict[str, float]:
-    """Return cost breakdown for a stage using per-million rates and COST_BASIS."""
-    if stage == "inference":
-        in_rate = float(settings.inference_cost_per_MM_tokens_input)
-        out_rate = float(settings.inference_cost_per_MM_tokens_output)
-        cached_rate = float(getattr(settings, "inference_cost_per_MM_tokens_cached_input", in_rate / 2.0))
-    elif stage == "rerank":
-        in_rate = float(settings.re_ranker_cost_per_MM_tokens_input)
-        out_rate = float(settings.re_ranker_cost_per_MM_tokens_output)
-        cached_rate = float(getattr(settings, "re_ranker_cost_per_MM_tokens_cached_input", in_rate / 2.0))
-    elif stage == "summary":
-        in_rate = float(settings.summarizer_cost_per_MM_tokens_input)
-        out_rate = float(settings.summarizer_cost_per_MM_tokens_output)
-        cached_rate = float(getattr(settings, "summarizer_cost_per_MM_tokens_cached_input", in_rate / 2.0))
-    elif stage == "rewrite":
-        # Use dedicated rewrite pricing when available; fallback to summarizer rates
-        in_rate = float(getattr(settings, "rewrite_cost_per_MM_tokens_input", getattr(settings, "summarizer_cost_per_MM_tokens_input", 0.0)))
-        out_rate = float(getattr(settings, "rewrite_cost_per_MM_tokens_output", getattr(settings, "summarizer_cost_per_MM_tokens_output", 0.0)))
-        cached_rate = float(getattr(settings, "rewrite_cost_per_MM_tokens_cached_input", getattr(settings, "summarizer_cost_per_MM_tokens_cached_input", in_rate / 2.0)))
-    elif stage == "embedding":
-        # embeddings are input-only
-        in_rate = float(settings.embedding_cost_per_MM_tokens)
-        out_rate = 0.0
-        cached_rate = 0.0
-    else:
-        in_rate = out_rate = cached_rate = 0.0
+def _compute_stage_cost(
+    stage: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    cached_tokens: int = 0,
+    model: str | None = None,
+    provider: str | None = None,
+    model_key: str | None = None,
+) -> Dict[str, float]:
+    """Return cost breakdown for a stage using per-million rates and COST_BASIS.
 
-    cost_prompt = (prompt_tokens / COST_BASIS) * in_rate
-    cost_cached = (cached_tokens / COST_BASIS) * cached_rate
-    cost_completion = (completion_tokens / COST_BASIS) * out_rate
-    total = cost_prompt + cost_cached + cost_completion
+    Notes:
+      * ``prompt_tokens`` is the canonical ``input_tokens`` (includes cached).
+      * ``completion_tokens`` is the canonical ``output_tokens`` (includes reasoning).
+      * ``cached_tokens`` is a subset of ``prompt_tokens`` and priced separately when a
+        distinct cached-input rate is available in the model registry.
+
+
+      * When a matching ``ModelInfo`` is found, per-million rates are taken from its
+        ``pricing`` field and costs are computed by splitting input into non-cached and
+        cached portions.
+      * If the model cannot be resolved from the registry, this function returns zeros
+        for all cost fields. In this deployment that should be treated as a
+        configuration error (missing ModelInfo or pricing), not as a valid "free" run.
+
+    NOTE: This function only affects cost math. It does NOT change any pipeline
+    control flow or LLM behavior.
+    """
+
+    # Use model_key as primary identifier, provider is inferred
+    pricing = get_pricing_for_model(model_key=model_key or model)
+
+    if pricing is not None:
+        try:
+            in_rate = float(getattr(pricing, "input_per_mm", 0.0) or 0.0)
+            out_rate = float(getattr(pricing, "output_per_mm", 0.0) or 0.0)
+            cached_rate = float(getattr(pricing, "cached_input_per_mm", 0.0) or 0.0)
+        except Exception:
+            in_rate = out_rate = cached_rate = 0.0
+
+        # Split canonical input_tokens into non-cached and cached portions so that
+        # only the non-cached portion is billed at the primary input rate.
+        non_cached = max(int(prompt_tokens) - int(cached_tokens), 0)
+
+        cost_prompt = (non_cached / COST_BASIS) * in_rate
+        cost_cached = (cached_tokens / COST_BASIS) * cached_rate
+        # `completion_tokens` here is the canonical `output_tokens` (includes reasoning).
+        cost_completion = (completion_tokens / COST_BASIS) * out_rate
+        total = cost_prompt + cost_cached + cost_completion
+        return {
+            "cost_prompt": round(cost_prompt, 8),
+            "cost_cached": round(cost_cached, 8),
+            "cost_completion": round(cost_completion, 8),
+            "cost_total": round(total, 8),
+        }
+
+    # If model registry cannot be resolved, return zero costs rather than
+    # guessing. In this deployment, this should be treated as a configuration
+    # error (missing ModelInfo or pricing) and will be logged explicitly.
+    try:
+        _prov = str(provider or "").strip()
+        _model_str = str(model or "").strip()
+        _mk = str(model_key or "").strip()
+        logger.error(
+            "[METRICS] Missing pricing in model_registry for provider=%s model=%s model_key=%s; "
+            "returning zero costs.",
+            _prov,
+            _model_str,
+            _mk,
+        )
+    except Exception:
+        # Never break the pipeline due to logging.
+        pass
+
     return {
-        "cost_prompt": round(cost_prompt, 8),
-        "cost_cached": round(cost_cached, 8),
-        "cost_completion": round(cost_completion, 8),
-        "cost_total": round(total, 8),
+        "cost_prompt": 0.0,
+        "cost_cached": 0.0,
+        "cost_completion": 0.0,
+        "cost_total": 0.0,
     }
 
 
@@ -737,36 +1119,67 @@ class Metrics:
     """
     def __init__(self, settings_obj, convo_totals_ref: Dict[str, Any]):
         self.settings = settings_obj
+        # Resolve embedding spec once so we can report the concrete model name
+        try:
+            _emb_spec = resolve_embedding_spec(settings_obj)
+            _emb_model_name = str(_emb_spec.get("model") or "text-embedding-3-small")
+        except Exception:
+            _emb_model_name = "text-embedding-3-small"
         # Exact shape expected by the UI
         self.turn: Dict[str, Any] = {
-            "embedding": {"model": getattr(settings_obj, "embedding_model", "embedding"), "input_tokens": 0, "cost": 0.0},
+            "embedding": {"model": _emb_model_name, "input_tokens": 0, "cost": 0.0},
             "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "cost": 0.0},
             "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
             "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
-            "inference": {"model": settings_obj.inference_model, "prompt_tokens": 0, "prompt_cached_tokens": 0, "completion_tokens": 0, "cost_prompt": 0.0, "cost_cached": 0.0, "cost_completion": 0.0, "cost_total": 0.0},
+            # Inference pass #1 (initial answer / tool-planning)
+            "inference": {
+                "model": settings_obj.inference_model,
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cost_input": 0.0,
+                "cost_cached": 0.0,
+                "cost_output": 0.0,
+                "cost_total": 0.0,
+            },
+            # Inference pass #2 (tool synthesis). Uses same model as inference for consistency.
+            "inference_tools_synth": {
+                "model": settings_obj.inference_model,
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cost_input": 0.0,
+                "cost_cached": 0.0,
+                "cost_output": 0.0,
+                "cost_total": 0.0,
+            },
             "totals": {"tokens": {"turn_total": 0}, "cost": {"turn_total": 0.0}},
         }
         # Module-level accumulator reference (shared per process)
         self.convo: Dict[str, Any] = convo_totals_ref
 
     # --- Helpers ---
-    def _normalize_usage(self, resp_or_usage: Any) -> Dict[str, int]:
-        """Return dict with prompt_tokens, completion_tokens, cached_tokens, total_tokens (zeros if missing)."""
+    def _normalize_usage(self, resp_or_usage: Any, provider: str = "openai") -> Dict[str, int]:
+        """Return dict with canonical usage fields (zeros if missing).
+
+        Canonical fields: input_tokens, cached_tokens, output_tokens,
+                          reasoning_tokens, completion_tokens, total_tokens.
+        """
         try:
             # Accept either a full response object, a dict with nested usage, or a plain usage dict
             if hasattr(resp_or_usage, "usage"):
                 # Full Responses API object
-                u = _extract_usage_from_responses(resp_or_usage)
+                u = _extract_usage_from_responses(resp_or_usage, provider=provider)
             elif isinstance(resp_or_usage, dict) and ("usage" in resp_or_usage):
                 # Dict wrapping usage -> extract
-                u = _extract_usage_from_responses(resp_or_usage)
+                u = _extract_usage_from_responses(resp_or_usage, provider=provider)
             elif isinstance(resp_or_usage, dict) and (
                 "input_tokens" in resp_or_usage
                 or "output_tokens" in resp_or_usage
-                or "prompt_tokens" in resp_or_usage
-                or "completion_tokens" in resp_or_usage
             ):
-                # Already a normalized/usage-like dict
+                # Already a canonical usage dict
                 u = resp_or_usage
             else:
                 u = None
@@ -774,20 +1187,39 @@ class Metrics:
             u = None
         u = u or {}
         return {
-            "prompt_tokens": int(u.get("prompt_tokens", 0) or 0),
-            "completion_tokens": int(u.get("completion_tokens", 0) or 0),
+            "input_tokens": int(u.get("input_tokens", 0) or 0),
             "cached_tokens": int(u.get("cached_tokens", 0) or 0),
+            "output_tokens": int(u.get("output_tokens", 0) or 0),
+            "reasoning_tokens": int(u.get("reasoning_tokens", 0) or 0),
+            "completion_tokens": int(u.get("completion_tokens", 0) or 0),
             "total_tokens": int(u.get("total_tokens", 0) or 0),
         }
 
-    def _cost(self, stage: str, pt: int, ct: int, cached: int) -> Dict[str, float]:
+    def _cost(self, stage: str, model: str, pt: int, ct: int, cached: int, model_key: str | None = None) -> Dict[str, float]:
         # Delegate to existing utility for a single source of truth
-        return _compute_stage_cost(stage, prompt_tokens=pt, completion_tokens=ct, cached_tokens=cached)
+        # NOTE: Costs are resolved via model_registry when possible.
+        return _compute_stage_cost(
+            stage,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            cached_tokens=cached,
+            model=model,
+            model_key=model_key,
+        )
 
     # --- Public API ---
-    def record_stage(self, stage: str, *, model: str, usage: Any | None = None,
-                     pt: int | None = None, ct: int | None = None, cached: int | None = None,
-                     extra: Dict[str, Any] | None = None) -> None:
+    def record_stage(
+        self,
+        stage: str,
+        *,
+        model: str,
+        usage: Any | None = None,
+        pt: int | None = None,
+        ct: int | None = None,
+        cached: int | None = None,
+        model_key: str | None = None,
+        extra: Dict[str, Any] | None = None,
+    ) -> None:
         """Record metrics for a pipeline stage.
         Either pass a `usage` (response or usage dict) or explicit pt/ct/cached counts.
         `extra` lets callers set fields like candidates_reranked/applied/reason.
@@ -797,52 +1229,59 @@ class Metrics:
         # Always stamp the model that ran
         self.turn[stage]["model"] = model
 
+        # Extract canonical usage fields
+        reasoning = 0
         if usage is not None and pt is None and ct is None and cached is None:
             u = self._normalize_usage(usage)
-            pt, ct, cached = u["prompt_tokens"], u["completion_tokens"], u["cached_tokens"]
+            pt, ct, cached, reasoning = u["input_tokens"], u["output_tokens"], u["cached_tokens"], u["reasoning_tokens"]
         pt = int(pt or 0)
         ct = int(ct or 0)
         cached = int(cached or 0)
+        reasoning = int(reasoning or 0)
 
         if stage == "embedding":
             # input-only; we treat provided pt as input_tokens
             self.turn[stage]["input_tokens"] = pt
-            c = self._cost("embedding", pt, 0, 0)
+            c = self._cost("embedding", model, pt, 0, 0, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_prompt"]
         elif stage == "rerank":
-            self.turn[stage]["input_tokens"] = pt + cached
+            # Use canonical input_tokens; cached is a subset and tracked separately via cost math.
+            self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
-            c = self._cost("rerank", pt, ct, cached)
+            c = self._cost("rerank", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "summary":
-            self.turn[stage]["input_tokens"] = pt + cached
+            self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
-            c = self._cost("summary", pt, ct, cached)
+            c = self._cost("summary", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
         elif stage == "rewrite":
-            self.turn[stage]["input_tokens"] = pt + cached
+            self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
-            c = self._cost("rewrite", pt, ct, cached)
+            c = self._cost("rewrite", model, pt, ct, cached, model_key=model_key)
             self.turn[stage]["cost"] = c["cost_total"]
-        elif stage == "inference":
+        elif stage in ("inference", "inference_tools_synth"):
             # Accumulate tokens and costs across multiple inference calls in a single turn.
-            prev_pt = int(self.turn[stage].get("prompt_tokens") or 0)
-            prev_ck = int(self.turn[stage].get("prompt_cached_tokens") or 0)
-            prev_ct = int(self.turn[stage].get("completion_tokens") or 0)
+            prev_in = int(self.turn[stage].get("input_tokens") or 0)
+            prev_ck = int(self.turn[stage].get("cached_tokens") or 0)
+            prev_out = int(self.turn[stage].get("output_tokens") or 0)
+            prev_reason = int(self.turn[stage].get("reasoning_tokens") or 0)
 
-            pt_total = prev_pt + pt
+            in_total = prev_in + pt
             ck_total = prev_ck + cached
-            ct_total = prev_ct + ct
+            out_total = prev_out + ct
+            reason_total = prev_reason + reasoning
 
-            self.turn[stage]["prompt_tokens"] = pt_total
-            self.turn[stage]["prompt_cached_tokens"] = ck_total
-            self.turn[stage]["completion_tokens"] = ct_total
+            self.turn[stage]["input_tokens"] = in_total
+            self.turn[stage]["cached_tokens"] = ck_total
+            self.turn[stage]["output_tokens"] = out_total
+            self.turn[stage]["reasoning_tokens"] = reason_total
 
-            # Cost for this specific call
-            c = self._cost("inference", pt, ct, cached)
-            self.turn[stage]["cost_prompt"] = float(self.turn[stage].get("cost_prompt", 0.0)) + c["cost_prompt"]
+            # Cost for this specific call (still priced under the "inference" stage)
+            c = self._cost("inference", model, pt, ct, cached, model_key=model_key)
+            self.turn[stage]["cost_input"] = float(self.turn[stage].get("cost_input", 0.0)) + c["cost_prompt"]
             self.turn[stage]["cost_cached"] = float(self.turn[stage].get("cost_cached", 0.0)) + c["cost_cached"]
-            self.turn[stage]["cost_completion"] = float(self.turn[stage].get("cost_completion", 0.0)) + c["cost_completion"]
+            self.turn[stage]["cost_output"] = float(self.turn[stage].get("cost_output", 0.0)) + c["cost_completion"]
             self.turn[stage]["cost_total"] = float(self.turn[stage].get("cost_total", 0.0)) + c["cost_total"]
 
         if extra:
@@ -860,9 +1299,21 @@ class Metrics:
         sout = int(self.turn["summary"].get("output_tokens") or 0)
         rwin = int(self.turn["rewrite"].get("input_tokens") or 0)
         rwout = int(self.turn["rewrite"].get("output_tokens") or 0)
-        ip = int(self.turn["inference"].get("prompt_tokens") or 0)
-        ik = int(self.turn["inference"].get("prompt_cached_tokens") or 0)
-        ic = int(self.turn["inference"].get("completion_tokens") or 0)
+
+        # Inference pass #1
+        ip1 = int(self.turn["inference"].get("input_tokens") or 0)
+        ik1 = int(self.turn["inference"].get("cached_tokens") or 0)
+        ic1 = int(self.turn["inference"].get("output_tokens") or 0)
+
+        # Inference pass #2 (tool synthesis)
+        ip2 = int(self.turn["inference_tools_synth"].get("input_tokens") or 0)
+        ik2 = int(self.turn["inference_tools_synth"].get("cached_tokens") or 0)
+        ic2 = int(self.turn["inference_tools_synth"].get("output_tokens") or 0)
+
+        # Combined for totals/conversation metrics
+        ip = ip1 + ip2
+        ik = ik1 + ik2
+        ic = ic1 + ic2
 
         # NOTE: cached tokens are a subset of prompt/input tokens; do NOT add them again to totals.
         total_tokens = emb + rin + rout + sin + sout + rwin + rwout + ip + ic
@@ -874,6 +1325,7 @@ class Metrics:
             + float(self.turn["summary"].get("cost") or 0.0)
             + float(self.turn["rewrite"].get("cost") or 0.0)
             + float(self.turn["inference"].get("cost_total") or 0.0)
+            + float(self.turn["inference_tools_synth"].get("cost_total") or 0.0)
         )
         self.turn["totals"]["cost"]["turn_total"] = round(total_cost, 8)
 
@@ -967,6 +1419,75 @@ def _summary_cache_key(msgs: List[Dict[str, str]] | None, tag: str = "") -> str:
         m.update(b"\x1e")
     return m.hexdigest()
 
+
+def _format_web_context_as_text(web_context: Any) -> str:
+    try:
+        return "\n".join(
+            [
+                f"{i+1}. {item.get('title','')}\n{item.get('snippet','')}\nURL: {item.get('url','')}"
+                for i, item in enumerate(web_context, start=1)
+            ]
+        )
+    except Exception:
+        return ""
+
+
+def _build_inference_messages(
+    *,
+    system_prompt: str,
+    summary_text: str,
+    recent_block_str: str,
+    context_text: str,
+    web_context: Any,
+    message: str,
+) -> List[Dict[str, str]]:
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if summary_text:
+        messages.append({"role": "user", "content": f"CONVERSATION SUMMARY: {summary_text}"})
+    if recent_block_str:
+        messages.append({"role": "user", "content": "RECENT CONVERSATION:\n" + recent_block_str.strip()})
+    if context_text:
+        messages.append({"role": "user", "content": f"CONTEXT:\n{context_text}"})
+    if web_context:
+        web_text = _format_web_context_as_text(web_context)
+        messages.append({"role": "user", "content": f"WEB SEARCH RESULTS:\n{web_text}"})
+    messages.append({"role": "user", "content": message})
+    return messages
+
+
+def _build_tools_synth_messages(
+    *,
+    system_prompt: str,
+    summary_text: str,
+    recent_block_str: str,
+    context_text: str,
+    tool_outputs_list: List[Dict[str, Any]],
+    used_tools: List[str],
+    tools_text: str,
+    message: str,
+) -> List[Dict[str, str]]:
+    synth_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if summary_text:
+        synth_messages.append({"role": "user", "content": f"CONVERSATION SUMMARY:\n{summary_text}"})
+    if recent_block_str:
+        synth_messages.append({"role": "user", "content": "RECENT CONVERSATION:\n" + recent_block_str.strip()})
+    synth_messages.append({"role": "user", "content": f"[SOURCE: KNOWLEDGE_BASE]\nCONTEXT:\n{context_text}"})
+    synth_messages.append({"role": "user", "content": f"TOOLS USED:\n{', '.join(used_tools) if used_tools else ''}"})
+    for t in tool_outputs_list:
+        synth_messages.append(
+            {
+                "role": "user",
+                "content": f"[SOURCE: TOOL - {t.get('name') or 'unknown'}]\n{str(t.get('output', ''))}",
+            }
+        )
+    synth_messages.append(
+        {
+            "role": "user",
+            "content": f"Question: {message}\n\nTask: Produce the final answer to the Question using the Context and Tool results.",
+        }
+    )
+    return synth_messages
+
 # --- Query rewrite helpers (not wired; no behavior change) ---
 _REWRITE_DEICTIC_RE = re.compile(r"\b(it|this|that|these|those|here|there|they|them|their|its|he|she|his|her|also|then)\b", re.I)
 _REWRITE_SHORT_Q_RE = re.compile(r"\b(where|when|how|why|which|what)\b", re.I)
@@ -992,27 +1513,171 @@ def should_rewrite(message: str) -> bool:
     return False
 
 
-def build_rewrite_prompt(tail_messages: List[Dict[str, str]] | None, summary_text: str, message: str) -> str:
-    """Build a compact prompt for the rewrite model using only a tiny context pack.
-    We include: (optional) summary of earlier turns and the verbatim recent tail, plus the user's latest message.
-    The model is instructed to return JSON only and to keep the original if ambiguous.
+def build_rewrite_prompt(
+    tail_messages: List[Dict[str, str]] | None,
+    summary_text: str,
+    message: str,
+) -> str:
+    """Build a structured prompt for the rewrite model using conversation history.
+
+    Uses:
+      - Optional long-term summary (summary_text)
+      - Recent verbatim turns (tail_messages)
+      - Current user message (message)
+
+    The model is instructed to output ONLY a JSON object with the shape:
+      {"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}
     """
     parts: List[str] = []
-    parts.append("Rewrite the user's latest question into a self-contained question so it is self-contained using only the recent conversation. \n")
-    parts.append("If you cannot resolve the reference to the conversation, return the original question unchanged.\n")
-    parts.append("Return strictly the following JSON (no extra text, no explanations):\n")
-    parts.append("Keep reason to a short phrase (max 15-20 tokens). \n")
-    parts.append('{"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}\n\n')
+
+    # 1. SYSTEM IDENTITY (Static/Cacheable)
+    parts.append("### ROLE\n")
+    parts.append(
+        "You are a Search Query Optimizer. Your task is to rewrite the user's latest message "
+        "into a single, standalone search query that can be sent to a vector database or search engine, "
+        "using only the provided conversation context.\n\n"
+    )
+
+    # 2. HIERARCHICAL INSTRUCTIONS (Static/Cacheable)
+    parts.append("### INSTRUCTIONS\n")
+    parts.append(
+        "1. PRIORITY: Use the 'RECENT CONVERSATION' to resolve immediate pronouns and vague references "
+        "(e.g., it, this, that, they, those, their, its).\n"
+    )
+    parts.append(
+        "2. BACKGROUND: Use the 'CONVERSATION SUMMARY' only to understand the overall topic when the recent turns "
+        "are not sufficient by themselves.\n"
+    )
+    parts.append(
+        "3. STANDALONE QUERY: The 'rewritten' field must be a clear, self-contained search query. "
+        "If the user's latest message is already a clear standalone question, return it unchanged and set "
+        "'changed': false.\n"
+    )
+    parts.append(
+        "4. NO CHAT / NO ANSWERS: Do not answer the question. Do not add explanations, opinions, or chit-chat. "
+        "Your only job is to rewrite the query for retrieval.\n"
+    )
+    parts.append(
+        "5. AMBIGUITY HANDLING: If you cannot confidently resolve what a pronoun or vague reference refers to, "
+        "keep the original question unchanged, set 'ambiguous': true, and briefly explain why in 'reason'.\n\n"
+    )
+
+    # 3. OUTPUT SCHEMA (Static/Cacheable)
+    parts.append("### OUTPUT SCHEMA\n")
+    parts.append(
+        "Return STRICTLY a single JSON object with this shape and field meanings (no extra text, no code fences):\n"
+    )
+    parts.append(
+        '{"rewritten":"...","changed":true|false,"confidence":0.0,'
+        '"ambiguous":true|false,"reason":"..."}\n'
+    )
+    parts.append(
+        "- rewritten: the final standalone search query.\n"
+        "- changed: true if you modified the user question, false if you kept it as-is.\n"
+        "- confidence: a float from 0.0 to 1.0 indicating how confident you are in the rewrite.\n"
+        "- ambiguous: true if the context is too unclear to safely rewrite; otherwise false.\n"
+        "- reason: a short phrase (max ~15-20 tokens) explaining your decision.\n\n"
+    )
+
+    # 4. FEW-SHOT EXAMPLES (Static/Cacheable)
+    parts.append("### EXAMPLES\n")
+
+    # EXAMPLE 1: Mount Whitney (domain-specific, location + weather + airport)
+    parts.append("EXAMPLE 1\n")
+    parts.append("SUMMARY: user is interested in mount whitney.\n")
+    parts.append(
+        'RECENT: USER: "what is the elevtion ." | ASSISTANT: "The elevation is 14505 ft."\n'
+    )
+    parts.append('CURRENT: "Current weather and closest airport."\n')
+    parts.append(
+        '{"rewritten": "what is the current weather in Mount Whitney, California and the closest airport to it", '
+        '"changed": true, "confidence": 0.98, "ambiguous": false, '
+        '"reason": "added full context for mount whitney"}\n\n'
+    )
+
+    # EXAMPLE 2: SDK / Linux compatibility (resolving "it" to Python SDK)
+    parts.append("EXAMPLE 2\n")
+    parts.append("SUMMARY: user is installing and using a Python SDK.\n")
+    parts.append(
+        'RECENT: USER: "How do I install the Python SDK?" | ASSISTANT: "You can install it with pip using `pip install my-sdk`."\n'
+    )
+    parts.append('CURRENT: "Does it work on Linux?"\n')
+    parts.append(
+        '{"rewritten": "Linux compatibility and system requirements for the my-sdk Python SDK", '
+        '"changed": true, "confidence": 0.96, "ambiguous": false, '
+        '"reason": "resolved it to Python SDK and added linux compatibility context"}\n\n'
+    )
+
+    # EXAMPLE 3: Q3 revenue / projections (topic continuation)
+    parts.append("EXAMPLE 3\n")
+    parts.append("SUMMARY: user is asking about company financial performance for Q3.\n")
+    parts.append(
+        'RECENT: USER: "Tell me about the Q3 revenue." | ASSISTANT: "Q3 revenue was $45M, up 12% year-over-year."\n'
+    )
+    parts.append('CURRENT: "What about the projections?"\n')
+    parts.append(
+        '{"rewritten": "Q3 revenue projections and future financial outlook for the company", '
+        '"changed": true, "confidence": 0.94, "ambiguous": false, '
+        '"reason": "used prior Q3 revenue topic to expand vague projections into standalone query"}\n\n'
+    )
+
+    # EXAMPLE 4: Car clicking sound (entity clarification)
+    parts.append("EXAMPLE 4\n")
+    parts.append("SUMMARY: user has a car with a clicking sound and wants to understand the issue.\n")
+    parts.append(
+        'RECENT: USER: "My car is making a clicking sound when I accelerate." | ASSISTANT: "That can have several causes, typically related to CV joints or engine components."\n'
+    )
+    parts.append('CURRENT: "How much to fix it?"\n')
+    parts.append(
+        '{"rewritten": "cost and repair estimates to fix a car that makes a clicking sound when accelerating", '
+        '"changed": true, "confidence": 0.92, "ambiguous": false, '
+        '"reason": "expanded it into explicit car clicking sound repair cost query"}\n\n'
+    )
+
+    # EXAMPLE 5: Already clear airports question (no semantic change, but more context)
+    parts.append("EXAMPLE 5\n")
+    parts.append("SUMMARY: user is researching airports near Mount Whitney.\n")
+    parts.append(
+        'RECENT: USER: "What are the closest airports to Mount Whitney?" | ASSISTANT: "There are several nearby, including Bishop and Fresno Yosemite."\n'
+    )
+    parts.append('CURRENT: "What are the closest airports to Mount Whitney?"\n')
+    parts.append(
+        '{"rewritten": "What are the closest airports to Mount Whitney?", '
+        '"changed": false, "confidence": 0.99, "ambiguous": false, '
+        '"reason": "question already clear and self-contained"}\n\n'
+    )
+
+    # EXAMPLE 6: Truly ambiguous follow-up (keep original, mark ambiguous)
+    parts.append("EXAMPLE 6\n")
+    parts.append("SUMMARY: user is asking many unrelated questions about different products and topics.\n")
+    parts.append(
+        'RECENT: USER: "How do I reset my router?" | ASSISTANT: "Press and hold the reset button for 10 seconds."\n'
+    )
+    parts.append('CURRENT: "What about that one?"\n')
+    parts.append(
+        '{"rewritten": "What about that one?", '
+        '"changed": false, "confidence": 0.2, "ambiguous": true, '
+        '"reason": "cannot determine what that one refers to from context"}\n\n'
+    )
+
+    # 5. DYNAMIC DATA (Changes every turn)
     if summary_text:
-        parts.append("Previous conversation summary:\n" + summary_text.strip() + "\n\n")
+        parts.append("### CONVERSATION SUMMARY (Long-term Context)\n")
+        parts.append(summary_text.strip())
+        parts.append("\n\n")
+
     if tail_messages:
-        parts.append("Recent conversation:\n")
+        parts.append("### RECENT CONVERSATION (Immediate Context)\n")
         for m in tail_messages:
-            role = m.get("role", "user")
-            content = m.get("content", "")
+            role = (m.get("role") or "user").upper()
+            content = m.get("content", "") or ""
             parts.append(f"{role}: {content}\n")
         parts.append("\n")
-    parts.append(f"User question: {message.strip()}\n")
+
+    parts.append("### CURRENT USER QUESTION\n")
+    parts.append(message.strip())
+    parts.append("\n")
+
     return "".join(parts)
 
 
@@ -1020,38 +1685,89 @@ def rewrite_query(
     tail_messages: List[Dict[str, str]] | None,
     summary_text: str,
     message: str,
+    prompt_domain: str = "",
     log_prefix: str = "[REWRITE]",
+    stage_spec: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Call the rewrite model to produce a self-contained query.
     Returns a dict with keys: rewritten, changed, confidence, ambiguous, reason.
     On any failure, returns the original unmodified with changed=False.
     """
     try:
-        prompt = build_rewrite_prompt(tail_messages, summary_text, message)
+        registry_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip()
+        rw_spec = resolve_rewrite_prompt(registry_path=registry_path, domain=(prompt_domain or "").strip())
+
+        tail_lines: List[str] = []
+        try:
+            for m in (tail_messages or []):
+                role = str(m.get("role") or "user")
+                content = str(m.get("content") or "")
+                if role == "assistant":
+                    try:
+                        content = _strip_trailing_sources_block(content)
+                    except Exception:
+                        pass
+                tail_lines.append(f"{role}: {content}")
+        except Exception:
+            tail_lines = []
+        recent_block_str = "\n".join(tail_lines)
+
+        payload = render_full_payload(
+            rw_spec.full_payload_template,
+            variables={
+                "summary_text": summary_text or "",
+                "recent_block_str": (recent_block_str or "").strip(),
+                "message": message or "",
+            },
+        )
+
+        prompt = rw_spec.system_instruction + "\n\n" + payload
         # Log an estimated prompt token count for rewrite
         try:
-            enc = _get_encoder_for_model(settings.rewrite_model)
+            _rw = stage_spec or {}
+            _model_for_est = str(_rw.get("model") or getattr(settings, 'rewrite_model_key', 'openai:gpt-4o-mini'))
+            enc = _get_encoder_for_model(_model_for_est)
             pt_est = len(enc.encode(prompt))
-            logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, settings.rewrite_model)
+            #logger.debug(f"{log_prefix} prompt_token_est≈%d model=%s", pt_est, _model_for_est)
         except Exception:
             pass
         # Invoke the rewrite model with the prompt for the user's latest message for it to rewrite it
-        resp = get_client().responses.create(
-            model=settings.rewrite_model,
+        _rw = stage_spec or {}
+        _provider = str(_rw.get("provider") or "openai")
+        _model = str(_rw.get("model") or getattr(settings, 'rewrite_model_key', 'openai:gpt-4o-mini'))
+        _kwargs = dict(_rw.get("kwargs") or {})
+        if not _kwargs:
+            _kwargs = {
+                "max_output_tokens": int(getattr(settings, 'rewrite_max_output_tokens', 300)),
+                "temperature": float(getattr(settings, 'rewrite_temperature', 0.3)),
+            }
+
+        # DEBUG: Log rewrite stage details with endpoint info
+        try:
+            from backend.llm.llm_client import get_model_info
+            model_info = get_model_info(model_key=_model)
+            endpoint = getattr(model_info, 'endpoint', 'unknown')
+            logger.info(f"[DEBUG] REWRITE stage: provider={_provider}, model={_model}, endpoint={endpoint}, stage_spec={stage_spec}")
+        except Exception as e:
+            logger.info(f"[DEBUG] REWRITE stage: provider={_provider}, model={_model}, endpoint=unknown (error: {e}), stage_spec={stage_spec}")
+
+        resp = _responses_create(
+            provider=_provider,
+            model=_model,
             input=prompt,
-            max_output_tokens=int(settings.rewrite_max_output_tokens),
-            temperature=float(settings.rewrite_temperature),
+            **_kwargs,
         )
-        usage = _extract_usage_from_responses(resp)
+        usage = _extract_usage_from_responses(resp, provider=_provider)
         raw = _extract_text_from_responses(resp).strip()
-        logger.debug("[REWRITE] response output raw=%s", raw[:400])
+        # Log the raw JSON candidate before parsing so we can debug provider outputs.
+        #logger.debug("[REWRITE] JSON candidate before parsing=%s", raw)
         try:
             if isinstance(usage, dict):
-                pt = int(usage.get("prompt_tokens") or 0)
-                ct = int(usage.get("completion_tokens") or 0)
+                pt = int(usage.get("input_tokens") or 0)
+                ct = int(usage.get("output_tokens") or 0)
                 ck = int(usage.get("cached_tokens") or 0)
                 tt = int(usage.get("total_tokens") or (pt + ct + ck))
-                logger.debug(f"{log_prefix} usage pt=%d cached=%d ct=%d total=%d", pt, ck, ct, tt)
+                logger.debug(f"{log_prefix} usage input=%d cached=%d output=%d total=%d", pt, ck, ct, tt)
         except Exception:
             pass
         # Tolerate fenced code blocks
@@ -1059,15 +1775,59 @@ def rewrite_query(
             raw = raw[7:-3].strip()
         elif raw.startswith("```") and raw.endswith("```"):
             raw = raw[3:-3].strip()
-        data = json.loads(raw)
-        # Debug: log the parsed JSON (truncated)
+        
+        # Validate JSON format and retry if invalid
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning(f"{log_prefix} Invalid JSON from LLM: {e}. Response was: '{raw[:200]}...'")
+            logger.warning(f"{log_prefix} This often happens when model ignores JSON schema instruction")
+            logger.warning(f"{log_prefix} Response may be truncated - checking max_output_tokens setting")
+            
+            # Retry with stronger emphasis on JSON format
+            retry_prompt = prompt + "\n\nIMPORTANT: You MUST return ONLY a complete JSON object. No conversational text. Ensure all fields are included."
+            #logger.debug(f"{log_prefix} Retrying with stronger JSON instruction")
+            
+            resp_retry = _responses_create(
+                provider=_provider,
+                model=_model,
+                input=retry_prompt,
+                **_kwargs,
+            )
+            raw_retry = _extract_text_from_responses(resp_retry).strip()
+            
+            # Clean retry response
+            if raw_retry.startswith("```json") and raw_retry.endswith("```"):
+                raw_retry = raw_retry[7:-3].strip()
+            elif raw_retry.startswith("```") and raw_retry.endswith("```"):
+                raw_retry = raw_retry[3:-3].strip()
+            
+            try:
+                data = json.loads(raw_retry)
+                logger.info(f"{log_prefix} Retry successful, got valid JSON")
+            except json.JSONDecodeError:
+                logger.error(f"{log_prefix} Retry also failed, using original query")
+                # Fallback to original with changed=False
+                data = {
+                    "rewritten": message,
+                    "changed": False,
+                    "confidence": 0.0,
+                    "ambiguous": True,
+                    "reason": "JSON parsing failed, using original"
+                }
+        
+        # Debug: log parsed JSON (truncated)
+        #try:
+            #logger.debug(f"{log_prefix} Parsed JSON: {str(data)[:100]}...")
+        #except Exception:
+            #pass
         try:
             _t = int(getattr(settings, "debug_log_truncate_chars", 4000))
         except Exception:
             _t = 400
         try:
             _js = json.dumps(data, ensure_ascii=False)
-            logger.debug(f"{log_prefix} json=%s", _js if len(_js) <= _t else (_js[:_t] + "…"))
+            #logger.debug(f"{log_prefix} json=%s", _js if len(_js) <= _t else (_js[:_t] + "…"))
         except Exception:
             pass
         # Normalize/validate fields
@@ -1083,6 +1843,51 @@ def rewrite_query(
             "ambiguous": ambiguous,
             "reason": reason,
             "_usage": usage,
+        }
+    except LLMError as e:
+        # Special-case provider rate limits so callers can surface a clear message
+        # instead of treating this as an ambiguous query.
+        try:
+            kind = getattr(e, "kind", "") or ""
+            provider = getattr(e, "provider", "") or ""
+            model = getattr(e, "model", "") or ""
+        except Exception:
+            kind = ""
+            provider = ""
+            model = ""
+
+        if kind == "rate_limit":
+            logger.warning(
+                "%s provider rate limit in rewrite: provider=%s model=%s error=%s",
+                log_prefix,
+                provider,
+                model,
+                e,
+                exc_info=True,
+            )
+            # Mark as a rate-limit condition without flagging ambiguity so the
+            # pipeline can handle this distinctly (e.g., by emitting a final
+            # quota-exceeded message instead of entering Clarify).
+            return {
+                "rewritten": message,
+                "changed": False,
+                "confidence": 0.0,
+                "ambiguous": False,
+                "reason": "llm_rate_limit",
+                "_usage": None,
+                "_provider": provider,
+                "_model": model,
+            }
+
+        # Non-rate-limit LLMErrors are treated as generic rewrite failures.
+        logger.warning("[REWRITE] failed with LLMError; using original: %s", e, exc_info=True)
+        return {
+            "rewritten": message,
+            "changed": False,
+            "confidence": 0.0,
+            "ambiguous": True,
+            "reason": "rewrite_error_or_ambiguous",
+            "_usage": None,
         }
     except Exception as e:
         # Never let rewrite failures affect the main flow
@@ -1122,6 +1927,26 @@ class ChatManager:
         self.chat_history = []
         # Per-instance lightweight cache for history summaries reused within a turn
         self._summary_cache: Dict[str, str] = {}
+        
+        # Chunked history managers for different sessions
+        self.chunk_managers: Dict[str, ChunkedHistoryManager] = {}
+
+    def get_or_create_chunk_manager(self, session_id: str = "default") -> ChunkedHistoryManager:
+        """Get or create a chunk manager for the given session."""
+        if session_id not in self.chunk_managers:
+            chunk_size_limit = getattr(settings, 'raw_tail_turns', 10)  # Use existing config
+            self.chunk_managers[session_id] = ChunkedHistoryManager(
+                chunk_size_limit=chunk_size_limit,
+                session_id=session_id
+            )
+            logger.debug(f"[CHUNKED] Created new chunk manager for session {session_id}, chunk_size={chunk_size_limit}")
+        return self.chunk_managers[session_id]
+
+    def _get_session_id(self, params: Dict[str, Any] | None) -> str:
+        """Extract session ID from params or use default."""
+        if not params:
+            return "default"
+        return str(params.get("session_id", "default"))
 
     def _get_context(self, query: str, limit: int | None = None, score_threshold: float | None = None) -> List[Dict]:
         """Get relevant context from QdrantDB"""
@@ -1151,7 +1976,7 @@ class ChatManager:
         """Get additional context from web search"""
         return self.web_search.get_additional_context(query, existing_context)
 
-    def chat(self, message: str, context: List[Dict], use_web_search: bool = False, params: Dict[str, Any] | None = None) -> Dict:
+    def chat(self, message: str, context: List[Dict], use_web_search: bool | None = None, params: Dict[str, Any] | None = None) -> Dict:
         """
         Thin wrapper: delegate to run_pipeline (Option A).
         Maintains stateful history and returns answer + sources.
@@ -1160,16 +1985,40 @@ class ChatManager:
         # Prefer caller-provided query_id (so SSE subscriber can pre-open /chat/stream/stages?query_id=...)
         _p = params or {}
         req_id = str(_p.get("query_id") or _p.get("request_id") or uuid.uuid4().hex[:8])
-        logger.info("Starting chat in chat_manager.chat() [req_id=%s]", req_id, extra={"message": message})
+        logger.info("Starting chat in chat_manager.chat() [req_id=%s] [msg=%s]", req_id, message[:50])
+        if use_web_search is None:
+            use_web_search = bool(getattr(settings, "use_web_search", False))
+        try:
+            if isinstance(params, dict) and params.get("use_web_search") is not None:
+                use_web_search = bool(params.get("use_web_search"))
+        except Exception:
+            pass
         logger.debug("Context length=%d use_web_search=%s", len(context), use_web_search)
+        
+        # Debug: Show what history we're using
+        history_to_use = context if context is not None else self.chat_history
+        logger.info("Using history: %d messages from %s", len(history_to_use), 
+                   "session context" if context is not None else "ChatManager history")
+        if history_to_use:
+            logger.debug("History preview: %s", 
+                        [{"role": msg.get("role", "unknown"), "content": msg.get("content", "")[:50] + "..."} 
+                         for msg in history_to_use[-3:]])  # Show last 3 messages
 
         # Always use orchestrator; legacy inlined flow removed (kept in git history).
+        # Derive namespace for token accounting (use session_id as conversation_id)
+        try:
+            _uid = str((params or {}).get("user_id") or "").strip()
+            _session_id = str((params or {}).get("session_id") or "").strip()
+            # For session-based chat, use session_id as namespace for proper token accounting
+            session_namespace = f"session:{_session_id}" if _session_id else ""
+        except Exception:
+            session_namespace = ""
+
         try:
             deps = {
                 "db": self.qdrant_db,
                 "cache": self._summary_cache,
                 "settings": settings,
-                "get_client": get_client,
                 "list_tools": list_tools,
                 "get_executor": get_executor,
                 "get_web_context": (lambda q, existing: self._get_web_context(q, existing)) if use_web_search else (lambda q, existing: []),
@@ -1180,11 +2029,19 @@ class ChatManager:
                 "use_web_search": bool(use_web_search),
                 "log_origin": "chat_manager.chat[orchestrator]",
                 "request_id": req_id,
+                "namespace": session_namespace,  # Add namespace for token accounting
             }
-            req = {"message": message, "history": self.chat_history, "params": (params or {})}
+            # Use context parameter if provided, otherwise use self.chat_history
+            # This allows session-based chat to work properly while maintaining backward compatibility
+            history_to_use = context if context is not None else self.chat_history
+            req = {"message": message, "history": history_to_use, "params": (params or {})}
 
             out = run_pipeline(deps=deps, req=req)
             answer_text = out.get("answer", "") or ""
+            
+            # Debug: Log what we got from orchestrator
+            logger.info("DEBUG: orchestrator out keys: %s", list(out.keys()) if isinstance(out, dict) else "not a dict")
+            logger.info("DEBUG: orchestrator out: %s", out)
 
             # Update stateful history to preserve conversation context
             self.chat_history.extend([
@@ -1192,10 +2049,22 @@ class ChatManager:
                 {"role": "assistant", "content": answer_text},
             ])
 
-            return {
+            # Prepare response with all metrics
+            response_dict = {
                 "response": answer_text,
+                "answer": answer_text,  # Add for consistency with handle_chat
                 "sources": out.get("sources", []),
+                "metrics": out.get("metrics", {"vectors_retrieved": 0}),
+                "turn_metrics": out.get("turn_metrics", {}),
+                "conversation_totals": out.get("conversation_totals", {}),
+                "tools_used": out.get("tools_used", []),
+                "rewrite_display": out.get("rewrite_display", {}),
             }
+            
+            logger.info("DEBUG: response_dict keys: %s", list(response_dict.keys()))
+            logger.info("DEBUG: response_dict: %s", response_dict)
+            
+            return response_dict
         except Exception as e:
             logger.exception("Exception in chat: %s", e)
             err_text = f"I'm sorry, I encountered an error while processing your request: {str(e)}"
@@ -1237,53 +2106,59 @@ def extract_tool_calls(resp: Any) -> List[Dict[str, Any]]:
     """Extract tool/function calls from a Responses API object or dict.
     Returns a list of {name, args, id}.
     """
-    calls: List[Dict[str, Any]] = []
-    try:
-        output = getattr(resp, "output", None) if not isinstance(resp, dict) else resp.get("output")
-        if isinstance(output, list):
-            for item in output:
-                it_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
-                if it_type in ("function_call", "tool_use", "tool_call"):
-                    name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
-                    args = getattr(item, "arguments", None) if not isinstance(item, dict) else item.get("arguments")
-                    cid = getattr(item, "call_id", None) if not isinstance(item, dict) else (item.get("call_id") or item.get("id"))
-                    calls.append({"name": name, "args": args, "id": cid})
+    # Unwrap adapter-style responses first (e.g., AdapterResponse from llm_adapter)
+    # so we always inspect the provider-native object for tool_calls.
+    base = getattr(resp, "adapter_response", resp)
+
+    def _dedup(_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Best-effort deduplication across providers/wrappers.
+        Dedup key prefers call id when present, otherwise falls back to (name, args).
+        """
+        out: List[Dict[str, Any]] = []
+        seen: set[tuple] = set()
+        for c in _calls:
+            try:
+                name = (c.get("name") or "").strip()
+                cid = (c.get("id") or "").strip()
+                args = c.get("args")
+                if isinstance(args, str):
+                    akey = args
+                elif isinstance(args, dict):
+                    try:
+                        akey = json.dumps(args, sort_keys=True, ensure_ascii=False)
+                    except Exception:
+                        akey = str(args)
                 else:
-                    content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
-                    if isinstance(content, list):
-                        for c in content:
-                            c_type = getattr(c, "type", None) if not isinstance(c, dict) else c.get("type")
-                            if c_type in ("tool_use", "tool_call"):
-                                name = getattr(c, "name", None) if not isinstance(c, dict) else c.get("name")
-                                cid = getattr(c, "id", None) if not isinstance(c, dict) else c.get("id")
-                                a = None
-                                if isinstance(c, dict):
-                                    if "input" in c:
-                                        a = c.get("input")
-                                    elif "arguments" in c:
-                                        a = c.get("arguments")
-                                else:
-                                    a = getattr(c, "input", None) or getattr(c, "arguments", None)
-                                calls.append({"name": name, "args": a, "id": cid})
-    except Exception:
-        pass
+                    akey = str(args)
+                key = (cid,) if cid else (name, akey)
+                if name and key not in seen:
+                    seen.add(key)
+                    out.append({"name": name, "args": args, "id": c.get("id")})
+            except Exception:
+                # If anything goes wrong, keep the call to avoid dropping tool execution.
+                out.append(c)
+        return out
+
     try:
-        choices = getattr(resp, "choices", None) if not isinstance(resp, dict) else resp.get("choices")
-        if isinstance(choices, list) and choices:
-            msg = getattr(choices[0], "message", None) if not isinstance(choices[0], dict) else choices[0].get("message")
-            tc = getattr(msg, "tool_calls", None) if not isinstance(msg, dict) else msg.get("tool_calls")
-            if isinstance(tc, list):
-                for t in tc:
-                    ttype = getattr(t, "type", None) if not isinstance(t, dict) else t.get("type")
-                    if ttype == "function":
-                        func = getattr(t, "function", None) if not isinstance(t, dict) else t.get("function")
-                        name = getattr(func, "name", None) if not isinstance(func, dict) else (func or {}).get("name")
-                        arguments = getattr(func, "arguments", None) if not isinstance(func, dict) else (func or {}).get("arguments")
-                        tc_id = getattr(t, "id", None) if not isinstance(t, dict) else t.get("id")
-                        calls.append({"name": name, "args": arguments, "id": tc_id})
+        # If it's already a normalized response, extract tool_calls directly
+        if isinstance(resp, dict) and resp.get("tool_calls"):
+            calls = list(resp.get("tool_calls") or [])
+        else:
+            # For raw responses, try to extract tool_calls directly
+            if hasattr(base, "tool_calls"):
+                calls = list(base.tool_calls or [])
+            elif isinstance(base, dict):
+                calls = list(base.get("tool_calls") or [])
+            else:
+                calls = []
     except Exception:
-        pass
-    return [c for c in calls if c.get("name")]
+        calls = []
+
+    calls = [c for c in calls if c.get("name")]
+    # Deduplicate calls
+    deduped = _dedup(calls)
+
+    return deduped
 
 
 def parse_tool_args(raw: Any) -> Dict[str, Any]:
@@ -1297,35 +2172,7 @@ def parse_tool_args(raw: Any) -> Dict[str, Any]:
     return {}
 
 #
-# --- History slicing helper  ---
-def split_history_for_prompt(history_msgs: List[Dict[str, str]] | None, raw_tail_turns: int, window_turns: int):
-    """
-    Split a flat message list into (to_summarize, verbatim_tail).
-
-    Definitions:
-      - 1 turn = 2 messages (user + assistant).
-      - verbatim_tail: the last `raw_tail_turns` turns (up to available), kept verbatim in the prompt.
-      - to_summarize: `window_turns` turns immediately before the tail, used to build a short summary.
-
-    This function is pure and does not modify the input list.
-    """
-    msgs = history_msgs or []
-    msgs_per_turn = 2
-    tail_msg_count = max(0, int(raw_tail_turns)) * msgs_per_turn
-    window_msg_count = max(0, int(window_turns)) * msgs_per_turn
-
-    total = len(msgs)
-    # Verbatim tail = last K turns (2*K messages)
-    verbatim_tail = msgs[-tail_msg_count:] if tail_msg_count > 0 else []
-
-    # Summary window = the turns immediately before the tail (2*window_turns messages)
-    end = max(0, total - tail_msg_count)
-    start = max(0, end - window_msg_count)
-    to_summarize = msgs[start:end]
-
-    return to_summarize, verbatim_tail
-
-# --- end helper ---
+# --- History slicing helper moved to utils.py ---
 
 
 # --- Tail cleanup helper (optional, cosmetic) ---
@@ -1336,8 +2183,8 @@ def _strip_trailing_sources_block(text: str) -> str:
     """
     try:
         s = (text or "").rstrip()
-        # Match a final block that starts with 'Sources:' on its own line to the end of string
-        m = re.search(r"(?:\r?\n)Sources:\s*\r?\n[\s\S]*\Z", s)
+        # Handle both old Sources: and new <sources>Sources</sources>: patterns for backward compatibility
+        m = re.search(r"(?:\r?\n)(?:<sources>Sources</sources>|Sources|sources):\s*\r?\n[\s\S]*\Z", s)
         if m:
             s = s[:m.start()]
         return s.rstrip()
@@ -1379,7 +2226,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
       - db: QdrantDB-like (must support search_similar)
       - cache: dict-like for summaries
       - settings: Settings object
-      - get_client: callable() -> OpenAI client
       - list_tools: callable() -> list of tools
       - get_executor: callable(name) -> tool executor
       - get_web_context: callable(query, existing_context) -> list (optional)
@@ -1401,7 +2247,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     enable_query_rewrite = bool(deps.get("enable_query_rewrite", False))
     use_web_search = bool(deps.get("use_web_search", False))
     get_web_context_fn = deps.get("get_web_context") or (lambda q, existing: [])
-    get_client_fn = deps.get("get_client", get_client)
     list_tools_fn = deps.get("list_tools", list_tools)
     get_executor_fn = deps.get("get_executor", get_executor)
     log_origin = str(deps.get("log_origin", "pipeline"))
@@ -1423,6 +2268,61 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     message: str = (req or {}).get("message") or ""
     history: List[Dict[str, str]] = (req or {}).get("history") or []
     params: Dict[str, Any] = (req or {}).get("params") or {}
+
+    # --- Model registry keys (cost-only) ---
+    # Optional stable model aliases from params, used ONLY for accurate cost lookup.
+    _mk = lambda k: (str(params.get(k)).strip() or None) if params.get(k) is not None else None
+    _stage_model_keys = {s: _mk(f"{s}_model_key") for s in ("embedding", "rewrite", "summary", "rerank", "inference", "tools_synth")}
+    _stage_model_keys["tools_synth"] = _stage_model_keys.get("tools_synth") or _stage_model_keys.get("inference")
+
+    # Per-UI control for whether to append Sources: blocks and structured sources.
+    # Mode is set by frontends (e.g. chat.js, chat-embed.js) via params.mode.
+    try:
+        mode = str(params.get("mode", "")).strip().lower() or "chat"
+    except Exception:
+        mode = "chat"
+    try:
+        if mode == "embed":
+            display_sources = bool(getattr(settings_obj, "display_sources_for_embed", False))
+        else:
+            display_sources = bool(getattr(settings_obj, "display_sources_for_chat", True))
+    except Exception:
+        display_sources = True
+
+    # Optional per-request override
+    try:
+        if isinstance(params, dict) and "show_sources" in params:
+            _v = params.get("show_sources")
+            if _v is not None:
+                display_sources = bool(_v)
+    except Exception:
+        pass
+
+    # Per-turn control for emitting intermediate processing stages to SSE.
+    # Precedence: params.show_processing_steps (per turn) overrides settings_obj.show_processing_steps (global default).
+    try:
+        if "show_processing_steps" in params:
+            show_processing_steps = bool(params.get("show_processing_steps"))
+        else:
+            show_processing_steps = bool(getattr(settings_obj, "show_processing_steps", True))
+    except Exception:
+        show_processing_steps = True
+
+    # --- Stage resolver (Step 1): compute provider/model/kwargs per stage from existing settings ---
+    # NOTE: This is read-only in this step (no behavior change). We compute it early so later
+    # steps can pull from a single source instead of scattered getattr(...) calls.
+    try:
+        _prompt_input_hint: Any = [] if str(style) == "messages" else ""
+        stage_specs = resolve_stage_specs(
+            settings_obj=settings_obj,
+            params=params,
+            enable_tools=enable_tools,
+            prompt_input=_prompt_input_hint,
+            message=message,
+            list_tools_fn=list_tools_fn,
+        )
+    except Exception:
+        stage_specs = {}
 
     # UI-friendly summary of rewrite decision (always returned)
     rewrite_display: Dict[str, Any] = {
@@ -1463,7 +2363,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if enable_query_rewrite and history:
         try:
             logger.info("[PIPELINE] emit stage: Query Rewrite")
-            emit_stage(req_id, "Query Rewrite")
+            if show_processing_steps:
+                emit_stage(req_id, "Query Rewrite")
         except Exception:
             pass
         try:
@@ -1477,32 +2378,193 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 # Per-turn overrides for rewrite behavior (handle_chat passes these via params)
                 rw_tail, src_rw_tail = _get_param_int(params, ["rewrite_tail_turns"], getattr(settings_obj, "rewrite_tail_turns", 1), minimum=0)
                 rw_tail = int(rw_tail)
+                rw_summary, src_rw_summary = _get_param_int(params, ["rewrite_summary_turns"], getattr(settings_obj, "rewrite_summary_turns", 3), minimum=0)
                 thr, src_thr = _get_param_float(params, ["rewrite_confidence_threshold"], getattr(settings_obj, "rewrite_confidence_threshold", 0.6), minimum=0.0, maximum=0.99)
-                logger.debug("[REWRITE PARAMS] (%s) enable=%s tail_turns=%d (%s) threshold=%.2f (%s)", log_origin, True, rw_tail, src_rw_tail, thr, src_thr)
+                logger.debug("[REWRITE PARAMS] (%s) enable=%s tail_turns=%d (%s) summary_turns=%d (%s) threshold=%.2f (%s)", log_origin, True, rw_tail, src_rw_tail, rw_summary, src_rw_summary, thr, src_thr)
                 raw_tail = max(0, int(rw_tail))
-                window_turns = max(1, int(getattr(settings_obj, "chat_history_window_turns", 3)))
+                window_turns = max(0, int(rw_summary))
                 to_sum_rw, tail_rw = split_history_for_prompt(history, raw_tail, window_turns)
                 summary_rw = ""
-                if to_sum_rw:
+                # Skip pre-summary if rewrite_summary_turns is 0
+                if window_turns > 0 and to_sum_rw:
                     # Prefix tag with namespace if provided to isolate cache entries by conversation
                     _tag_rw = (f"{namespace}|rewrite" if namespace else "rewrite")
-                    summary_rw, _from_cache_rw, _u_rw = _summarize_messages_with_cache(
-                        to_sum_rw,
-                        cache,
-                        tag=_tag_rw,
-                        model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
-                        temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
-                        max_input_tokens=int(getattr(settings_obj, "summarizer_max_input_tokens", 512)),
-                        max_output_tokens=int(getattr(settings_obj, "summarizer_max_output_tokens", 128)),
-                        log_prefix=f"[REWRITE] {log_origin}"
-                    )
+                    sum_spec = (stage_specs or {}).get("summary") or {}
+                    try:
+                        # NOTE: This is the ONLY place where _summarize_messages_with_cache is called
+                        # Used exclusively for rewrite stage pre-summarization when rewrite_summary_turns > 0
+                        summary_rw, _from_cache_rw, _u_rw = _summarize_messages_with_cache(
+                            to_sum_rw,
+                            cache,
+                            tag=_tag_rw,
+                            model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
+                            temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
+                            max_input_tokens=int(getattr(settings_obj, "summarizer_max_input_tokens", 512)),
+                            max_output_tokens=int(getattr(settings_obj, "summarizer_max_output_tokens", 128)),
+                            log_prefix=f"[REWRITE] {log_origin}",
+                            stage_spec=sum_spec,
+                        )
+                    except LLMError as e:
+                        # Surface rate limits from the summarizer used during rewrite pre-summary.
+                        kind = getattr(e, "kind", "") or ""
+                        if kind == "rate_limit":
+                            try:
+                                _prov = str(getattr(e, "provider", "") or "").strip() or "the summarizer provider"
+                                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified summarizer model)"
+                                quota_msg = (
+                                    f"Our summarizer model (provider={_prov}, model={_model}) "
+                                    "is currently over its rate-limit or quota. I couldn't "
+                                    "prepare the query rewrite safely, so this turn has been "
+                                    "stopped. Please try again later or contact the "
+                                    "administrator to increase the quota."
+                                )
+                            except Exception:
+                                quota_msg = (
+                                    "The summarizer model is currently over its rate limit or quota. "
+                                    "Please try again later."
+                                )
+
+                            try:
+                                emit_stage(
+                                    req_id,
+                                    "Final Answer",
+                                    final=True,
+                                    finalContent=quota_msg,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                close_stream(req_id)
+                            except Exception:
+                                pass
+                            try:
+                                m.finalize_turn()
+                                turn_metrics, convo_snapshot = m.snapshot()
+                            except Exception:
+                                turn_metrics = m.turn
+                                convo_snapshot = {
+                                    "tokens": {
+                                        "embedding": 0,
+                                        "llm_input": 0,
+                                        "llm_output": 0,
+                                        "conversation_total": 0,
+                                    },
+                                    "cost": {"conversation_total": 0.0},
+                                }
+                            return {
+                                "answer": quota_msg,
+                                "sources": [],
+                                "turn_metrics": turn_metrics,
+                                "conversation_totals": convo_snapshot,
+                                "metrics": {"vectors_retrieved": 0},
+                                "tools_used": [],
+                                "rewrite_display": rewrite_display,
+                            }
+
+                        # Non-rate-limit LLMErrors fall back to the outer rewrite error handler.
+                        raise
+
+                    # Record rewrite pre-summary usage as part of the summary bucket (cache misses only).
+                    if (not _from_cache_rw) and _u_rw:
+                        _summary_model_used = str(
+                            (sum_spec or {}).get("model")
+                            or getattr(settings_obj, "summarizer_model", settings_obj.inference_model)
+                        )
+                        m.record_stage(
+                            "summary",
+                            model=_summary_model_used,
+                            usage=_u_rw,
+                            extra={"applied": False, "reason": "rewrite_pre_summary"},
+                            model_key=(_stage_model_keys or {}).get("summary"),
+                        )
                 if tail_rw or summary_rw:
-                    rw = rewrite_query(tail_rw, summary_rw, message, log_prefix=f"[REWRITE] {log_origin}")
+                    rw_spec = (stage_specs or {}).get("rewrite") or {}
+                    try:
+                        _pd = str((params or {}).get("prompt_domain") or "").strip()
+                    except Exception:
+                        _pd = ""
+                    if not _pd:
+                        try:
+                            _pd = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+                        except Exception:
+                            _pd = ""
+                    rw = rewrite_query(
+                        tail_rw,
+                        summary_rw,
+                        message,
+                        prompt_domain=_pd,
+                        log_prefix=f"[REWRITE] {log_origin}",
+                        stage_spec=rw_spec,
+                    )
                     threshold = float(thr)
                     usage_rw = rw.get("_usage") if isinstance(rw, dict) else None
+
+                    # If the rewrite step hit a provider rate limit (e.g., Gemini quota),
+                    # short-circuit the turn with a clear, user-visible message rather
+                    # than entering the Clarify path.
+                    if isinstance(rw, dict) and rw.get("reason") == "llm_rate_limit":
+                        try:
+                            _prov = str(rw.get("_provider") or "").strip() or "the rewrite provider"
+                            _model = str(rw.get("_model") or "").strip() or "(unspecified model)"
+                            quota_msg = (
+                                f"Our query rewrite model (provider={_prov}, model={_model}) "
+                                "is currently over its rate-limit or quota. I couldn't safely rewrite your "
+                                "question, so this turn has been stopped. Please try again later "
+                                "or contact the administrator to increase the quota."
+                            )
+                        except Exception:
+                            quota_msg = (
+                                "The rewrite model is currently over its rate limit or quota. "
+                                "Please try again later."
+                            )
+
+                        try:
+                            emit_stage(
+                                req_id,
+                                "Final Answer",
+                                final=True,
+                                finalContent=quota_msg,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            close_stream(req_id)
+                        except Exception:
+                            pass
+                        try:
+                            m.finalize_turn()
+                            turn_metrics, convo_snapshot = m.snapshot()
+                        except Exception:
+                            turn_metrics = m.turn
+                            convo_snapshot = {
+                                "tokens": {
+                                    "embedding": 0,
+                                    "llm_input": 0,
+                                    "llm_output": 0,
+                                    "conversation_total": 0,
+                                },
+                                "cost": {"conversation_total": 0.0},
+                            }
+                        return {
+                            "answer": quota_msg,
+                            "sources": [],
+                            "turn_metrics": turn_metrics,
+                            "conversation_totals": convo_snapshot,
+                            "metrics": {"vectors_retrieved": 0},
+                            "tools_used": [],
+                            "rewrite_display": rewrite_display,
+                        }
+
                     accepted = bool(rw.get("changed")) and (not rw.get("ambiguous")) and (float(rw.get("confidence", 0.0) or 0.0) >= threshold)
                     if usage_rw:
-                        m.record_stage("rewrite", model=getattr(settings_obj, "rewrite_model", settings_obj.inference_model), usage=usage_rw, extra={"applied": True, "reason": ("accepted" if accepted else "rejected")})
+                        _rw_m = str(((rw_spec or {}).get("model")) or getattr(settings_obj, "rewrite_model", settings_obj.inference_model))
+                        m.record_stage(
+                            "rewrite", 
+                            model=_rw_m, 
+                            usage=usage_rw, 
+                            extra={"applied": True, "reason": ("accepted" if accepted else "rejected")},
+                            model_key=(_stage_model_keys or {}).get("rewrite"),
+                            )
                     if accepted:
                         effective_query = rw.get("rewritten") or message
                         logger.info("[REWRITE] (%s) accepted >=%s", log_origin, threshold)
@@ -1638,13 +2700,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.info("[CLARIFY] (%s) reason=%s options=%s", log_origin, clarify_reason, clarify_options)
         # Emit a clarifier stage to SSE and immediately close this stream for the current turn
         try:
-            emit_stage(
-                req_id,
-                "Clarification Needed",
-                prompt=answer,
-                options=clarify_options,
-                reason=clarify_reason
-            )
+                emit_stage(
+                    req_id,
+                    "Clarification Needed",
+                    prompt=answer,
+                    options=clarify_options,
+                    reason=clarify_reason
+                )
         except Exception:
             pass
         try:
@@ -1668,22 +2730,90 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
 
     logger.debug("[RETRIEVE] (%s) query=%s top_k=%s thr=%.3f", log_origin, effective_query, top_k, score_threshold)
+    # Best-effort debug log of the embedding spec used for retrieval (provider/model/dimensions).
+    try:
+        _emb_spec_dbg = resolve_embedding_spec(settings_obj)
+        logger.debug("[EMB] (%s) db.last_embedding_usage=%r", log_origin, getattr(db, "last_embedding_usage", None))
+    except Exception:
+        pass
 
     # Stage: Retrieve Vectors
     try:
         logger.info("[PIPELINE] emit stage: Retrieve Vectors")
-        emit_stage(req_id, "Retrieve Vectors")
+        if show_processing_steps:
+            emit_stage(req_id, "Retrieve Vectors")
     except Exception:
         pass
     # --- Retrieve
-    results = db.search_similar(
-        query=effective_query,
-        limit=int(top_k),
-        score_threshold=float(score_threshold),
-        with_vectors=False,
-        with_payload=True,
-        exact=True,
-    )
+    try:
+        results = db.search_similar(
+            query=effective_query,
+            limit=int(top_k),
+            score_threshold=float(score_threshold),
+            with_vectors=False,
+            with_payload=True,
+            exact=True,
+        )
+    except LLMError as e:
+        # Surface embedding/provider rate limits that occur during retrieval.
+        kind = getattr(e, "kind", "") or ""
+        if kind == "rate_limit":
+            try:
+                _prov = str(getattr(e, "provider", "") or "").strip() or "the embedding provider"
+                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified embedding model)"
+                quota_msg = (
+                    f"Our embedding model (provider={_prov}, model={_model}) "
+                    "is currently over its rate-limit or quota. I couldn't "
+                    "retrieve context safely, so this turn has been stopped. "
+                    "Please try again later or contact the administrator to "
+                    "increase the quota."
+                )
+            except Exception:
+                quota_msg = (
+                    "The embedding model is currently over its rate limit or quota. "
+                    "Please try again later."
+                )
+
+            try:
+                emit_stage(
+                    req_id,
+                    "Final Answer",
+                    final=True,
+                    finalContent=quota_msg,
+                )
+            except Exception:
+                pass
+            try:
+                close_stream(req_id)
+            except Exception:
+                pass
+            try:
+                m.finalize_turn()
+                turn_metrics, convo_snapshot = m.snapshot()
+            except Exception:
+                turn_metrics = m.turn
+                convo_snapshot = {
+                    "tokens": {
+                        "embedding": 0,
+                        "llm_input": 0,
+                        "llm_output": 0,
+                        "conversation_total": 0,
+                    },
+                    "cost": {"conversation_total": 0.0},
+                }
+            return {
+                "answer": quota_msg,
+                "sources": [],
+                "turn_metrics": turn_metrics,
+                "conversation_totals": convo_snapshot,
+                "metrics": {"vectors_retrieved": 0},
+                "tools_used": [],
+                "rewrite_display": rewrite_display,
+            }
+
+        # Non-rate-limit LLMErrors fall back to the outer handler.
+        raise
+
     n = len(results) if results else 0
     logger.debug("[RETRIEVE] (%s) Qdrant returned %d", log_origin, n)
 
@@ -1696,7 +2826,22 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
     except Exception:
         embed_tokens = 0
-    m.record_stage("embedding", model=getattr(settings_obj, "embedding_model", "embedding"), pt=embed_tokens)
+    # Use the concrete embedding model name resolved from settings so that
+    # pricing in model_registry can be applied correctly for cost metrics.
+    try:
+        _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
+        _emb_model_for_cost = str(
+            (_emb_spec_cost.get("model") or "text-embedding-3-small")
+        )
+    except Exception:
+        _emb_model_for_cost = "text-embedding-3-small"
+
+    m.record_stage(
+        "embedding",
+        model=_emb_model_for_cost,
+        pt=embed_tokens,
+        model_key=(_stage_model_keys or {}).get("embedding"),
+    )
 
 # Stage: Rerank Retrieval Results
     
@@ -1772,13 +2917,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if need_rerank:
         try:
             logger.info("[PIPELINE] emit stage: Rerank Retrieval Results")
-            emit_stage(req_id, "Rerank Retrieval Results")
+            if show_processing_steps:
+                emit_stage(req_id, "Rerank Retrieval Results")
         except Exception:
             pass
 
     if not need_rerank:
         _dbg(f"[RERANK] {log_origin}", f"skipping rerank: {skip_reason}")
-        emit_stage(req_id, "Skipping Rerank")
+        if show_processing_steps:
+            emit_stage(req_id, "Skipping Rerank")
         reranked = results[:kept]
     else:
         _dbg(f"[RERANK] {log_origin}", f"applying rerank over {n} candidates; pool capped to {kept}")
@@ -1788,13 +2935,56 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         logger.debug("[RERANK] (%s) Pool size=%d of %d", log_origin, pool_n, n)
         try:
             cand_text = _candidate_texts(pool)
-            prompt_text = _make_rerank_prompt(effective_query, cand_text, int(getattr(settings_obj, "reranker_chunk_size", 600)))
+            try:
+                _pd_rr = str((params or {}).get("prompt_domain") or "").strip()
+            except Exception:
+                _pd_rr = ""
+            if not _pd_rr:
+                try:
+                    _pd_rr = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+                except Exception:
+                    _pd_rr = ""
+
+            chunk_size = int(getattr(settings_obj, "reranker_chunk_size", 600))
+            candidates_block = "\n".join([f"[{i}] {t[:chunk_size]}" for i, t in enumerate(cand_text or [])])
+
+            registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+            rr_spec = resolve_rerank_prompt(registry_path=registry_path, domain=_pd_rr)
+            rr_payload = render_full_payload(
+                rr_spec.full_payload_template,
+                variables={
+                    "query": effective_query,
+                    "candidates_block": candidates_block,
+                },
+            )
+            prompt_text = rr_spec.system_instruction + "\n\n" + rr_payload
             _dbg(f"[RERANK] {log_origin} prompt:", prompt_text)
-            resp_rerank = get_client_fn().responses.create(
-                model=getattr(settings_obj, "re_ranker_model", settings_obj.inference_model),
+
+            # Provider-aware rerank call via stage_specs (behavior-identical defaults).
+            _rs = (stage_specs or {}).get("rerank") or {}
+            _provider = str(_rs.get("provider") or "openai")
+            _model = str(
+                _rs.get("model")
+                or getattr(settings_obj, "re_ranker_model", settings_obj.inference_model)
+            )
+            _kwargs = dict(_rs.get("kwargs") or {})
+
+            logger.debug(
+                "[RERANK] (%s) provider=%s model=%s kwargs=%r",
+                log_origin,
+                _provider,
+                _model,
+                _kwargs,
+            )
+
+            # DEBUG: Log rerank stage details
+            logger.info(f"[DEBUG] RERANK stage: provider={_provider}, model={_model}")
+
+            resp_rerank = _responses_create(
+                provider=_provider,
+                model=_model,
                 input=prompt_text.strip(),
-                max_output_tokens=int(getattr(settings_obj, "re_ranker_max_output_tokens", 128)),
-                temperature=float(getattr(settings_obj, "re_ranker_temperature", 0.0)),
+                **_kwargs,
             )
             content = _extract_text_from_responses(resp_rerank).strip()
             _dbg(f"[RERANK] {log_origin} raw:", content)
@@ -1802,8 +2992,74 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             reranked = [pool[i] for i in order] or pool
             reranked = reranked[:kept]
 
-            usage_rr = _extract_usage_from_responses(resp_rerank) or {}
-            m.record_stage("rerank", model=getattr(settings_obj, "re_ranker_model", "rerank"), usage=usage_rr, extra={"candidates_reranked": n})
+            usage_rr = _extract_usage_from_responses(resp_rerank, provider=_provider) or {}
+            # Record rerank metrics against the actual model used (from stage_specs).
+            m.record_stage(
+                "rerank",
+                model=_model,
+                usage=usage_rr,
+                extra={"candidates_reranked": n},
+                model_key=(_stage_model_keys or {}).get("rerank"),
+            )
+        except LLMError as e:
+            # Surface provider rate limits with a clear final answer instead of silently
+            # falling back when the rerank model is over its rate limit or quota.
+            kind = getattr(e, "kind", "") or ""
+            if kind == "rate_limit":
+                try:
+                    _prov = str(getattr(e, "provider", "") or "").strip() or "the rerank provider"
+                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                    quota_msg = (
+                        f"Our rerank model (provider={_prov}, model={_model}) "
+                        "is currently over its rate-limit or quota. I couldn't rerank "
+                        "your results safely, so this turn has been stopped. Please try "
+                        "again later or contact the administrator to increase the quota."
+                    )
+                except Exception:
+                    quota_msg = (
+                        "The rerank model is currently over its rate limit or quota. "
+                        "Please try again later."
+                    )
+
+                try:
+                    emit_stage(
+                        req_id,
+                        "Final Answer",
+                        final=True,
+                        finalContent=quota_msg,
+                    )
+                except Exception:
+                    pass
+                try:
+                    close_stream(req_id)
+                except Exception:
+                    pass
+                try:
+                    m.finalize_turn()
+                    turn_metrics, convo_snapshot = m.snapshot()
+                except Exception:
+                    turn_metrics = m.turn
+                    convo_snapshot = {
+                        "tokens": {
+                            "embedding": 0,
+                            "llm_input": 0,
+                            "llm_output": 0,
+                            "conversation_total": 0,
+                        },
+                        "cost": {"conversation_total": 0.0},
+                    }
+                return {
+                    "answer": quota_msg,
+                    "sources": [],
+                    "turn_metrics": turn_metrics,
+                    "conversation_totals": convo_snapshot,
+                    "metrics": {"vectors_retrieved": 0},
+                    "tools_used": [],
+                    "rewrite_display": rewrite_display,
+                }
+
+            logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
+            reranked = results[:kept]
         except Exception as e:
             logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
             reranked = results[:kept]
@@ -1811,52 +3067,71 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 # Stage: History Summary
     try:
         logger.info("[PIPELINE] emit stage: Summarize Chat History")
-        emit_stage(req_id, "Summarize Chat History")
+        if show_processing_steps:
+            emit_stage(req_id, "Summarize Chat History")
     except Exception:
         pass
     # --- History summary slices
-    summary_text = ""
-    recent_block_str = ""
+    # Initialize simple history processor for consistent formatting
+    history_processor = SimpleHistoryProcessor(settings_obj)
+    
+    # Always use chunked history approach
+    chunk_manager = _get_chunk_manager_for_namespace(namespace, settings_obj)
     try:
-        raw_tail, src_raw_tail = _get_param_int(params, ["raw_tail_turns", "raw-tail_turns"], getattr(settings_obj, "raw_tail_turns", 2), minimum=0)
-        window_turns, src_window = _get_param_int(params, ["chat_history_window_turns", "chat_history_max_turns"], getattr(settings_obj, "chat_history_window_turns", 3), minimum=1)
-        to_summarize, verbatim_tail = split_history_for_prompt(history, raw_tail, window_turns)
-        if to_summarize:
-            sum_in, src_sum_in = _get_param_int(params, ["summarizer_max_input_tokens"], getattr(settings_obj, "summarizer_max_input_tokens", 512), minimum=0)
-            sum_out, src_sum_out = _get_param_int(params, ["summarizer_max_output_tokens"], getattr(settings_obj, "summarizer_max_output_tokens", 128), minimum=1)
-            logger.debug("[PARAMS] (%s) raw_tail_turns=%d (%s), chat_history_window_turns=%d (%s), summarizer_max_input_tokens=%d (%s), summarizer_max_output_tokens=%d (%s)",
-                         log_origin, raw_tail, src_raw_tail, window_turns, src_window, sum_in, src_sum_in, sum_out, src_sum_out)
-            # Prefix tag with namespace if provided to isolate cache entries by conversation
-            _tag_inf = (f"{namespace}|inference" if namespace else "inference")
-            summary_text, _from_cache_inf, _u_inf = _summarize_messages_with_cache(
-                to_summarize,
-                cache,
-                tag=_tag_inf,
-                model=getattr(settings_obj, "summarizer_model", settings_obj.inference_model),
-                temperature=float(getattr(settings_obj, "summarizer_temperature", 0.3)),
-                max_input_tokens=sum_in,
-                max_output_tokens=sum_out,
-                log_prefix=f"[SUMMARY] {log_origin}"
-            )
-            if not _from_cache_inf and _u_inf:
-                m.record_stage("summary", model=getattr(settings_obj, "summarizer_model", "summary"), usage=_u_inf, extra={"applied": True, "reason": f"prev {window_turns} turns (before last {raw_tail} turns)"})
-        if verbatim_tail:
-            tail_lines: List[str] = []
-            trimmed = 0
-            for msg in verbatim_tail:
-                role = msg.get("role", "user")
-                content = msg.get("content", "") or ""
-                if role == "assistant":
-                    cleaned = _strip_trailing_sources_block(content)
-                    if cleaned != content:
-                        trimmed += 1
-                    content = cleaned
-                tail_lines.append(f"{role}: {content}")
-            recent_block_str = "Recent conversation:\n" + "\n".join(tail_lines) + "\n\n"
-            if trimmed:
-                logger.debug("[TAIL] (%s) stripped trailing Sources: blocks from %d assistant messages", log_origin, trimmed)
-    except Exception as e:
-        logger.warning("[SUMMARY] (%s) failed; proceeding without summary/tail: %s", log_origin, e, exc_info=True)
+        _effective_chunk_turns, _chunk_turns_src = _get_param_int(
+            params,
+            ["raw_tail_turns"],
+            int(getattr(settings_obj, "raw_tail_turns", 10) or 10),
+        )
+    except Exception:
+        _effective_chunk_turns = int(getattr(settings_obj, "raw_tail_turns", 10) or 10)
+    try:
+        if int(_effective_chunk_turns or 0) > 0 and int(getattr(chunk_manager, "chunk_size_limit", 0) or 0) != int(_effective_chunk_turns):
+            chunk_manager.chunk_size_limit = int(_effective_chunk_turns)
+    except Exception:
+        pass
+    try:
+        logger.debug(f"[CHUNKED] Using chunked history for namespace '{namespace or ''}'")
+    except Exception:
+        pass
+    
+    # Check if we should use token-based chunks
+    enable_token_based = getattr(settings_obj, 'enable_token_based_chunks', False)
+    
+    # Check if we need to create a new chunk
+    should_create_chunk = False
+    if enable_token_based:
+        # Use token-based chunk detection
+        token_limit = getattr(settings_obj, 'raw_tail_token_limit', 4000)
+        current_chunk = chunk_manager.get_current_chunk_messages(history)
+        should_create_chunk = chunk_manager.should_create_new_chunk_by_tokens(current_chunk, token_limit)
+        if should_create_chunk:
+            logger.info(f"[CHUNKED] Creating new chunk for namespace '{namespace or ''}' (token limit reached: {token_limit})")
+    else:
+        # Use turn-based chunk detection
+        should_create_chunk = chunk_manager.should_create_new_chunk()
+        if should_create_chunk:
+            logger.info(f"[CHUNKED] Creating new chunk for namespace '{namespace or ''}' (turn limit reached)")
+    
+    if should_create_chunk:
+        success = chunk_manager.create_new_chunk(history, settings_obj, cache, namespace)
+        if not success:
+            logger.warning(f"[CHUNKED] Failed to create new chunk for namespace '{namespace or ''}', falling back to current chunk")
+    
+    # Get history for prompt from chunk manager
+    recent_conversation, summary_text = chunk_manager.get_history_for_prompt(history)
+    to_summarize = []  # No separate summarization in chunked mode
+    verbatim_tail = recent_conversation
+    
+    # Increment turn count for current chunk
+    chunk_manager.increment_turn_count()
+    
+    # Handle recent conversation formatting with SimpleHistoryProcessor for byte-level consistency
+    recent_block_str = ""
+    if verbatim_tail:
+        recent_block_str = history_processor.format_recent_conversation(
+            verbatim_tail, params, log_origin
+        )
 
     # Stage: Establish Web Context
     # --- (Optional) web context
@@ -1864,7 +3139,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     web_context: List[Dict[str, Any]] = []
     try:
         if use_web_search:
-            emit_stage(req_id, "Establish Web Context")
+            if show_processing_steps:
+                emit_stage(req_id, "Establish Web Context")
             web_context = get_web_context_fn(effective_query, results or [])
     except Exception as e:
         logger.debug("[WEB] (%s) ignored web context due to error: %s", log_origin, e)
@@ -1886,86 +3162,101 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
         for i, item in enumerate(context_items)
     ]
-    sources_section = "\nSources:\n" + _collapse_sources(indexed_for_collapse)
+    # Use <sources> marker for reliable stripping from history while maintaining clean user display
+    sources_section = "\n<sources>Sources</sources>:\n" + _collapse_sources(indexed_for_collapse)
     if web_context:
         web_notes = "\n" + "\n".join([f"[web-{i+1}] {item.get('url', 'Web result')}" for i, item in enumerate(web_context)])
         sources_section += web_notes
 
-    # Stage: Inference Prompt Build
-    # --- Prompt build
-    emit_stage(req_id, "Inference Prompt Build")
-    strict_rag_prompt = (
-        "You are a question-answering assistant for a retrieval-augmented system.\n"
-        "STRICT RULES:\n"
-        "1. Base your answer ONLY on information in the Context section (and Web search results if present).\n"
-        "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond that context.\n"
-        "3. If the context does not contain enough information to answer the question, reply exactly with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-        "4. If any context chunk has a citation like [1], [2], etc., retain it in your response.\n"
-        "5. Do not fabricate sources or facts.\n"
-        "6. If a source URL is available (shown in the final 'Sources' section), you may reference it by its tag like [1]."
-    )
-    system_prompt = strict_rag_prompt
+    # Stage: Inference Pass 1: Inference Context Assembly + Tools Output (if enabled and needed)
+    if show_processing_steps:
+        emit_stage(req_id, "Inference Context Assembly")
+    # Inference Prompt built from the Prompt Registry YAML file
+    # Resolve prompt domain for this turn. Infer
+    try:
+        prompt_domain = str((params or {}).get("prompt_domain") or "").strip()
+    except Exception:
+        prompt_domain = ""
+    if not prompt_domain:
+        try:
+            prompt_domain = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+        except Exception:
+            prompt_domain = ""
 
-    
+    # Require YAML registry to exist to prevent prompt drift across code paths.
+    registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+    spec = resolve_inference_prompt(registry_path=registry_path, domain=prompt_domain)
+
+    # Build the full inference prompt payload from YAML.
+    web_text = ""
+    try:
+        if web_context:
+            web_text = _format_web_context_as_text(web_context)
+    except Exception:
+        web_text = ""
+
+    payload = render_full_payload(
+        spec.full_payload_template,
+        variables={
+            "recent_block_str": (recent_block_str or "").strip(),
+            "summary_text": summary_text or "",
+            "context_text": context_text or "",
+            "web_context": web_text or "",
+            "message": message or "",
+        },
+    )
+
     prompt_input = None  # what we pass as `input` to Responses
     if style == "messages":
-        messages = [{"role": "system", "content": system_prompt}]
-        if summary_text:
-            messages.append({"role": "system", "content": f"Previous conversation summary: {summary_text}"})
-        if recent_block_str:
-            messages.append({"role": "system", "content": recent_block_str.strip()})
-        messages.append({"role": "system", "content": f"Context:\n{context_text}"})
-        if web_context:
-            web_text = "\n".join([f"{i+1}. {item.get('title','')}\n{item.get('snippet','')}\nURL: {item.get('url','')}" for i, item in enumerate(web_context, start=1)])
-            messages.append({"role": "system", "content": f"Web search results:\n{web_text}"})
-        messages.append({"role": "user", "content": message})
-
-        # Convert to a single prompt string unless tools are enabled
-        try:
-            from backend.utils.prompt_utils import convert_messages_to_prompt
-            prompt_str = convert_messages_to_prompt(messages)
-        except Exception:
-            # Fall back to naive join if util unavailable
-            prompt_str = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-        _dbg(f"[FULL PROMPT] {log_origin}", prompt_str)
-        prompt_input = prompt_str if not enable_tools else messages
+        prompt_input = [
+            {"role": "system", "content": spec.system_instruction},
+            {"role": "user", "content": payload},
+        ]
     else:
-        # flat string (stateless path)
-        summary_block = (f"Previous conversation summary: {summary_text}\n\n" if summary_text else "")
-        prompt_str = (
-            strict_rag_prompt + "\n\n"
-            + summary_block
-            + recent_block_str
-            + f"Context:\n{context_text}\n\n"
-            + f"Question: {message}\n"
-        )
-        
-        _dbg(f"[FULL INFERENCE PROMPT] {log_origin}", prompt_str)
+        prompt_str = spec.system_instruction + "\n\n" + payload
         prompt_input = [{"role": "user", "content": prompt_str}] if enable_tools else prompt_str
 
     # --- Inference decode params
     temperature = _pick(params, ["temperature", "inference_temperature", "INFERENCE_TEMPERATURE"], getattr(settings_obj, "inference_temperature", 0.7))
     max_out = _pick(params, ["max_output_tokens", "max_inference_output_tokens", "MAX_INFERENCE_OUTPUT_TOKENS"], getattr(settings_obj, "max_inference_output_tokens", 300))
     top_p = _pick(params, ["top_p", "inference_top_p", "INFERENCE_TOP_P"], getattr(settings_obj, "inference_top_p", None))
-
+    
     # Stage: Inference API call
     # --- Inference API call - Orchestrater stage with Tool Calls
     logger.info("[PIPELINE] emit stage: Generating Response")
-    emit_stage(req_id, "Generating Response")
-    _kwargs_inf: Dict[str, Any] = {
-        "model": getattr(settings_obj, "inference_model", "gpt-4o"),
-        "input": prompt_input,
-        "temperature": float(temperature),
-        "max_output_tokens": int(max_out),
-    }
+    if show_processing_steps:
+        emit_stage(req_id, "Generating Response")
+
+    # Resolve provider/model/kwargs for inference from stage_specs (no behavior change to temps/limits).
+    inf_spec = (stage_specs or {}).get("inference") or {}
+    _inf_provider = str(inf_spec.get("provider") or "openai")
+    _inf_model = str(inf_spec.get("model") or getattr(settings_obj, "inference_model", "gpt-4o"))
+    
+    # Auto-detect provider from model name to prevent mismatch
+    if _inf_provider == "openai" and (_inf_model.startswith("models/gemini") or _inf_model.startswith("gemini")):
+        _inf_provider = "gemini"
+        logger.debug(f"[INFERENCE AUTO-DETECT] Corrected provider to 'gemini' for model '{_inf_model}'")
+    
+    # DEBUG: Check provider/model mismatch
+    logger.debug(f"[INFERENCE DEBUG] provider={_inf_provider} model={_inf_model}")
+    if _inf_model.startswith("models/gemini") and _inf_provider == "openai":
+        logger.warning(f"[INFERENCE MISMATCH] Gemini model '{_inf_model}' with OpenAI provider '{_inf_provider}' - this will fail!")
+
+    _kwargs_inf: Dict[str, Any] = dict(inf_spec.get("kwargs") or {})
+
+    # Per-request overrides / additions (preserve existing semantics)
+    _kwargs_inf["input"] = prompt_input
+    _kwargs_inf["temperature"] = float(temperature)
+    _kwargs_inf["max_output_tokens"] = int(max_out)
     if top_p is not None:
         _kwargs_inf["top_p"] = float(top_p)
-    if getattr(settings_obj, "inference_reasoning_model", False):
-        _kwargs_inf["reasoning"] = {"effort": getattr(settings_obj, "inference_reasoning_effort", "low")}
-
+   
+   # Tools evaluation
     if enable_tools and isinstance(prompt_input, list):
         try:
+            logger.debug("[PIPELINE] Before Tools list function")
             tools = list_tools_fn()
+            logger.debug("[PIPELINE] After Tools list function %s ", tools[:100])
             # Avoid web_search unless explicitly requested in the message
             def _is_web_search_requested(latest_user_msg: str) -> bool:
                 if not latest_user_msg:
@@ -1979,33 +3270,131 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         except Exception:
             _kwargs_inf["tools"] = []
 
-    logger.info("[INFERENCE] %s: Attempting Responses API with Inference model: %s", log_origin, _kwargs_inf["model"])
-    #logger.debug("[%s] Call to Inference API with Prompt: %s", log_origin, _kwargs_inf["input"])
-    resp_inf = get_client_fn().responses.create(**_kwargs_inf)
-    _dbg(f"[INFERENCE] Inference 1 response {log_origin}", str(resp_inf))
-    usage_inf = _extract_usage_from_responses(resp_inf)
+    logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
+    
+    # DEBUG: Log inference stage details with endpoint info
+    try:
+        from backend.llm.llm_client import get_model_info
+        model_info = get_model_info(model_key=_inf_model)
+        endpoint = getattr(model_info, 'endpoint', 'unknown')
+        logger.info(f"[DEBUG] INFERENCE stage: provider={_inf_provider}, model={_inf_model}, endpoint={endpoint}")
+    except Exception as e:
+        logger.info(f"[DEBUG] INFERENCE stage: provider={_inf_provider}, model={_inf_model}, endpoint=unknown (error: {e})")
+    
+    resp_inf = None  # Initialize to fix variable scope issue
+    
+    try:
+        resp_inf = _responses_create(
+            provider=_inf_provider,
+            model=_inf_model,
+            **_kwargs_inf,
+        )
+        logger.debug(f"[INFERENCE] Response from _responses_create: type={type(resp_inf)}")
+    except Exception as e:
+        logger.error(f"[INFERENCE] _responses_create failed with {type(e).__name__}: {str(e)[:200]}...")
+        logger.debug(f"[INFERENCE] Exception details: type={type(e)} args={getattr(e, 'args', None)}")
+        
+        # Check if it's an LLMError (especially rate limit) and handle it appropriately
+        if isinstance(e, LLMError):
+            logger.error(f"[INFERENCE] Caught LLMError: kind={getattr(e, 'kind', 'None')} provider={getattr(e, 'provider', 'None')} message={str(e)[:100]}...")
+            kind = getattr(e, "kind", "") or ""
+            if kind == "rate_limit":
+                logger.info(f"[INFERENCE] Processing rate limit error for user")
+                try:
+                    _prov = str(getattr(e, "provider", "") or "").strip() or "the inference provider"
+                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                    quota_msg = (
+                        f"Our inference model (provider={_prov}, model={_model}) "
+                        "is currently over its rate-limit or quota. I couldn't "
+                        "generate a response safely, so this turn has been stopped. "
+                        "Please try again later or contact the administrator to "
+                        "increase the quota."
+                    )
+                except Exception:
+                    quota_msg = (
+                        "The inference model is currently over its rate limit or quota. "
+                        "Please try again later."
+                    )
+
+                logger.info(f"[INFERENCE] Created rate limit message: {quota_msg[:100]}...")
+                try:
+                    emit_stage(
+                        req_id,
+                        "Final Answer",
+                        final=True,
+                        finalContent=quota_msg,
+                    )
+                    logger.info(f"[INFERENCE] Rate limit message emitted successfully")
+                except Exception as emit_err:
+                    logger.error(f"[INFERENCE] Failed to emit rate limit message: {emit_err}")
+                    pass
+                try:
+                    close_stream(req_id)
+                except Exception:
+                    pass
+                try:
+                    m.finalize_turn()
+                    turn_metrics, convo_snapshot = m.snapshot()
+                except Exception:
+                    turn_metrics = m.turn
+                    convo_snapshot = {
+                        "tokens": {
+                            "embedding": 0,
+                            "llm_input": 0,
+                            "llm_output": 0,
+                            "conversation_total": 0,
+                        },
+                        "cost": {"conversation_total": 0.0},
+                    }
+                return {
+                    "answer": quota_msg,
+                    "sources": [],
+                    "turn_metrics": turn_metrics,
+                    "conversation_totals": convo_snapshot,
+                    "metrics": {"vectors_retrieved": 0},
+                    "tools_used": [],
+                    "rewrite_display": rewrite_display,
+                }
+        # Non-LLMError exceptions, re-raise to be handled by outer pipeline
+            raise
+
+    # Note: LLMError exceptions are now handled in the first except block above
+    try:
+        # Log the provider-native response object for debugging tool-calls behavior.
+        if resp_inf is not None:
+            _raw = getattr(resp_inf, "raw", resp_inf)
+            logger.debug("[INFERENCE] (%s) raw response: %r", log_origin, _raw)
+    except Exception:
+        pass
+    usage_inf = _extract_usage_from_responses(resp_inf, provider=_inf_provider) if resp_inf is not None else None
     # Record Inference Usage - 1st Inference (will determine if we need to call tool calls)
     if usage_inf:
-        m.record_stage("inference", model=_kwargs_inf["model"], usage=usage_inf)
+        m.record_stage(
+            "inference",
+            model=_inf_model,
+            usage=usage_inf,
+            model_key=(_stage_model_keys or {}).get("inference"),
+        )
 
     # Stage: Tool Calls
     # --- Tool Calls - Single pass thru all tools required
-    # Optional tool loop (bounded for safety)
 
     answer_override: str | None = None
     tool_answer_text: str = ""
     used_tools: List[str] = []
+    
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # NOTE: Single-pass tool execution.
-        # The previous bounded while-loop was ineffective because `resp_inf` is not updated in-loop,
-        # and we already synthesize once per turn. Keep behavior identical via a single pass.
-        emit_stage(req_id, "Tool Calls")
         try:
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
-            logger.debug("[TOOLS] Found %d tool calls", len(tool_calls))
+            
             if not tool_calls:
                 raise StopIteration  # handled by outer try/except; leaves answer_override=None
+
+            # Only show "Tool Calls" stage when actually executing tools
+            if show_processing_steps:
+                emit_stage(req_id, "Tool Calls")
 
             tool_outputs_list: List[Dict[str, Any]] = []
             chat_context = list(history or []) + [{"role": "user", "content": message}]
@@ -2021,15 +3410,21 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     return _tt + "\n\n" + "--- External Tool Results ---\n" + _tools
                 return "--- External Tool Results ---\n" + _tools
 
+            # DEBUG: Print extracted tool calls before execution
+
+            for i, call in enumerate(tool_calls):
+                name = call.get("name", "")
+                call_id = call.get("id", "")
+                args = call.get("args", {})
+
             for call in tool_calls:
                 name = call.get("name") or ""
                 call_id = call.get("id") or call.get("tool_call_id")
                 args = parse_tool_args(call.get("args"))
-                logger.debug("[TOOLS] Tool call: name=%s id=%s args=%s", name, call_id, args)
 
-                emit_stage(req_id, f"Calling Tool: {name}")
+                if show_processing_steps:
+                    emit_stage(req_id, f"Calling Tool: {name}")
                 executor = get_executor_fn(name)
-                logger.debug("[TOOLS] Found executor for %s: %s", name, "Yes" if executor else "No")
 
                 if not executor:
                     result_text: Any = f"Tool '{name}' is not available."
@@ -2051,7 +3446,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             ]
 
                         result_text = executor(args, chat_context, existing_context=exec_combined_context)
-                        logger.debug("[TOOLS] Executed tool %s returned: %r", name, result_text)
                     except Exception as ex:
                         result_text = f"Tool '{name}' failed: {ex}"
 
@@ -2067,10 +3461,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if name:
                     used_tools.append(name)
 
-                tool_outputs_list.append({"tool_call_id": call_id or "", "output": str(result_text)})
-                logger.debug("[TOOLS] Tool output added - ID: %s, Output: %r", call_id or "N/A", result_text)
-                logger.debug("[TOOLS] Current tool_outputs_list: %s", tool_outputs_list)
-
+                tool_outputs_list.append({"tool_call_id": call_id or "", "name": name, "output": str(result_text)})
+                
                 # Preserve first non-empty tool message for final fallback rendering
                 try:
                     txt = (result_text.strip() if isinstance(result_text, str) else str(result_text).strip())
@@ -2082,44 +3474,66 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not tool_outputs_list:
                 raise StopIteration
 
-            tools_text = "\n\n".join([str(t.get("output", "")) for t in tool_outputs_list]).strip()
-            logger.debug("[TOOLS] tools_text before synthesis: %r", tools_text)
+            tools_text = "\n\n".join(
+                [
+                    f"[SOURCE: TOOL - {t.get('name') or 'unknown'}]\n{str(t.get('output', ''))}"
+                    for t in tool_outputs_list
+                ]
+            ).strip()
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
 
-            synth_prompt = (
+            tools_synth_system_prompt = (
                 "You are a question-answering assistant for a retrieval-augmented system.\n"
                 "STRICT RULES:\n"
-                "1. Base your answer ONLY on information in the Context section and Tool results.\n"
-                "2. Do NOT use any outside knowledge.\n"
-                "3. If the context does not contain enough information to answer the question, reply exactly with: "
-                "I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-                "4. Retain any numeric citations like [1], [2] from the Context.\n"
-                "5. Do not fabricate sources or facts.\n\n"
-                f"Question:\n{message}\n\n"
-                + (f"Previous conversation summary:\n{summary_text}\n\n" if summary_text else "")
-                + (f"{recent_block_str}\n" if recent_block_str else "")
-                + f"Context:\n{context_text}\n\n"
-                + f"Tool results:\n{tools_text}\n\n"
-                + "Task:\n"
-                "- Produce the final answer to the Question.\n"
-                "- Use citations like [1], [2] when using Context.\n"
-                "- Integrate Tool results where relevant (do not invent citations for tool facts).\n"
-                "- Be concise.\n"
+                "1. Base your answer ONLY on information in the provided SOURCES (e.g., [SOURCE: KNOWLEDGE_BASE], [SOURCE: TOOL - ...]).\n"
+                "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond those SOURCES.\n"
+                "3. If the SOURCES still do not contain enough information to answer the question, reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
+                "4. If any Context chunk has a citation like [1], [2], etc., retain it in your response when you use that Context.\n"
+                "5. Do not fabricate sources or facts.\n"
+                "6. Integrate Tool results only when relevant, and do not invent citations for tool facts.\n"
+                "7. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. Do not invent citations for tool facts.\n"
+                "8. Be concise and answer the user’s question directly.\n"
+                "9. Do not add any extra text beyond what is in the Context or Tool results."
             )
 
-            _kwargs_synth = {
-                "model": getattr(settings_obj, "inference_tools_synthesis_model", _kwargs_inf.get("model")),
-                "input": synth_prompt,
-                "max_output_tokens": int(max_out),
-                "temperature": float(temperature),
-            }
+            synth_messages = _build_tools_synth_messages(
+                system_prompt=tools_synth_system_prompt,
+                summary_text=summary_text,
+                recent_block_str=recent_block_str,
+                context_text=context_text,
+                tool_outputs_list=tool_outputs_list,
+                used_tools=used_tools,
+                tools_text=tools_text,
+                message=message,
+            )
+
+            ts_spec = (stage_specs or {}).get("tools_synth") or {}
+            _ts_provider = str(ts_spec.get("provider") or "openai")
+            _ts_model = str(ts_spec.get("model"))
+
+            # NOTE: tools_synth is the *final synthesis* step. Ensure stage_specs['tools_synth']['kwargs']
+            # does NOT include tool-calling params (e.g., tools/tool_choice), otherwise the model may
+            # attempt additional tool calls during synthesis.
+            _kwargs_synth: Dict[str, Any] = dict(ts_spec.get("kwargs") or {})
+            _kwargs_synth["input"] = synth_messages
+            if "max_output_tokens" not in _kwargs_synth and max_out is not None:
+                _kwargs_synth["max_output_tokens"] = int(max_out)
+            if "temperature" not in _kwargs_synth:
+                _kwargs_synth["temperature"] = float(temperature)
 
             try:
-                emit_stage(req_id, "Generating Responses with Tools")
-                _dbg(f"[TOOLS] {log_origin} Final Inference with Tools Synthesis synth prompt : %s", str(synth_prompt))
-                resp_synth = get_client_fn().responses.create(**_kwargs_synth)
-                _dbg(f"INFERENCE 2 response {log_origin} Generating responses with tools", str(resp_synth))
+                if show_processing_steps:
+                    emit_stage(req_id, "Generating Responses with Tools")
+                
+                # DEBUG: Log tools synthesis stage details
+                logger.info(f"[DEBUG] TOOLS SYNTHESIS stage: provider={_ts_provider}, model={_ts_model}")
+                
+                resp_synth = _responses_create(
+                    provider=_ts_provider,
+                    model=_ts_model,
+                    **_kwargs_synth,
+                )
                 combined = _extract_text_from_responses(resp_synth).strip()
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
 
@@ -2127,11 +3541,81 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     answer_override = combined
                 else:
                     answer_override = _format_tool_fallback(tool_answer_text, tools_text)
+                # --- Cosmetic cleanup: do not leak tool citation label into user answer ---
+                try:
+                    answer_override = re.sub(r"\s*\[Tool results\]\s*", "", answer_override  or "").strip()
+                except Exception:
+                    pass
 
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined: %s  and answer_override %s ", combined, answer_override)
-                usage_synth = _extract_usage_from_responses(resp_synth)
+                usage_synth = _extract_usage_from_responses(resp_synth, provider=_ts_provider)
                 if usage_synth:
-                    m.record_stage("inference", model=_kwargs_synth["model"], usage=usage_synth)
+                    m.record_stage(
+                        "inference_tools_synth",
+                        model=_ts_model,
+                        usage=usage_synth,
+                        model_key=(_stage_model_keys or {}).get("tools_synth"),
+                    )
+            except LLMError as e:
+                kind = getattr(e, "kind", "") or ""
+                if kind == "rate_limit":
+                    try:
+                        _prov = str(getattr(e, "provider", "") or "").strip() or "the tools synthesis provider"
+                        _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
+                        quota_msg = (
+                            f"Our tools synthesis model (provider={_prov}, model={_model}) "
+                            "is currently over its rate-limit or quota. I couldn't "
+                            "combine the tool results safely, so this turn has been "
+                            "stopped. Please try again later or contact the "
+                            "administrator to increase the quota."
+                        )
+                    except Exception:
+                        quota_msg = (
+                            "The tools synthesis model is currently over its rate limit or quota. "
+                            "Please try again later."
+                        )
+
+                    try:
+                        emit_stage(
+                            req_id,
+                            "Final Answer",
+                            final=True,
+                            finalContent=quota_msg,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        close_stream(req_id)
+                    except Exception:
+                        pass
+                    try:
+                        m.finalize_turn()
+                        turn_metrics, convo_snapshot = m.snapshot()
+                    except Exception:
+                        turn_metrics = m.turn
+                        convo_snapshot = {
+                            "tokens": {
+                                "embedding": 0,
+                                "llm_input": 0,
+                                "llm_output": 0,
+                                "conversation_total": 0,
+                            },
+                            "cost": {"conversation_total": 0.0},
+                        }
+                    return {
+                        "answer": quota_msg,
+                        "sources": [],
+                        "turn_metrics": turn_metrics,
+                        "conversation_totals": convo_snapshot,
+                        "metrics": {"vectors_retrieved": 0},
+                        # Normalize directly from used_tools here because tools_out
+                        # is computed later in the happy path.
+                        "tools_used": sorted({t for t in used_tools if t}) if used_tools else [],
+                        "rewrite_display": rewrite_display,
+                    }
+
+                logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, e, exc_info=True)
+                answer_override = _format_tool_fallback(tool_answer_text, tools_text)
             except Exception as ex:
                 logger.debug("[TOOLS] (%s) tools synthesis failed: %s", log_origin, ex, exc_info=True)
                 answer_override = _format_tool_fallback(tool_answer_text, tools_text)
@@ -2145,14 +3629,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             logger.debug(f"[TOOLS] {log_origin} Falling back to tool answer text %s ", tool_answer_text[:100])
             answer_override = tool_answer_text
 
-    
+    # Normalize tool usage for downstream rendering/metadata
+    tools_out = sorted({t for t in used_tools if t}) if used_tools else []
+
     # Stage: Final answer and packing
     # Principle:
     # - If tools ran, `answer_override` is considered the authoritative final answer.
     # - If tools did not run, the first inference answer may carry NO_SUPPORTED_SOURCES and we suppress sources accordingly.
-
-    # Normalize tool usage for downstream rendering/metadata
-    tools_out = sorted({t for t in used_tools if t}) if used_tools else []
 
     # Default sources are the retrieved + optional web context
     sources = (reranked or []) + (web_context or [])
@@ -2180,7 +3663,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
         # If the model indicates no supported sources AND we did not use tools, suppress sources.
         if _ans_norm_end.endswith("NO_SUPPORTED_SOURCES"):
-            # Remove sentinel from final answer text
+            # Remove sentinel "NO_SUPPORTED_SOURCES" from final answer text. This is only used to remove sources from the final answer text.
             if "\n" in _ans_raw:
                 _ans_raw = _ans_raw.rsplit("\n", 1)[0].rstrip()
             else:
@@ -2201,6 +3684,59 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             sources = []
             sources_section = ""
 
+    # Filter Sources to ONLY those cited in the final answer.
+    # Supported citation formats:
+    # - Knowledge base chunks: [1], [2], ...
+    # - Web results: [web-1], [web-2], ...
+    try:
+        _ans_for_citations = str(answer or "")
+        cited_doc_idxs = set(int(x) for x in re.findall(r"\[(\d+)\]", _ans_for_citations))
+        cited_web_idxs = set(int(x) for x in re.findall(r"\[web-(\d+)\]", _ans_for_citations, flags=re.I))
+
+        if not cited_doc_idxs and not cited_web_idxs:
+            sources = []
+            sources_section = ""
+        else:
+            # KB sources: keep only cited indices from the prompt-provided context_items
+            if cited_doc_idxs:
+                filtered_indexed = [d for d in indexed_for_collapse if int(d.get("index") or 0) in cited_doc_idxs]
+                # Use <sources> marker for reliable stripping from history while maintaining clean user display
+                sources_section = "\n<sources>Sources</sources>:\n" + _collapse_sources(filtered_indexed) if filtered_indexed else ""
+                try:
+                    # Return only the cited reranked items (in original order)
+                    sources = [it for i, it in enumerate(context_items, start=1) if i in cited_doc_idxs]
+                except Exception:
+                    sources = []
+            else:
+                sources_section = ""
+                sources = []
+
+            # Web sources: include only cited web indices
+            if cited_web_idxs and web_context:
+                web_notes = "\n" + "\n".join(
+                    [
+                        f"[web-{i}] {web_context[i-1].get('url', 'Web result')}"
+                        for i in sorted(cited_web_idxs)
+                        if 1 <= i <= len(web_context)
+                    ]
+                )
+                # Use <sources> marker for reliable stripping from history while maintaining clean user display
+                sources_section = (sources_section or "\n<sources>Sources</sources>:\n") + web_notes
+                try:
+                    sources.extend([web_context[i-1] for i in sorted(cited_web_idxs) if 1 <= i <= len(web_context)])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Final per-UI toggle: hide sources for this response if configured.
+    # This runs after tool/sentinel logic so it can override visibility per mode.
+    try:
+        if not display_sources:
+            sources = []
+            sources_section = ""
+    except Exception:
+        pass
 
     try:
         m.finalize_turn()
@@ -2213,14 +3749,29 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
 
     legacy_metrics = {"vectors_retrieved": n}
+    
+    # Strip <sources> tags before returning to user for clean display
+    # History processing strips the entire sources block, but users see clean "Sources:" text
+    final_answer = answer.rstrip("\n") + sources_section
+    final_answer = re.sub(r"<sources>Sources</sources>:", "Sources:", final_answer)
+    
+    # Extract reasoning from the inference response if available
+    reasoning = None
+    try:
+        if resp_inf is not None:
+            reasoning = _extract_reasoning_from_responses(resp_inf)
+    except Exception:
+        reasoning = None
+    
     return {
-        "answer": (answer.rstrip("\n") + sources_section),
+        "answer": final_answer,
         "sources": sources,
         "turn_metrics": turn_metrics,
         "conversation_totals": convo_snapshot,
         "metrics": legacy_metrics,
         "tools_used": tools_out,
         "rewrite_display": rewrite_display,
+        "reasoning": reasoning,
     }
 
 # --- end orchestrator ---
@@ -2235,6 +3786,12 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     message: str = (payload or {}).get("message") or ""
     history: List[Dict[str, str]] = (payload or {}).get("history") or []
     params: Dict[str, Any] = (payload or {}).get("params") or {}
+
+    # Optional server-side Markdown -> sanitized HTML rendering (feature-flagged)
+    try:
+        _render_html = bool((params or {}).get("render_html", False))
+    except Exception:
+        _render_html = False
 
     if not message:
         return {"answer": "", "metrics": {"vectors_retrieved": 0}}
@@ -2272,6 +3829,16 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         enable_tools = bool(getattr(settings, "enable_tools", False))
 
+    # Determine web search toggle (request overrides settings)
+    try:
+        _req_web = (payload or {}).get("use_web_search")
+    except Exception:
+        _req_web = None
+    if _req_web is None:
+        use_web_search = bool((params or {}).get("use_web_search", getattr(settings, "use_web_search", False)))
+    else:
+        use_web_search = bool(_req_web)
+
     # --- Derive a namespace for cache keying (non-breaking) ---
     try:
         _uid = str((params or {}).get("user_id") or "").strip()
@@ -2302,14 +3869,13 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         "db": db,
         "cache": _SUMMARY_CACHE,
         "settings": settings,
-        "get_client": get_client,
         "list_tools": list_tools,
         "get_executor": get_executor,
-        "get_web_context": (lambda q, existing: []),  # stateless: no auto web
-        "style": "flat",
+        "get_web_context": (lambda q, existing: WebSearchClient().get_additional_context(q, existing)) if use_web_search else (lambda q, existing: []),
+        "style": "messages", # flat or messages (use messages for clear systemvs user roles separation)
         "enable_tools": bool(enable_tools),
         "enable_query_rewrite": bool(rewrite_enabled),
-        "use_web_search": False,
+        "use_web_search": bool(use_web_search),
         "log_origin": "handle_chat",
         "request_id": req_id,
         "namespace": _ns,
@@ -2333,7 +3899,7 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[PIPELINE] handle_chat running pipeline orchestrator")
 
         out = run_pipeline(deps=deps, req=req)
-        
+
         # Log cache size after the pipeline completes
         try:
             _post_bytes = 0
@@ -2347,18 +3913,89 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         logger.info("[PIPELINE] handle_chat returning orchestrator output: %s", out.get("answer", ""))
+
+        _answer_text = out.get("answer", "")
+        _answer_html = ""
+        logger.debug("RENDER HTML: %s", _render_html)
+        if _render_html:
+            try:
+                _answer_html = render_markdown_to_html(_answer_text)
+                logger.debug("RENDER HTML: %s", _answer_html)
+                logger.debug("RENDER SUCCESS: %s", "SUCCESS")
+            except Exception as e:
+                logger.debug("Exception in render_markdown_to_html: %s", str(e))
+                logger.debug("RENDER FAILED: %s", "FAILED")
+                _answer_html = ""
+
         # Ensure the final message is properly formatted for the frontend
-        emit_stage(req_id, "Final Answer", final=True, finalContent=out.get("answer", ""))
+        if _render_html and _answer_html:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=_answer_text, finalHtml=_answer_html)
+        else:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=_answer_text)
         # Send an explicit close message
         emit_stage(req_id, "Done", final=True)
-        return {
-            "answer": out.get("answer", ""),
-            "response": out.get("answer", ""),  # legacy compatibility for frontend expecting 'response'
+
+        # Base response: preserve existing shape/keys for compatibility.
+        resp: Dict[str, Any] = {
+            "answer": _answer_text,
+            "response": _answer_text,  # legacy compatibility for frontend expecting 'response'
             "metrics": out.get("metrics", {"vectors_retrieved": 0}),
             "turn_metrics": out.get("turn_metrics", {}),
             "conversation_totals": out.get("conversation_totals", {}),
             "tools_used": out.get("tools_used", []),
             "rewrite_display": out.get("rewrite_display", {}),
+        }
+
+        if _render_html and _answer_html:
+            resp["answer_html"] = _answer_html
+
+        # Non-breaking: only surface reasoning when present and non-empty.
+        try:
+            reasoning = out.get("reasoning") if isinstance(out, dict) else None
+        except Exception:
+            reasoning = None
+        if reasoning:
+            resp["reasoning"] = reasoning
+
+        return resp
+    except LLMError as e:
+        # Fatal provider/config/LLM failure (e.g., missing API key, unsupported provider).
+        # Surface a clear, structured error back to the caller while preserving
+        # the existing SSE shutdown behavior.
+        logger.error(
+            "[PIPELINE] handle_chat fatal LLMError: provider=%s model=%s kind=%s code=%s msg=%s",
+            getattr(e, "provider", None),
+            getattr(e, "model", None),
+            getattr(e, "kind", None),
+            getattr(e, "code", None),
+            str(e),
+            exc_info=True,
+        )
+        err_text = str(e) or "LLM error during inference."
+        try:
+            emit_stage(req_id, "Final Answer", final=True, finalContent=err_text)
+        except Exception:
+            pass
+        try:
+            emit_stage(req_id, "Done", final=True)
+        except Exception:
+            pass
+        try:
+            close_stream(req_id)
+        except Exception:
+            pass
+        return {
+            "answer": err_text,
+            "response": err_text,
+            "metrics": {"vectors_retrieved": 0},
+            "error": {
+                "stage": "inference",
+                "provider": getattr(e, "provider", None),
+                "model": getattr(e, "model", None),
+                "kind": getattr(e, "kind", None),
+                "code": getattr(e, "code", None),
+                "message": str(e) or "LLM error during inference.",
+            },
         }
     except Exception as e:
         logger.exception("[PIPELINE] handle_chat orchestrator failed: %s", e)

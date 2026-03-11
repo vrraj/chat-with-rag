@@ -24,18 +24,35 @@ import os
 import sys
 from typing import Iterable, Dict, Any
 
-# Import Qdrant configuration from backend/core/config.py
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from backend.core.config import settings
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except ImportError:
+    pass
+
+# Import only Qdrant configuration to avoid API key validation
+try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from backend.core.config import settings
+    DEFAULT_HOST = settings.qdrant_host
+    DEFAULT_PORT = settings.qdrant_port
+    DEFAULT_COLLECTION = settings.collection_name
+    DEFAULT_VECTOR_FALLBACK = getattr(settings, "vector_size", 1536)
+except (ValueError, ImportError) as e:
+    # Fallback defaults if config validation fails
+    if "validation error" in str(e).lower() and "api key" in str(e).lower():
+        # Suppress API key validation warnings during seeding
+        pass
+    else:
+        print(f"Warning: Could not load config ({e}), using defaults")
+    DEFAULT_HOST = "localhost"
+    DEFAULT_PORT = 6333
+    DEFAULT_COLLECTION = "document_index"
+    DEFAULT_VECTOR_FALLBACK = 1536
 
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
-
-# ---- Defaults (mirror backend/core/config.py) ----
-DEFAULT_HOST = settings.qdrant_host
-DEFAULT_PORT = settings.qdrant_port
-DEFAULT_COLLECTION = settings.collection_name
-DEFAULT_VECTOR_FALLBACK = getattr(settings, "vector_size", 1536)
 DEFAULT_DISTANCE = models.Distance.COSINE
 DEFAULT_BATCH = 256
 DEFAULT_PATH = "data/docs-index-seed.jsonl"
@@ -65,7 +82,7 @@ def qdrant_is_reachable(client: QdrantClient) -> bool:
 
 
 def main() -> None:
-    print(f"Using Qdrant config from backend/core/config.py ({settings.qdrant_host}:{settings.qdrant_port}, collection={settings.collection_name})")
+    print(f"Using Qdrant config ({DEFAULT_HOST}:{DEFAULT_PORT}, collection={DEFAULT_COLLECTION})")
     print()
     print("This project includes sample data derived from Wikipedia.")
     print("The content is provided under the Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0).")

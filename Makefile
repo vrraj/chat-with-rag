@@ -1,4 +1,4 @@
-.PHONY: start stop start-hybrid stop-hybrid bg-start-chat start-debug start-docker start-qdrant stop-qdrant qdrant-logs qdrant-restart qdrant-status qdrant-collections qdrant-info qdrant-info-json qdrant-indexes smoke_api
+.PHONY: start stop rebuild start-hybrid stop-hybrid bg-start-chat start-debug start-docker start-qdrant stop-qdrant qdrant-logs qdrant-restart qdrant-status qdrant-collections qdrant-info qdrant-info-json qdrant-indexes smoke_api
 
 # Qdrant endpoint configuration. Prefer environment overrides; else fall back to backend Settings; else sensible defaults
 ifndef QDRANT_HOST	
@@ -10,9 +10,9 @@ endif
 UNAME := $(shell uname)
 
 # Start the full application stack using Docker Compose
-# - Qdrant database runs in a Docker container
-# - Web application runs in a container with local code bind-mounted
-# - Use run.py  in docker-compose.yml for auto app code reload, and start.py to run in production
+# Qdrant database runs in a Docker container
+# Web application runs in a container with local code bind-mounted
+# Use run.py  in docker-compose.yml for auto app code reload, and start.py to run in production
 # Prerequisites: Docker and Docker Compose must be installed
 # Usage: make start
 start:
@@ -50,13 +50,17 @@ start:
 
 	@echo "Qdrant and Chat application started successfully."
 	@echo "Access the application at: http://localhost:8000"
-	echo "Qdrant and Chat application started successfully."
+	@echo "Qdrant and Chat application started successfully."
 
 # Stop the application - all Docker containers
 stop:
 	echo "Stopping Qdrant and Chat application..."
 	docker compose down
 	echo "Qdrant and Chat application stopped successfully."
+
+# Rebuild and start the application with latest code changes
+rebuild:
+	docker compose up -d --build
 
 # Alternative development mode (hybrid)
 # - Qdrant database runs in a Docker container
@@ -243,6 +247,8 @@ kill-uvicorn:
 seed:
 	@echo "Seeding Qdrant with sample data..."
 	@. venv/bin/activate && python scripts/seed_qdrant.py
+	@echo "Seeding Gemini collection..."
+	@. venv/bin/activate && python scripts/seed_qdrant_gemini.py
 	@echo " Qdrant seed completed successfully."
 
 # Run OpenAI API smoke test (verifies API key, auth, and connectivity)

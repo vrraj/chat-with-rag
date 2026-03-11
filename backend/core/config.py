@@ -1,8 +1,8 @@
 """Configuration settings for the application."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -115,47 +115,95 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 1) Core API & frontend exposure
     # -------------------------------------------------------------------------
-    openai_api_key: str
+    openai_api_key: Optional[str] = None
     openai_api_base: str = "https://api.openai.com/v1"  # for future use
+    gemini_api_key: Optional[str] = None
+    gemini_api_base: str = "https://generativelanguage.googleapis.com/v1beta/openai/"  # for future use
+
     frontend: FrontendConfig = FrontendConfig()  # Configuration for frontend forms and document indexing (HTML/PDF/MediaWiki)
+
+    @model_validator(mode='after')
+    def validate_at_least_one_api_key(self):
+        if not self.openai_api_key and not self.gemini_api_key:
+            raise ValueError("At least one API key (OPENAI_API_KEY or GEMINI_API_KEY) must be provided")
+        return self
 
     # -------------------------------------------------------------------------
     # 2) Vector search & retrieval (Qdrant)
     # -------------------------------------------------------------------------
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    collection_name: str = "document_index"  # collection name
-
     # Vector/search shape & retrieval knobs
-    vector_size: int = 1536  # use with text-embedding-3-small
+    # collection_name and embedding_model_key are computed dynamically based on active_domain
     top_k: int = 8  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
 
+
     # -------------------------------------------------------------------------
     # 3) Embeddings
     # -------------------------------------------------------------------------
-    # embedding_model: str = "text-embedding-3-large"  # use for higher-quality embeddings
-    # vector_size: int = 3072  # use with text-embedding-3-large
-    # collection_name: str = "docs_v3_large"  # collection name for large embedding model
+    # Domain-based embedding configuration
+    # collection_name and embedding_model_key are computed dynamically based on active_domain
+    # Whether to L2-normalize Gemini embeddings client-side (adapter/native paths).
+    # This should be applied consistently for both indexing and query embeddings.
+    gemini_embedding_normalize: bool = True
+    
+    # Gemini embedding task types for different use cases
+    gemini_embed_type_documents: str = "RETRIEVAL_DOCUMENT"  # For indexing documents
+    gemini_embed_type_query: str = "RETRIEVAL_QUERY"  # For user search queries
 
-    embedding_model: str = "text-embedding-3-small"  # use for faster, lower-cost embeddings
-
-    # Costs (USD per 1,000,000 tokens)
-    embedding_cost_per_MM_tokens: float = 0.02
-
-    # Cost basis tokens
+    # Cost basis for per‑MM pricing
     cost_basis_tokens: int = 1_000_000
+
+    # Embedding batch sizes (number of chunks sent in a single embeddings.create call)
+    embedding_batch_size_default: int = 30
+    embedding_batch_size_openai: int = 30
+    embedding_batch_size_gemini: int = 30
+
+    # -------------------------------------------------------------------------
+    # 3A) Domain-based embedding configuration
+    # -------------------------------------------------------------------------
+    # Domain → (collection_name, embedding_model_key) mapping
+    # Each domain has its own collection and embedding model
+    DOMAIN_EMBEDDING_CONFIG: ClassVar[Dict[str, Dict[str, str]]] = {
+        "default": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small"
+        },
+        "mountains": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small"
+        },
+        "oceans": {
+            "collection_name": "document_index_gemini",
+            "embedding_model_key": "gemini:native-embed"
+        }
+    }
+    
+    # Active domain selection. Sets the collection_name and embedding_model_key
+    active_domain: str = "mountains"
+
+    # -------------------------------------------------------------------------
+    # 3B) LLM model profiles (registry keys)
+    # -------------------------------------------------------------------------
+    # Embeddings profile key (must match model_registry)
+    # Examples: "openai:fast", "openai:best", "gemini:fast", "openai:embed_small".
+    # Stage model profile keys
+    # embedding model key is used for embeddings and the vector size is computed dynamically based on it below as @property
+    rewrite_model_key: str = "openai:gpt-4o-mini"
+    rerank_model_key: str = "openai:gpt-4o-mini"
+    summarizer_model_key: str = "openai:gpt-4o-mini"
+
+    inference_model_key: str = "openai:gpt-4o-mini"
+
+    # If unset, tools synthesis inherits the inference model_key.
+    tools_synth_model_key: str | None = None
 
     # -------------------------------------------------------------------------
     # 4) Re-ranker
     # -------------------------------------------------------------------------
-    re_ranker_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
-
-    # Costs (USD per 1,000,000 tokens)
-    re_ranker_cost_per_MM_tokens_input: float = 0.15
-    re_ranker_cost_per_MM_tokens_output: float = 0.60
-    re_ranker_cost_per_MM_tokens_cached_input: float = 0.075
+    re_ranker_model: str = "openai:gpt-4o-mini"  # use for faster, lower-cost inference
 
     re_ranker_max_output_tokens: int = 50
     re_ranker_input_rows: int = 5
@@ -172,21 +220,24 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 5) Summarizer
     # -------------------------------------------------------------------------
-    summarizer_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
-
-    # Costs (USD per 1,000,000 tokens)
-    summarizer_max_input_tokens: int = 400  # set an int to limit input tokens
-    summarizer_max_output_tokens: int = 200  # set an int to limit output tokens
-    summarizer_cost_per_MM_tokens_input: float = 0.15
-    summarizer_cost_per_MM_tokens_output: float = 0.60
-    summarizer_cost_per_MM_tokens_cached_input: float = 0.075
+    summarizer_model: str = "openai:gpt-4o-mini"  # use for faster, lower-cost inference
+    summarizer_max_input_tokens: int = 1000  # set an int to limit input tokens
+    summarizer_max_output_tokens: int = 300  # set an int to limit output tokens
     summarizer_temperature: float = 0.3
 
     # -------------------------------------------------------------------------
     # 6) Inference model
     # -------------------------------------------------------------------------
-    inference_model: str = "gpt-4o-mini"  # use for faster, lower-cost inference
-    inference_tools_synthesis_model: str = "gpt-4o-mini" # 
+    inference_model: str = "openai:gpt-4o-mini"  # use for faster, lower-cost inference
+    inference_tools_synthesis_model: str = "openai:gpt-4o-mini" # Deprecated: Inference with Tool Synthsis will always use inference model to maintain consistency at inference stages 
+
+    # -------------------------------------------------------------------------
+    # 6B) Prompt Registry (YAML)
+    # -------------------------------------------------------------------------
+    # Required: path to the prompt registry YAML for inference stage-1 prompt construction.
+    inference_prompt_registry_path: str = "prompts/prompt_registry.yaml"
+    # Optional per-request override: params["prompt_domain"]. When unset, fall back to this default.
+    prompt_domain_default: str = ""
 
     inference_temperature: float = 0.4  # Decoding temperature
     inference_top_p: float = 0.7  # Nucleus sampling top-p
@@ -194,18 +245,17 @@ class Settings(BaseSettings):
     # --- Inference context control --- Number of reranked rows (retrieved) to include in inference prompt as input context
     inference_context_rows: int = 4
 
-    # Costs (USD per 1,000,000 tokens)
-    inference_cost_per_MM_tokens_input: float = 0.15
-    inference_cost_per_MM_tokens_output: float = 0.60
-    inference_cost_per_MM_tokens_cached_input: float = 0.075
+    max_inference_output_tokens: int = 500
+    tools_synth_max_output_tokens: int = 600
 
-    max_inference_output_tokens: int = 300
     # to include reasoning for the inference_model, set the inference_reasoning_effort and inference_reasoning_model
     # inference_reasoning_effort: "low" | "medium" | "high"
     # inference_reasoning_model: True to use reasoning
 
     inference_reasoning_effort: str = "low"
     inference_reasoning_model: bool = False
+
+    debug_thoughts: bool = True # Gemini specific flag to display reasoning - the llm-adapter will ignore this for other models
 
     enable_tools: bool = True  # Enable agent-style tool calls (UI can override per-turn)
     max_tool_passes: int = 2  # Maximum number of tool loops to be called from LLM generated output for a single turn. This it to prevent runaway tool calls
@@ -224,42 +274,70 @@ class Settings(BaseSettings):
     max_history_tokens: int = 4000  # Max tokens of prior chat retained when building context
 
     # Conversation context strategy:
-    # - chat_history_window_turns: summarized older turns
-    # - raw_tail_turns: most-recent turns kept verbatim
-    chat_history_window_turns: int = 2
-    raw_tail_turns: int = 2
+    # - raw_tail_turns: most-recent turns kept verbatim for chunked history
+    raw_tail_turns: int = 10
 
     # -------------------------------------------------------------------------
-    # 8) Query rewrite (for retrieval)
+    # Chunked History Management (DEFAULT)
     # -------------------------------------------------------------------------
-    enable_query_rewrite: bool = True  # Enable rewrite stage (falls back to original query when disabled)
+    # Model to use for summary updates (can be different from main summarizer)
+    summary_update_model: str = ""  # Empty = use summarizer_model
+    
+    # Enable token-based chunks (future feature)
+    enable_token_based_chunks: bool = False
+    raw_tail_token_limit: int = 4000  # Tokens per chunk when token-based is enabled
 
-    rewrite_model: str = "gpt-4o-mini"
-    rewrite_temperature: float = 0.3
+    enable_query_rewrite: bool = True
 
-    # Costs (USD per 1,000,000 tokens)
-    rewrite_cost_per_MM_tokens_input: float = 0.15
-    rewrite_cost_per_MM_tokens_output: float = 0.60
-    rewrite_cost_per_MM_tokens_cached_input: float = 0.075
-
-    # Require sufficient confidence to accept a rewrite; otherwise fall back to original
-    rewrite_confidence_threshold: float = 0.65
-
-    # Keep rewrite outputs tiny and structured (JSON)
-    rewrite_max_output_tokens: int = 80
+    # Default toggle for automatic web search to populate WEB SEARCH RESULTS / web_context.
+    # Request-level flags can override this per turn.
+    use_web_search: bool = False
 
     # How many most‑recent turns the rewriter sees (can differ from raw_tail_turns if desired)
-    rewrite_tail_turns: int = 2
+    rewrite_tail_turns: int = 3
+
+    # How many older turns to summarize before the rewrite tail (0 = no pre-summary)
+    rewrite_summary_turns: int = 0
+
+    # Minimum confidence (0–1) required before a rewritten query replaces the user’s original
+    rewrite_confidence_threshold: float = 0.7
 
     # Cache rewrites for a short time to avoid repeat calls on identical context
     rewrite_cache_ttl_s: int = 300
 
-    # Summary cache idle TTL (seconds) - will evict per-namespace summaries that haven't been used in this long
-    summary_cache_idle_ttl_seconds: int = 1800
+    # Summary cache idle TTL (seconds)    # Optional: idle eviction TTL for summary cache (seconds). Defaults to 3600 if unset.
+    summary_cache_idle_ttl_seconds: int | None = 3600
+
+    # --- UI display toggles ---
+    # Whether to append the Sources: block + structured sources for the main chat UI.
+    display_sources_for_chat: bool = True
+    # Whether to append the Sources: block + structured sources for embed-chat.
+    # Default False so embeds can opt out of inline sources while sharing the same backend.
+    display_sources_for_embed: bool = False
 
     # -------------------------------------------------------------------------
-    # 9) Chunking & ingestion (shared defaults + per-source toggles)
+    # 9) Initial origin/host-based protection for critical FastAPI routes
     # -------------------------------------------------------------------------
+    # Comma-separated list of allowed Origin header values.
+    # Example for dev + prod:
+    #   "http://localhost:8000,https://chat-with-rag.com"
+    # When empty/None, origin-based checks are disabled.
+    allowed_origins: Optional[str] = "http://localhost:8000,http://chat-with-rag:8000"
+
+    # Comma-separated list of allowed hosts (hostname or hostname:port) for
+    # requests hitting critical API routes such as /chat and ingestion.
+    # Example:
+    #   "localhost:8000,chat-with-rag.com"
+    # When empty/None, host-based checks are disabled.
+    allowed_hosts: Optional[str] = "localhost:8000,chat-with-rag:8000"
+
+    # -------------------------------------------------------------------------
+    # 10) Chunking & ingestion (shared defaults + per-source toggles)
+    # -------------------------------------------------------------------------
+    # NOTE: When setting chunk sizes, consider provider limits:
+    # - OpenAI: Max 8,191 tokens per text, variable tokens per request (check your tier)
+    # - Gemini: Max 2,048 tokens per text (8,000 on newer models), 20,000 tokens per request
+    # Refer to provider documentation for current limits and pricing tiers.
     max_urls: int = 10 # legacy - remove when refactoring
     default_chunk_size: int = 500
     default_chunk_overlap: int = 100
@@ -328,20 +406,72 @@ class Settings(BaseSettings):
     debug_verbose: bool = False  # gates noisy logs (prompts, raw outputs)
     debug_log_keys: bool = False  # gates any API key suffix logging
     debug_log_truncate_chars: int = 200  # max chars to print when debug_verbose is True
+    show_processing_steps: bool = True  # controls whether intermediate SSE processing stages are emitted
 
     # -------------------------------------------------------------------------
-    # 12) Pydantic settings model config (preserved)
+    # 12) Computed Properties
     # -------------------------------------------------------------------------
-    # Shared directory for PDF files that can be referenced by filename only
-    # shared_pdf_directory: str = Field(env="SHARED_PDF_DIRECTORY", default="/tmp/shared_pdfs")
+    @property
+    def collection_name(self) -> str:
+        """Collection name from active domain configuration"""
+        return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["collection_name"]
 
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "case_sensitive": False,
-        # Allow extra env vars (e.g., feature flags) without validation errors.
-        "extra": "ignore",
-    }
+    @property
+    def embedding_model_key(self) -> str:
+        """Embedding model key from active domain configuration"""
+        return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain]["embedding_model_key"]
+
+    @property
+    def vector_size(self) -> int:
+        """Vector size from embedding_model_key registry capabilities"""
+        from backend.llm.llm_client import get_model_info
+        
+        model_info = get_model_info(model_key=self.embedding_model_key)
+        dimensions = model_info.capabilities.get("dimensions")
+        return int(dimensions)
+
+def get_assistant_role(settings_obj: Any, params: Dict[str, Any] | None = None) -> str:
+    """
+    Get assistant role for current inference model from model registry.
+    
+    Considers per-request overrides from params["model_keys"]["inference"].
+    Falls back to settings_obj.inference_model_key, then "assistant".
+    
+    Args:
+        settings_obj: Settings instance with default model configuration
+        params: Optional per-request parameters that may contain model overrides
+        
+    Returns:
+        Assistant role string (e.g., "assistant" for OpenAI, "model" for Gemini)
+    """
+    try:
+        from backend.llm.llm_client import get_model_info
+        
+        # Check per-request override first
+        if params and params.get("model_keys", {}).get("inference"):
+            model_key = params["model_keys"]["inference"]
+        else:
+            model_key = getattr(settings_obj, "inference_model_key", "openai:gpt-4o-mini")
+            
+        model_info = get_model_info(model_key=model_key)
+        return model_info.capabilities.get("assistant_role", "assistant")
+    except Exception:
+        return "assistant"
+
+
+# -------------------------------------------------------------------------
+# 13) Pydantic settings model config (preserved)
+# -------------------------------------------------------------------------
+# Shared directory for PDF files that can be referenced by filename only
+# shared_pdf_directory: str = Field(env="SHARED_PDF_DIRECTORY", default="/tmp/shared_pdfs")
+
+model_config = {
+    "env_file": ".env",
+    "env_file_encoding": "utf-8",
+    "case_sensitive": False,
+    # Allow extra env vars (e.g., feature flags) without validation errors.
+    "extra": "ignore",
+}
 
 
 # Initialize settings after all classes are defined

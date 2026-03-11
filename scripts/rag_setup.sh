@@ -7,10 +7,9 @@ set -euo pipefail
 # What this script does:
 #   1) Validates basic prerequisites (git, python3, make, docker, compose)
 #   2) Ensures a local .env exists (copies from .env.example if present)
-#   3) Prompts for OPENAI_API_KEY if missing and writes it into .env (local only)
-#   4) Starts infrastructure + app via `make start`
-#   5) Creates a Python venv (./venv), installs deps, and seeds sample data
-#   6) (Optional) Runs an OpenAI API smoke test (auth check) via scripts/api_smoke_test.py
+#   3) Starts infrastructure + app via `make start`
+#   4) Creates a Python venv (./venv), installs deps, and seeds sample data
+#   5) (Optional) Runs API smoke tests (auth check) via scripts/api_smoke_test_*.py
 #
 # How to run:
 #   From the repo root:
@@ -18,9 +17,10 @@ set -euo pipefail
 #
 # Notes:
 #   - This script is intentionally explicit (no curl|bash).
-#   - The API key is stored in .env. Treat it like a password. Do not commit it.
-#   - If your environment already exports OPENAI_API_KEY, your app may prefer it
-#     over .env (depending on your config). This script only writes .env.
+#   - After setup completes, add your API keys to .env (OPENAI_API_KEY and/or GEMINI_API_KEY)
+#   - Treat API keys like passwords. Do not commit them.
+#   - If your environment already exports OPENAI_API_KEY or GEMINI_API_KEY, your app may prefer them
+#     over .env (depending on your config).
 # -----------------------------------------------------------------------------
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,41 +77,7 @@ else
   echo "ℹ️  .env already exists"
 fi
 
-# If OPENAI_API_KEY is missing or empty in .env, prompt and write it.
-# (We don't print it back to the console.)
-if ! grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; then
-  echo
-  echo "🔑 OPENAI_API_KEY not found in .env"
-
-  while true; do
-    read -r -s -p "Enter your OpenAI API key (input hidden) and press Enter: " OPENAI_API_KEY
-    echo
-
-    # Re-prompt on empty input
-    if [ -z "${OPENAI_API_KEY}" ]; then
-      echo "⚠️  API key cannot be empty. Please paste your OpenAI API key." >&2
-      continue
-    fi
-
-    # Reject whitespace (most common paste mistake)
-    if [[ "$OPENAI_API_KEY" =~ [[:space:]] ]]; then
-      echo "❌ Invalid OPENAI_API_KEY (contains spaces). Please paste the full key." >&2
-      continue
-    fi
-
-    break
-  done
-
-  # Remove any existing OPENAI_API_KEY line (empty or old), then append.
-  # macOS/BSD sed differs from GNU sed, so we use grep+mv for portability.
-  grep -v '^OPENAI_API_KEY=' .env > .env.tmp || true
-  mv .env.tmp .env
-  printf "OPENAI_API_KEY=%s\n" "$OPENAI_API_KEY" >> .env
-
-  echo "✅ Saved OPENAI_API_KEY to .env"
-else
-  echo "✅ OPENAI_API_KEY already present in .env (not prompting)"
-fi
+# Note: API keys should be added to .env after setup completes
 
 # -----------------------------------------------------------------------------
 # 2) Start services (Qdrant + app)
@@ -146,30 +112,60 @@ pip install -r requirements.txt
 
 echo
 echo "🌱 Seeding sample data ..."
-make seed
+# Suppress config warnings during seeding (API keys not required for seeding)
+make seed 2>/dev/null
 
 deactivate
 
 # -----------------------------------------------------------------------------
-# 4) Optional OpenAI API smoke test (non-fatal)
+# 4) Optional API smoke tests (non-fatal) - DISABLED
 # -----------------------------------------------------------------------------
+# Note: API smoke tests are commented out to avoid requiring API keys during setup
+# Users can manually run tests later if desired:
+#   python3 scripts/api_smoke_test_openai.py
+#   python3 scripts/api_smoke_test_gemini.py
 
-if [ "${SKIP_OPENAI_SMOKE_TEST:-0}" = "1" ]; then
-  echo
-  echo "🧪 Skipping OpenAI API smoke test (SKIP_OPENAI_SMOKE_TEST=1)"
-else
-  echo
-  echo "🧪 Running OpenAI API smoke test (auth check) ..."
-  if python3 scripts/api_smoke_test.py; then
-    echo "✅ Smoke test passed"
-  else
-    echo "⚠️  Smoke test failed. Setup is still complete, but your API key, budget, or network may need attention." >&2
-    echo "    Next steps:" >&2
-    echo "      1) Update OPENAI_API_KEY in .env (and verify OpenAI usage limits/budget)" >&2
-    echo "      2) Re-run: make start" >&2
-    echo "      3) Re-test: python3 scripts/api_smoke_test.py" >&2
-  fi
-fi
+# if [ "${SKIP_API_SMOKE_TESTS:-0}" = "1" ]; then
+#   echo
+#   echo "🧪 Skipping API smoke tests (SKIP_API_SMOKE_TESTS=1)"
+# else
+#   echo
+#   echo "🧪 Running API smoke tests (auth checks) ..."
+#   
+#   # Test OpenAI if key is present
+#   if grep -qE '^OPENAI_API_KEY=.+$' .env || grep -qE '^OPENAI_API_KEY=$' .env; then
+#     echo "🧪 Testing OpenAI API ..."
+#     if python3 scripts/api_smoke_test_openai.py; then
+#       echo "✅ OpenAI smoke test passed"
+#     else
+#       echo "⚠️  OpenAI smoke test failed. Your API key, budget, or network may need attention." >&2
+#       echo "    Next steps:" >&2
+#       echo "      1) Update OPENAI_API_KEY in .env (and verify OpenAI usage limits/budget)" >&2
+#       echo "      2) Re-run: python3 scripts/api_smoke_test_openai.py" >&2
+#     fi
+#   else
+#     echo "ℹ️  No OpenAI API key found - skipping OpenAI smoke test"
+#   fi
+#   
+#   # Test Gemini if key is present
+#   if grep -qE '^GEMINI_API_KEY=.+$' .env || grep -qE '^GEMINI_API_KEY=$' .env; then
+#     echo "🧪 Testing Gemini API ..."
+#     if python3 scripts/api_smoke_test_gemini.py; then
+#       echo "✅ Gemini smoke test passed"
+#     else
+#       echo "⚠️  Gemini smoke test failed. Your API key, quota, or network may need attention." >&2
+#       echo "    Next steps:" >&2
+#       echo "      1) Update GEMINI_API_KEY in .env (and verify Google AI Studio quotas)" >&2
+#       echo "      2) Re-run: python3 scripts/api_smoke_test_gemini.py" >&2
+#     fi
+#   else
+#     echo "ℹ️  No Gemini API key found - skipping Gemini smoke test"
+#   fi
+#   
+#   # Overall status
+#   echo
+#   echo "🎯 API smoke tests completed"
+# fi
 
 # -----------------------------------------------------------------------------
 # Done
@@ -177,7 +173,12 @@ fi
 
 echo
 echo "🎉 Setup complete!"
-echo "   Open: http://localhost:8000"
+echo
+echo "📝 Next step: Add your API keys to .env:"
+echo "   OPENAI_API_KEY=your_openai_key_here"
+echo "   GEMINI_API_KEY=your_gemini_key_here"
+echo "   Restart the app: make stop && make start"
+echo "   Open the Application in your browser: http://localhost:8000"
 
 # Quick sanity check (non-fatal): show compose tool detected
 echo "   Compose detected: $COMPOSE_CMD"

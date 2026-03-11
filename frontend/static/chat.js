@@ -15,6 +15,319 @@
   const subsectionPopup = qs('#rewrite_subsection_popup');
   const rewriteHelpLink = qs('#rewrite_help_link');
   const rewriteHelpPopup = qs('#rewrite_help_popup');
+  const summarizerOutputHelpLink = qs('#summarizer_output_help_link');
+  const summarizerOutputHelpPopup = qs('#summarizer_output_help_popup');
+
+  // --- Model configuration (providers/models per stage) ---
+  const changeModelsBtn = qs('#change_models_btn');
+  const modelsModal = document.getElementById('models_modal');
+  const modelsModalClose = document.getElementById('models_modal_close');
+  const modelsModalSave = document.getElementById('models_modal_save');
+  const modelsModalCancel = document.getElementById('models_modal_cancel');
+
+  const infProvSel = document.getElementById('inference_provider_select');
+  const infModelSel = document.getElementById('inference_model_select');
+  const rwProvSel = document.getElementById('rewrite_provider_select');
+  const rwModelSel = document.getElementById('rewrite_model_select');
+  const sumProvSel = document.getElementById('summary_provider_select');
+  const sumModelSel = document.getElementById('summary_model_select');
+  const rrProvSel = document.getElementById('rerank_provider_select');
+  const rrModelSel = document.getElementById('rerank_model_select');
+
+  // Providers and models were originally kept client-side; now default to a
+  // minimal built-in set but prefer live data from the backend registry.
+  const PROVIDERS = ['openai', 'gemini'];
+
+  // Model registry with display names (defaults; overridden by /api/models).
+  let MODEL_REGISTRY = {
+    'openai:gpt-4o-mini': {
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      display: 'openai:gpt-4o-mini (openai/gpt-4o-mini)'
+    },
+    'openai:gpt-5-nano': {
+      provider: 'openai',
+      model: 'gpt-5-nano',
+      display: 'openai:gpt-5-nano (openai/gpt-5-nano)'
+    },
+    'gemini:flash-lite': {
+      provider: 'gemini',
+      model: 'models/gemini-2.5-flash-lite',
+      display: 'gemini:flash-lite (gemini/gemini-2.5-flash-lite)'
+    },
+    'gemini:flash': {
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      display: 'gemini:flash (gemini/gemini-2.5-flash)'
+    },
+    'gemini:preview': {
+      provider: 'gemini',
+      model: 'gemini-3-flash-preview',
+      display: 'gemini:preview (gemini/gemini-3-flash-preview)'
+    },
+    'openai:gpt-4o': {
+      provider: 'openai',
+      model: 'gpt-4o',
+      display: 'openai:gpt-4o (openai/gpt-4o)'
+    },
+    'openai:text-embedding-3-small': {
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      display: 'openai:text-embedding-3-small (openai/text-embedding-3-small)'
+    }
+  };
+
+  // Available models by stage (defaults; overridden by /api/models).
+  let MODELS_BY_STAGE = {
+    inference: ['openai:gpt-4o-mini', 'openai:gpt-5-nano', 'gemini:flash-lite', 'gemini:flash', 'gemini:preview'],
+    rewrite: ['openai:gpt-4o-mini', 'openai:gpt-5-nano', 'gemini:flash-lite', 'gemini:flash', 'gemini:preview'],
+    summary: ['openai:gpt-4o-mini', 'openai:gpt-5-nano', 'gemini:flash-lite', 'gemini:flash', 'gemini:preview'],
+    rerank: ['openai:gpt-4o-mini', 'openai:gpt-5-nano', 'gemini:flash-lite', 'gemini:flash', 'gemini:preview']
+  };
+
+  // Helper function to get model info
+  function getModelInfo(key) {
+    return MODEL_REGISTRY[key] || { provider: '', model: key, display: key };
+  }
+
+  // Update the "Models Used" labels in the main chat UI from the current stageModelConfig.
+  function updateModelLabels() {
+    const updateLabel = (stage, elementId) => {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const modelKey = stageModelConfig[stage] && stageModelConfig[stage].model_key;
+      if (!modelKey) {
+        el.textContent = 'Not Found';
+        return;
+      }
+      const info = getModelInfo(modelKey);
+      el.textContent = info.display || modelKey || 'Not Found';
+    };
+
+    updateLabel('embedding', 'model_embedding');
+    updateLabel('inference', 'model_inference');
+    updateLabel('rewrite', 'model_query_rewrite');
+    updateLabel('summary', 'model_summarizer');
+    updateLabel('rerank', 'model_reranker');
+  }
+
+  // Fetch live model registry from backend and hydrate MODEL_REGISTRY / MODELS_BY_STAGE
+  async function fetchModelRegistry() {
+    try {
+      const resp = await fetch('/api/models?merge_custom_registry=true');
+      if (!resp.ok) return; // keep defaults
+      const data = await resp.json();
+
+      const registry = {};
+      const stages = {
+        inference: [],
+        rewrite: [],
+        summary: [],
+        rerank: [],
+      };
+
+      Object.values(data).forEach((m) => {
+        if (!m || !m.key) return;
+        const key = m.key;
+        registry[key] = {
+          provider: m.provider,
+          model: m.model,
+          endpoint: m.endpoint,
+          display: `${key} → ${m.model} (${m.provider}, ${m.endpoint})`,
+          capabilities: m.capabilities || {},
+        };
+
+        // Heuristic: any non-embedding model is eligible for all chat stages.
+        if (m.endpoint && m.endpoint !== 'embeddings') {
+          stages.inference.push(key);
+          stages.rewrite.push(key);
+          stages.summary.push(key);
+          stages.rerank.push(key);
+        }
+      });
+
+      // Only overwrite if we actually parsed something.
+      if (Object.keys(registry).length) {
+        MODEL_REGISTRY = registry;
+        MODELS_BY_STAGE = stages;
+
+        // Refresh modal selects if the modal is currently open.
+        if (modelsModal && modelsModal.style.display === 'block') {
+          initModelsModalFromConfig();
+        } else {
+          // Also refresh the labels so the main UI shows nice display strings.
+          if (typeof updateModelLabels === 'function') {
+            updateModelLabels();
+          }
+        }
+      }
+    } catch (e) {
+      console.debug('Failed to fetch model registry from backend; using defaults', e);
+    }
+  }
+
+  // Current selections (defaults are hydrated from backend /api/config model_key fields).
+  const stageModelConfig = {
+    embedding: { model_key: null },
+    inference: { model_key: null },
+    rewrite:   { model_key: null },
+    summary:   { model_key: null },
+    rerank:    { model_key: null },
+  };
+
+  function _populateProviderSelect(sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    PROVIDERS.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  }
+
+  function _populateModelSelect(stage, modelKey, sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    
+    // Get the model keys for this stage
+    const modelKeys = MODELS_BY_STAGE[stage] || [];
+    
+    // Add options for each model key, excluding embedding models
+    modelKeys.forEach(key => {
+      // Skip models with "embed" in the key (e.g., embedding models)
+      if (key.toLowerCase().includes('embed')) {
+        return;
+      }
+      
+      const modelInfo = getModelInfo(key);
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = modelInfo.display || key;
+      opt.selected = (key === modelKey);
+      sel.appendChild(opt);
+    });
+  }
+
+  function initModelsModalFromConfig() {
+    try {
+      // Seed from visible labels if present (keeps backend /api/config authoritative).
+      const labInf = document.getElementById('model_inference');
+      const labRw = document.getElementById('model_query_rewrite');
+      const labSum = document.getElementById('model_summarizer');
+      const labRr = document.getElementById('model_reranker');
+
+      // Set default model keys based on labels if available
+      const setModelKeyFromLabel = (label, stage) => {
+        if (label && label.textContent && label.textContent !== 'Not Found') {
+          const modelName = label.textContent.trim();
+          // Find the model key that matches the model name
+          const matchingKey = Object.keys(MODEL_REGISTRY).find(key => {
+            const info = MODEL_REGISTRY[key];
+            return info && info.model === modelName;
+          });
+          if (matchingKey) {
+            stageModelConfig[stage].model_key = matchingKey;
+          }
+        }
+      };
+
+      // Update model keys from labels if available
+      setModelKeyFromLabel(labInf, 'inference');
+      setModelKeyFromLabel(labRw, 'rewrite');
+      setModelKeyFromLabel(labSum, 'summary');
+      setModelKeyFromLabel(labRr, 'rerank');
+
+      // Populate model selects with current selections
+      _populateModelSelect('inference', stageModelConfig.inference.model_key, infModelSel);
+      _populateModelSelect('rewrite', stageModelConfig.rewrite.model_key, rwModelSel);
+      _populateModelSelect('summary', stageModelConfig.summary.model_key, sumModelSel);
+      _populateModelSelect('rerank', stageModelConfig.rerank.model_key, rrModelSel);
+
+      // Update model labels in the UI
+      updateModelLabels();
+    } catch (e) {
+      console.debug('Failed to initialize models modal', e);
+    }
+  }
+
+  function openModelsModal() {
+    if (!modelsModal) return;
+    if (!modelsModal.style.display || modelsModal.style.display === 'none') {
+      initModelsModalFromConfig();
+    }
+    modelsModal.style.display = 'block';
+  }
+
+  // Expose as a best-effort global so HTML can call it directly if needed.
+  try {
+    window.__openModelsModal = openModelsModal;
+  } catch (_) {}
+
+  function closeModelsModal() {
+    if (!modelsModal) return;
+    modelsModal.style.display = 'none';
+  }
+
+  function wireModelsModalEvents() {
+    if (!changeModelsBtn) return;
+
+    // Open modal
+    changeModelsBtn.addEventListener('click', openModelsModal);
+
+    // Close modal
+    if (modelsModalClose) modelsModalClose.addEventListener('click', closeModelsModal);
+    if (modelsModalCancel) modelsModalCancel.addEventListener('click', closeModelsModal);
+
+    // Close on outside click
+    window.addEventListener('click', (e) => {
+      if (e.target === modelsModal) closeModelsModal();
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && modelsModal.style.display === 'block') {
+        closeModelsModal();
+      }
+    });
+
+    // Update model config when a model is selected
+    const updateModelConfig = (selectElement, stage) => {
+      if (!selectElement) return;
+      selectElement.addEventListener('change', () => {
+        const modelKey = selectElement.value;
+        if (modelKey && stageModelConfig[stage]) {
+          stageModelConfig[stage].model_key = modelKey;
+          updateModelLabels();
+        }
+      });
+    };
+
+    // Set up model selection change handlers
+    updateModelConfig(infModelSel, 'inference');
+    updateModelConfig(rwModelSel, 'rewrite');
+    updateModelConfig(sumModelSel, 'summary');
+    updateModelConfig(rrModelSel, 'rerank');
+
+    if (modelsModalSave) {
+      modelsModalSave.addEventListener('click', (e) => {
+        e.preventDefault();
+        try {
+          // Update model keys from the dropdown selections
+          if (infModelSel) stageModelConfig.inference.model_key = infModelSel.value;
+          if (rwModelSel) stageModelConfig.rewrite.model_key = rwModelSel.value;
+          if (sumModelSel) stageModelConfig.summary.model_key = sumModelSel.value;
+          if (rrModelSel) stageModelConfig.rerank.model_key = rrModelSel.value;
+
+          // Update the UI to reflect the selected models
+          updateModelLabels();
+          closeModelsModal();
+        } catch (e) {
+          console.debug('Failed to save model selections', e);
+        }
+      });
+    }
+  }
 
   // Static tool help metadata for UI only (not sent to backend/model)
   const TOOL_HELP = [
@@ -95,6 +408,40 @@
     }
   }
 
+  function renderSummarizerOutputHelp() {
+    if (!summarizerOutputHelpPopup) return;
+    const parts = [];
+    parts.push('<div class="title">Summarizer Max Output Tokens</div>');
+    parts.push('<div class="tool-desc">This setting controls the maximum length of generated summaries and applies to both:</div>');
+    parts.push('<div class="tool-examples">');
+    parts.push('<div><span class="label" style="color:var(--muted);font-size:12px;">Rewrite Pre-Summarization:</span> Limits output when summarizing older conversation turns before query rewrite.</div>');
+    parts.push('<div><span class="label" style="color:var(--muted);font-size:12px;">Context Window (Chunked History):</span> Limits output when updating accumulated conversation summaries in chunked mode.</div>');
+    parts.push('</div>');
+    parts.push('<div class="tool-desc"><strong>Raw Tail Turns:</strong> When the conversation reaches this limit, older turns are summarized into a rolling summary that maintains the full conversation context. This summary grows incrementally as the conversation continues, ensuring no context is lost while keeping the active window manageable.</div>');
+    parts.push('<div class="tool-desc">Note: Input token limiting (summarizer_max_input_tokens) only applies to rewrite pre-summarization, not chunked history.</div>');
+    summarizerOutputHelpPopup.innerHTML = parts.join('');
+  }
+
+  function showSummarizerOutputHelp() {
+    if (!summarizerOutputHelpPopup || !summarizerOutputHelpLink) return;
+    renderSummarizerOutputHelp();
+    summarizerOutputHelpPopup.style.display = 'block';
+    summarizerOutputHelpPopup.setAttribute('aria-hidden', 'false');
+  }
+
+  function hideSummarizerOutputHelp() {
+    if (!summarizerOutputHelpPopup) return;
+    summarizerOutputHelpPopup.style.display = 'none';
+    summarizerOutputHelpPopup.setAttribute('aria-hidden', 'true');
+  }
+
+  function toggleSummarizerOutputHelp(evt) {
+    evt && evt.preventDefault();
+    if (!summarizerOutputHelpPopup) return;
+    const isHidden = summarizerOutputHelpPopup.getAttribute('aria-hidden') !== 'false' && summarizerOutputHelpPopup.style.display !== 'block';
+    if (isHidden) showSummarizerOutputHelp(); else hideSummarizerOutputHelp();
+  }
+
   function renderToolsHelp() {
     if (!helpPopup) return;
     const parts = [];
@@ -142,11 +489,23 @@
     if (!within) hideToolsHelp();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideToolsHelp();
+    if (e.key === 'Escape') {
+      hideToolsHelp();
+      hideSummarizerOutputHelp();
+    }
   });
   if (helpLink) {
     helpLink.addEventListener('click', toggleToolsHelp);
   }
+  if (summarizerOutputHelpLink) {
+    summarizerOutputHelpLink.addEventListener('click', toggleSummarizerOutputHelp);
+  }
+  // Dismiss summarizer output help on outside click
+  document.addEventListener('click', (e) => {
+    if (!summarizerOutputHelpPopup || summarizerOutputHelpPopup.style.display !== 'block') return;
+    const within = summarizerOutputHelpPopup.contains(e.target) || (summarizerOutputHelpLink && summarizerOutputHelpLink.contains(e.target));
+    if (!within) hideSummarizerOutputHelp();
+  });
   if (subsectionHelpLink) {
     subsectionHelpLink.addEventListener('click', (e) => {
       e.preventDefault();
@@ -229,15 +588,38 @@
       el.textContent = total;
     });
 
+    // Optionally hide Inference #2 (Tool Synthesis) block when all its metrics are zero.
+    try {
+      const block = document.getElementById('inference2_block');
+      if (block) {
+        const paths = [
+          'turn_metrics.inference_tools_synth.input_tokens',
+          'turn_metrics.inference_tools_synth.cached_tokens',
+          'turn_metrics.inference_tools_synth.output_tokens',
+          'turn_metrics.inference_tools_synth.cost_input',
+          'turn_metrics.inference_tools_synth.cost_output',
+          'turn_metrics.inference_tools_synth.cost_total',
+        ];
+        const anyNonZero = paths.some(p => {
+          const v = deepGet(data, p, 0);
+          return toNumber(v, 0) !== 0;
+        });
+        block.style.display = anyNonZero ? '' : 'none';
+      }
+    } catch (e) {
+      console.debug('Failed to toggle inference2_block visibility', e);
+    }
+
     // Backward-compat: if only legacy metrics were returned, map what we can.
     if (!data.turn_metrics && data.metrics) {
       const m = data.metrics;
-      setText('prompt_tokens', toNumber(m.prompt_tokens, 0));
-      setText('inference_cached_tokens', toNumber(m.prompt_cached_tokens || 0, 0));
-      setText('completion_tokens', toNumber(m.completion_tokens, 0));
+      setText('prompt_tokens', toNumber(m.input_tokens || m.prompt_tokens, 0));
+      setText('inference_cached_tokens', toNumber(m.cached_tokens || m.prompt_cached_tokens || 0, 0));
+      setText('completion_tokens', toNumber(m.output_tokens || m.completion_tokens, 0));
+      setText('reasoning_tokens', toNumber(m.reasoning_tokens || 0, 0));
       setText('total_tokens', toNumber(m.total_tokens, 0));
-      setText('prompt_cost', formatCost(m.prompt_cost));
-      setText('completion_cost', formatCost(m.completion_cost));
+      setText('prompt_cost', formatCost(m.cost_input || m.prompt_cost));
+      setText('completion_cost', formatCost(m.cost_output || m.completion_cost));
       setText('total_cost', formatCost(m.total_cost));
       setText('rerank_tokens_in', toNumber(m.rerank_input_tokens || m.rerank_tokens || 0, 0));
       setText('rerank_tokens_out', toNumber(m.rerank_output_tokens || 0, 0));
@@ -328,7 +710,7 @@
   // Append a message bubble with role badge.
   function appendMessage(role, text) {
     const wrapper = document.createElement('div');
-    wrapper.className = `msg ${role}`;
+    wrapper.className = 'msg ' + role;
 
     const badge = document.createElement('span');
     badge.className = 'badge';
@@ -347,6 +729,18 @@
     chatHistory.scrollTop = chatHistory.scrollHeight;
   }
 
+  function setAssistantBubbleHtml(bubble, html) {
+    try {
+      if (!bubble) return;
+      bubble.classList.add('markdown');
+      bubble.innerHTML = (html == null ? '' : String(html));
+    } catch (e) {
+      try {
+        if (bubble) bubble.textContent = (html == null ? '' : String(html));
+      } catch (_) {}
+    }
+  }
+
   // Collect sidebar params as numbers.
   function collectParams() {
     const getNum = (id) => {
@@ -356,21 +750,73 @@
     };
     const useToolsEl = qs('#use_tools');
     const use_tools = useToolsEl ? !!useToolsEl.checked : false;
-    return {
+
+    const base = {
       top_k: getNum('top_k'),
       score_threshold: getNum('score_threshold'),
       summarizer_max_input_tokens: getNum('summarizer_max_input_tokens'),
       summarizer_max_output_tokens: getNum('summarizer_max_output_tokens'),
+      prompt_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
       temperature: getNum('temperature'),
       max_output_tokens: getNum('max_output_tokens'),
       top_p: getNum('top_p'),
-      chat_history_window_turns: getNum('chat_history_window_turns'),
       raw_tail_turns: getNum('raw_tail_turns'),
       enable_query_rewrite: (qs('#enable_query_rewrite') ? !!qs('#enable_query_rewrite').checked : null),
       rewrite_confidence_threshold: getNum('rewrite_confidence_threshold'),
       rewrite_tail_turns: getNum('rewrite_tail_turns'),
+      rewrite_summary_turns: getNum('rewrite_summary_turns'),
       use_tools,
     };
+
+    // Feature flag (Option A): request backend-rendered HTML (additive).
+    base.render_html = true;
+
+    try {
+      const showProcEl = qs('#show_processing_steps');
+      if (showProcEl) {
+        base.show_processing_steps = !!showProcEl.checked;
+      }
+    } catch (e) {
+      console.debug('Failed to read show_processing_steps checkbox', e);
+    }
+
+    // Attach model keys per stage. These map to backend model registry.
+    try {
+      base.model_keys = {
+        inference: stageModelConfig.inference.model_key,
+        rewrite: stageModelConfig.rewrite.model_key,
+        summary: stageModelConfig.summary.model_key,
+        rerank: stageModelConfig.rerank.model_key
+      };
+      
+      // Keep the old format for backward compatibility
+      const getModelInfo = (key) => {
+        const modelInfo = MODEL_REGISTRY[key] || {};
+        return {
+          provider: modelInfo.provider || '',
+          model: modelInfo.model || key
+        };
+      };
+      
+      // Add legacy provider/model fields for backward compatibility
+      const infInfo = getModelInfo(stageModelConfig.inference.model_key);
+      const rwInfo = getModelInfo(stageModelConfig.rewrite.model_key);
+      const sumInfo = getModelInfo(stageModelConfig.summary.model_key);
+      const rrInfo = getModelInfo(stageModelConfig.rerank.model_key);
+      
+      base.inference_provider = infInfo.provider;
+      base.inference_model = infInfo.model;
+      base.rewrite_provider = rwInfo.provider;
+      base.rewrite_model = rwInfo.model;
+      base.summary_provider = sumInfo.provider;
+      base.summary_model = sumInfo.model;
+      base.rerank_provider = rrInfo.provider;
+      base.rerank_model = rrInfo.model;
+    } catch (e) {
+      console.debug('Failed to attach model overrides to params', e);
+    }
+
+    return base;
   }
 
   // Collect chat history from DOM bubbles.
@@ -449,7 +895,7 @@
     setupStageStreaming(queryId, bubble);
     // Once the conversation has started, lock the history-window controls
     try {
-      const lockIds = ['chat_history_window_turns', 'raw_tail_turns'];
+      const lockIds = ['raw_tail_turns'];
       lockIds.forEach(id => {
         const el = qs('#' + id);
         if (el && !el.disabled) {
@@ -551,8 +997,22 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
+
+      let data;
+      try {
+        data = await resp.json();
+      } catch (_) {
+        data = null;
+      }
+
+      // If backend surfaced a structured error, prefer that message.
+      if (!resp.ok || (data && data.error)) {
+        const err = (data && data.error) || {};
+        const msg = err.message || 'Request failed. Please try again.';
+        bubble.textContent = msg;
+        toast(msg);
+        return;
+      }
 
       // Replace placeholder bubble with answer
       const answerText = (
@@ -564,7 +1024,39 @@
       if (toolsLineRe.test(displayText)) {
         displayText = displayText.replace(toolsLineRe, '');
       }
-      bubble.textContent = displayText;
+
+      // Clear bubble and render main answer text
+      try {
+        const answerHtml = data && (data.answer_html ?? data.answerHtml ?? data.response_html ?? data.responseHtml);
+        if (answerHtml) setAssistantBubbleHtml(bubble, answerHtml);
+        else bubble.textContent = displayText;
+      } catch (e) {
+        bubble.textContent = displayText;
+      }
+
+      // Optional: collapsible reasoning panel when backend provides it.
+      if (data && data.reasoning) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'reasoning-toggle';
+        toggle.textContent = 'Show reasoning ▾';
+
+        const panel = document.createElement('div');
+        panel.className = 'reasoning-panel';
+        panel.textContent = data.reasoning;
+        panel.style.display = 'none';
+
+        toggle.addEventListener('click', () => {
+          const isHidden = panel.style.display === 'none';
+          panel.style.display = isHidden ? 'block' : 'none';
+          toggle.textContent = isHidden ? 'Hide reasoning ▴' : 'Show reasoning ▾';
+        });
+
+        bubble.appendChild(document.createElement('br'));
+        bubble.appendChild(toggle);
+        bubble.appendChild(panel);
+      }
+
       // Render tools-used dim line, if provided
       if (data && Array.isArray(data.tools_used) && data.tools_used.length > 0) {
         const toolsDiv = document.createElement('div');
@@ -580,8 +1072,9 @@
       // Update single-line rewrite placeholder if present in HTML
       try { renderRewriteLine(data && data.rewrite_display); } catch (_) {}
     } catch (e) {
-      bubble.textContent = 'Error. Try again.';
-      toast('Request failed. Please try again.');
+      const msg = 'Request failed. Please try again.';
+      bubble.textContent = msg;
+      toast(msg);
     } finally {
       input.disabled = false;
       sendBtn.disabled = false;
@@ -644,7 +1137,7 @@
       } catch (_) {}
       // Unlock any convo-locked controls so the user can change them for next conversation
       try {
-        ['chat_history_window_turns', 'raw_tail_turns'].forEach(id => {
+        ['raw_tail_turns'].forEach(id => {
           const el = qs('#' + id);
           // Also remove the locked_link and its popup if present
           try {
@@ -720,7 +1213,7 @@
         re_ranker_model: null,
         query_rewrite_model: null,
         summarizer_model: null,
-        inference_model: null
+        inference_model: null,
       };
       
       // Try to fetch from API
@@ -734,14 +1227,56 @@
               modelConfig[key] = config[key];
             }
           });
+
+          // Display active collection information
+          try {
+            const activeCollectionEl = document.getElementById('active_collection');
+            if (activeCollectionEl && config.collection_name) {
+              // Map collection names to user-friendly names
+              const collectionNames = {
+                'document_index': 'OpenAI (document_index)',
+                'document_index_gemini': 'Gemini (document_index_gemini)'
+              };
+              const displayName = collectionNames[config.collection_name] || config.collection_name;
+              activeCollectionEl.textContent = displayName;
+              
+              // Also show the active domain if available
+              if (config.active_domain) {
+                activeCollectionEl.textContent += ` [domain: ${config.active_domain}]`;
+              }
+            }
+          } catch (e) {
+            console.debug('Could not display active collection:', e);
+          }
+
+          // Hydrate stageModelConfig from *_model_key fields when present.
+          // These keys are the source of truth for default model selection.
+          try {
+            if (config.embedding_model_key) {
+              stageModelConfig.embedding.model_key = config.embedding_model_key;
+            }
+            if (config.inference_model_key) {
+              stageModelConfig.inference.model_key = config.inference_model_key;
+            }
+            if (config.rewrite_model_key) {
+              stageModelConfig.rewrite.model_key = config.rewrite_model_key;
+            }
+            if (config.summarizer_model_key) {
+              stageModelConfig.summary.model_key = config.summarizer_model_key;
+            }
+            if (config.rerank_model_key) {
+              stageModelConfig.rerank.model_key = config.rerank_model_key;
+            }
+          } catch (e) {
+            console.debug('Failed to hydrate stageModelConfig from model_key fields', e);
+          }
         }
       } catch (error) {
         console.error('Error loading model config:', error);
       }
       
-      // Update the UI with the model information
+      // Update the UI with the model information (excluding embedding which is handled by updateModelLabels)
       const modelElements = {
-        'model_embedding': modelConfig.embedding_model,
         'model_reranker': modelConfig.re_ranker_model,
         'model_query_rewrite': modelConfig.query_rewrite_model,
         'model_summarizer': modelConfig.summarizer_model,
@@ -770,13 +1305,13 @@
             inference_temperature: 'temperature',
             inference_top_p: 'top_p',
             inference_context_rows: 'inference_context_rows',
-            chat_history_window_turns: 'chat_history_window_turns',
             raw_tail_turns: 'raw_tail_turns',
             max_inference_output_tokens: 'max_output_tokens',
             enable_tools: 'use_tools',
             enable_query_rewrite: 'enable_query_rewrite',
             rewrite_confidence_threshold: 'rewrite_confidence_threshold',
-            rewrite_tail_turns: 'rewrite_tail_turns'
+            rewrite_tail_turns: 'rewrite_tail_turns',
+            rewrite_summary_turns: 'rewrite_summary_turns'
           };
           Object.entries(mapping).forEach(([cfgKey, elId]) => {
             if (cfg[cfgKey] === undefined) return;
@@ -793,13 +1328,37 @@
         // silently ignore if /api/config isn't available or fails
         console.debug('No runtime config values available:', err && err.message);
       }
+
+      // After config and keys are loaded, refresh the visible labels using
+      // the hydrated stageModelConfig together with MODEL_REGISTRY.
+      try {
+        if (typeof updateModelLabels === 'function') {
+          updateModelLabels();
+        }
+      } catch (e) {
+        console.debug('Failed to update model labels after loading config', e);
+      }
     } catch (error) {
       console.error('Error in loadModelConfig:', error);
     }
   }
 
-  // Load model configuration when the page loads
-  document.addEventListener('DOMContentLoaded', loadModelConfig);
+  // Load model configuration and live model registry when the page loads
+  document.addEventListener('DOMContentLoaded', async () => {
+    try {
+      // Prefer live registry (overwrites defaults in MODEL_REGISTRY / MODELS_BY_STAGE)
+      await fetchModelRegistry();
+    } catch (e) {
+      console.error('Failed to fetch model registry', e);
+    }
+    try {
+      await loadModelConfig();
+    } catch (e) {
+      console.error('Failed to load model configuration', e);
+    }
+    // After backend config/labels are loaded, wire and init the models modal.
+    try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
+  });
 
   // Ensure a conversation_id exists on load
   document.addEventListener('DOMContentLoaded', () => { try { getConversationId(); } catch (_) {} });
@@ -900,7 +1459,13 @@ function setupStageStreaming(queryId, bubbleEl) {
           bubble = resolveBubble();
           if (bubble) {
             const finalContent = payload.text || payload.finalContent || payload.response || payload.answer || '';
-            if (finalContent) bubble.textContent = finalContent;
+            try {
+              const finalHtml = payload.finalHtml || payload.final_html || payload.html || '';
+              if (finalHtml) setAssistantBubbleHtml(bubble, finalHtml);
+              else if (finalContent) bubble.textContent = finalContent;
+            } catch (e) {
+              if (finalContent) bubble.textContent = finalContent;
+            }
           }
           closeAndForget();
           return;
