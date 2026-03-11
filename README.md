@@ -1,7 +1,7 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
 
-A modular **Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate grounded answers with **citations** from structured and unstructured knowledge sources.
+A modular **Tool-Assisted Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate grounded answers with **citations** from structured and unstructured knowledge sources.
 
 Unlike simple vector-search demos, this project provides a **multi-stage RAG pipeline** with configurable retrieval, prompts, models, tools, and observability.
 
@@ -37,6 +37,9 @@ Drop-in widget with comprehensive configuration via API params.
 - **Domain-Based Access Controls**  
 Isolation and authorization enforced consistently across APIs and embedded clients.
 
+- **Dual Chat Modes: Stateful and Stateless**  
+Support for both **stateless** (`/chat`) and **stateful** (`/chat/{session_id}`) chat patterns.
+
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
 ```mermaid
@@ -54,6 +57,7 @@ graph LR
     F2[Stage-Specific Model Selection] --- Core
     F3[Registry-Driven LLM Integration] --- Core
     F4[Domain-Aware Prompt Registry] --- Core
+    F5[Dual Chat Modes: Stateful and Stateless] --- Core
 
     %% The Hub (Now Light & Airy)
     Core((Chat with RAG v2.0))
@@ -132,15 +136,15 @@ graph LR
 
 ## Example Use Cases
 
-This project serves as a **reference architecture for production-style RAG systems**. Typical use cases include:
+This project serves as a **reference architecture for production-style Tool-Assisted RAG systems**. Typical use cases include:
 
 - **Document-grounded assistants** for PDFs, HTML pages, internal documentation, and MediaWiki-based knowledge sources
 - **Multi-LLM experimentation** across pipeline stages for retrieval, reranking, summarization, and inference
 - **Prompt and retrieval tuning** using query rewrite, reranking, and domain-specific prompt configurations
 - **Embeddable knowledge assistants** for websites and internal portals
-- **API-driven RAG workflows** for chat, ingestion, embedded experiences, and runtime pipeline control
+- **API-driven Tool-Assisted RAG workflows** for chat, ingestion, embedded experiences, and runtime pipeline control
 - **Domain-specific knowledge bases** with separate collections, embeddings, and prompt domains
-- **Observable RAG systems** where each pipeline stage can be inspected, tuned, and cost-tracked
+- **Observable Tool-Assisted RAG systems** where each pipeline stage can be inspected, tuned, and cost-tracked
 
 ### 📸 Inference Pipeline in Action
 
@@ -356,7 +360,7 @@ pip install -r requirements.txt
 make seed
 ```
 
-**Optional:** Deactivate the virtual environment after seeding
+ **Optional:** Deactivate the virtual environment after seeding
 ```bash
 deactivate
 ```
@@ -567,6 +571,8 @@ A lightweight widget that embeds the **full RAG pipeline** into any website.
 The widget exposes the same orchestration used by the main application — **retrieval, reranking, context management, tool calling, and response post‑processing** — while remaining easy to deploy and configure.
 
 > Supports **domain isolation** so different websites can use different knowledge bases and prompt domains.
+
+> **For complete documentation on the embedded chat UI, see the [Embedded Chat Guide](docs/embedded-chat.md).**
 
 ### ⚙️ Configuration Options
 

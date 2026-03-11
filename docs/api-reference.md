@@ -1,8 +1,12 @@
 # Chat API (Stateless `/chat` Endpoint)
 
-This document describes the **stateless chat API** exposed by the FastAPI app in `backend/main.py`, how it connects to the `ChatManager` / `run_pipeline` orchestrator in `backend/chat/chat_manager.py`, and how to call it from external clients (curl, Python, etc.).
+> **About this document**
+>
+> This page provides **complete API documentation** for the *Chat-with-RAG* system, including request/response formats, parameters, and integration examples for the stateless chat endpoint.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
 
-It is focused on the `/chat` endpoint used by `frontend/chat.html`.
+This document is focused on the `/chat` endpoint used by `frontend/chat.html`.
 
 ---
 
@@ -166,11 +170,6 @@ class ChatRequest(BaseModel):
     "tools_synth": "openai:gpt-4o-mini"
   }
   ```
-- Legacy provider/model pairs (deprecated, use model_keys instead):
-  - `inference_provider`, `inference_model`  
-  - `rewrite_provider`, `rewrite_model`  
-  - `summary_provider`, `summary_model`  
-  - `rerank_provider`, `rerank_model`
 
 #### UX / observability
 

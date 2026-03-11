@@ -2,11 +2,18 @@
 
 # Technical Overview
 
-## Table of Contents
+> **About this document**
+>
+> This page explains the **architecture and internal design** of the *Chat-with-RAG* system — a modular reference implementation for building Tool-Assisted Retrieval-Augmented Generation (RAG) conversational applications.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+
+-## Table of Contents
 
 - [High‑Level Architecture Diagram](#-highlevel-architecture-diagram)
 - [Purpose and Scope](#-purpose-and-scope)
 - [System Overview](#-system-overview)
++- [Architecture at a Glance](#-architecture-at-a-glance)
 - [Runtime & Deployment Model](#-runtime--deployment-model)
 - [Ingestion Pipeline](#-ingestion-pipeline)
   - [2a. Batch Ingestion](#-2a-batch-ingestion)
@@ -97,15 +104,14 @@ base through grounded, auditable, context‑aware chat interactions.
 This document is intended for system architects, AI engineers, and collaborators who want to understand the system's architecture, including ingestion, embedding, retrieval, chat orchestration, and real-time streaming.
 
 > **Note:** While this repository includes example tools and sample datasets, it is designed as a
-general‑purpose reference architecture rather than a domain‑specific product. You are expected to integrate your own content sources, internal tools, APIs, and policies to adapt the platform to your specific workflows and requirements.
+> general‑purpose reference architecture rather than a domain‑specific product. Teams are expected
+> to integrate their own content sources, internal tools, APIs, and policies to adapt the platform
+> to their specific workflows and requirements.
 
 ### What This Is Not
 
-This repository is not a turnkey enterprise product or a drop‑in replacement for
-organization‑specific knowledge platforms. Instead, it serves as a modular,
-extensible reference implementation that teams can adapt, extend, and integrate
-with their own tools, data sources, workflows, and compliance requirements.
-
+This repository is not a turnkey enterprise product or a drop‑in replacement for organization‑specific knowledge platforms. It provides a modular, extensible
+reference architecture that teams can adapt, extend, and integrate with their own tools, data sources, workflows, and compliance requirements.
 
 ## 🧩 System Overview
 
@@ -122,6 +128,17 @@ The RAG Pipeline Chat application integrates document ingestion, vector indexing
 - **Error Handling & Stability** – Ensures the system fails gracefully and avoids runaway computation.
 
 Together, these components form a modular, scalable architecture that supports reliable RAG‑augmented conversational experiences.
+
+## 🧭 Architecture at a Glance
+
+The system is composed of two independent but connected pipelines:
+
+- **Ingestion Pipeline** – Source → Extraction → Chunking → Embedding → Qdrant
+- **Chat Pipeline** – Query → Rewrite → Retrieval → Rerank → Context Assembly → LLM → Tool Calls → Final Response
+
+Both pipelines share the same configuration layer, operate against the active Qdrant collection,
+and rely on the `llm-adapter` abstraction (Pypi: https://pypi.org/project/vrraj-llm-adapter/) to keep model/provider integration decoupled from core
+pipeline logic.
 
 ## 🚀 Runtime & Deployment Model
 
@@ -342,6 +359,31 @@ As a result, table-aware ingestion is additive and can be enabled without changi
 - Takes `(chunk_text, metadata)` pairs and calls the configured embedding model
 - Produces vector embeddings while preserving the metadata alongside the vector
 - Handles batching and model configuration where applicable
+
+#### Key Features
+
+**Token Estimation**
+- Uses `tiktoken` library with `cl100k_base` encoding for accurate token counting
+- Fallback to character-based estimation (`len(text) // 4`) if tiktoken fails
+
+**Provider-Specific Configuration**
+- **Gemini**: Supports `task_type` (default: `RETRIEVAL_DOCUMENT`) and `normalize_embedding` flags
+- **OpenAI**: Standard embedding with configurable dimensions
+
+**Response Metadata**
+- Captures embedding magnitudes, normalization flags, and provider information
+- Tracks token usage (`prompt_tokens`, `total_tokens`) per embedding operation
+
+**Retry Logic**
+- Configurable retry count (`embeddings_max_retries`)
+- Exponential backoff with initial delay (`embeddings_initial_backoff_secs`)
+- Optional call delay (`embeddings_call_delay_secs`) for rate limiting
+
+**Core Methods**
+- `generate_embeddings()`: Main embedding generation with batching
+- `process_document()`: Document processing with chunking and embedding
+- `index_chunks()`: Direct indexing of pre-chunked data
+- `estimate_tokens()`: Token counting for cost estimation
 
 
 ### 🗄️ 8. Index Storage (Qdrant)
@@ -1313,6 +1355,22 @@ The centralized logging configuration in `backend/core/logging.py` also configur
 ## Configuration and Settings
 
 Configuration is centralized across multiple components, with model-specific configurations moved to the model registry and application settings in `backend/core/config.py`. The system is designed so most behavior can be tuned through configuration without requiring code changes.
+
+### LLM Provider Abstraction
+
+The system integrates model providers through the external `llm-adapter` package, which acts as
+the model abstraction layer for both inference and embeddings.
+
+This abstraction centralizes:
+
+- request/response normalization across providers
+- model capability metadata (streaming, tools, reasoning, embedding dimensions)
+- pricing metadata for cost tracking
+- parameter handling and provider-specific sanitization
+- stage-specific model selection without changing orchestration code
+
+As a result, the chat and ingestion pipelines can switch between supported providers
+without changing their internal control flow.
 
 ### Model Registry Architecture
 

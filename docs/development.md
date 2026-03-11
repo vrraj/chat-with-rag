@@ -1,6 +1,10 @@
 # Development Guide
 
-This guide covers development workflows, testing, and contribution guidelines for the chat-with-rag project.
+> **About this document**
+>
+> This page covers **development workflows, testing, and contribution guidelines** for the *Chat-with-RAG* project, including setup, debugging, and best practices.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
 
 ## Table of Contents
 
@@ -912,8 +916,8 @@ Brief description of changes
 
 Use semantic versioning (semver):
 - **MAJOR**: Breaking changes
-- **MINOR**: New features (backward compatible)
-- **PATCH**: Bug fixes (backward compatible)
+- **MINOR**: New features
+- **PATCH**: Bug fixes
 
 #### Release Steps
 
@@ -965,7 +969,7 @@ git push origin v1.2.3
 - Don't commit API keys or secrets
 - Don't ignore test failures
 - Don't merge without review
-- Don't break backward compatibility without notice
+- Don't break existing functionality without notice
 - Don't forget to update documentation
 
 This development guide provides comprehensive coverage for contributing to the chat-with-rag project effectively.

@@ -6,6 +6,9 @@ description: "Advanced RAG system with multi-provider LLM support and streaming 
 
 # Chat with RAG
 
+ This page serves as the **main documentation index** for the *Chat-with-RAG* system, providing an overview and navigation to all available documentation.
+
+
 <p align="left">
   <a href="https://github.com/vrraj/chat-with-rag">
     <img src="https://img.shields.io/github/stars/vrraj/chat-with-rag?style=social" alt="GitHub Stars">
@@ -43,7 +46,7 @@ python start.py
 - **[Troubleshooting Guide](troubleshooting.md)** - Common issues and solutions
 - **[Development Guide](development.md)** - Development setup and workflows
 - **[Deployment Guide](deployment.md)** - Production deployment strategies
-- **[Embeddings Guide](embeddings.md)** - Embedding configuration and usage
+- **[Embedded Chat Guide](embedded-chat.md)** - Embeddable chat UI configuration and usage
 - **[Server-Sent Events](server-sent-events.md)** - Real-time streaming implementation
 - **[Technical Overview](technical-overview.md)** - Architecture and design
 - **[Attributions](attributions.md)** - Credits and licenses

@@ -1,5 +1,11 @@
 # Troubleshooting Guide
 
+> **About this document**
+>
+> This page provides **troubleshooting guidance** for the *Chat-with-RAG* system, including common issues, error solutions, and debugging steps.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+
 This guide covers common issues, errors, and solutions for the chat-with-rag system.
 
 ## Table of Contents
@@ -351,12 +357,47 @@ docker compose up --build
 
 ### Domain/Collection Issues
 
-**Issue:** Wrong collection being used
+**Issue:** No search results or poor results due to wrong domain/collection
+
+**Common Scenarios:**
+- Indexed data with OpenAI but searching with Gemini (or vice versa)
+- `active_domain` doesn't match the collection that contains your data
+- Collection exists but has wrong embedding dimensions
 
 **Solutions:**
-1. Verify `active_domain` in `backend/core/config.py`
-2. Check `DOMAIN_EMBEDDING_CONFIG` mappings
-3. Ensure collection exists and has correct dimensions
+1. Check current domain configuration:
+   ```python
+   from backend.core.config import settings
+   print(f"Active domain: {settings.active_domain}")
+   print(f"Collection: {settings.collection_name}")
+   print(f"Embedding model: {settings.embedding_model_key}")
+   ```
+
+2. Verify domain mappings:
+   ```python
+   from backend.core.config import settings
+   for domain, config in settings.DOMAIN_EMBEDDING_CONFIG.items():
+       print(f"{domain}: {config['collection_name']} -> {config['embedding_model_key']}")
+   ```
+
+3. Check what's actually indexed:
+   ```bash
+   python scripts/qdrant_scripts/qdrant_ops.py --list-collections
+   python scripts/qdrant_scripts/qdrant_ops.py --count-chunks --collection document_index
+   python scripts/qdrant_scripts/qdrant_ops.py --count-chunks --collection document_index_gemini
+   ```
+
+4. Switch domain if needed:
+   - **Mountains domain**: Uses OpenAI embeddings (`document_index`)
+   - **Oceans domain**: Uses Gemini embeddings (`document_index_gemini`)
+   - Change `active_domain` in `backend/core/config.py` or set `ACTIVE_DOMAIN` environment variable
+
+5. Re-index with correct model if domain/collection mismatch:
+   ```bash
+   # Switch to correct domain first, then re-seed
+   export ACTIVE_DOMAIN=oceans  # or mountains
+   make seed
+   ```
 
 ---
 

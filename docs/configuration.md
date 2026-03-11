@@ -1,6 +1,10 @@
 # Configuration Reference
 
-This document provides a comprehensive reference for all configuration options in the chat-with-rag system.
+> **About this document**
+>
+> This page provides a **comprehensive configuration reference** for the *Chat-with-RAG* system, including environment variables, model settings, and runtime parameters.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
 
 ## Table of Contents
 
@@ -173,133 +177,46 @@ class PDFConfig(BaseModel):
 
 ## Model Registry
 
-The model registry defines all available LLM providers and models. Located in the model registry configuration:
+The model registry defines all available LLM providers and models for the chat-with-rag system. For complete model details, pricing, and capabilities, see the **[full Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html)**.
 
-### OpenAI Models
+### Available Models
 
-```python
-"openai:embed_small": {
-    "provider": "openai", 
-    "model": "text-embedding-3-small",
-    "api_type": "embeddings",
-    "dimensions": 1536,
-    "input_cost_per_1k": 0.00002,  # $0.02 per 1M tokens
-    "max_inputs_per_request": 2048
-}
+#### OpenAI Models
+- **`openai:embed_small`** - text-embedding-3-small (1536 dimensions)
+- **`openai:embed_large`** - text-embedding-3-large (3072 dimensions)
+- **`openai:gpt-4o-mini`** - Fast inference model
+- **`openai:gpt-4o`** - Standard inference model
+- **`openai:chat_gpt-4o-mini`** - Chat completions endpoint
+- **`openai:chat_gpt-4o`** - Chat completions endpoint
+- **`openai:reasoning_o3-mini`** - Reasoning model (o3-mini)
+- **`openai:reasoning_gpt-5-mini`** - Reasoning model (gpt-5-mini)
 
-"openai:embed_large": {
-    "provider": "openai", 
-    "model": "text-embedding-3-large",
-    "api_type": "embeddings",
-    "dimensions": 3072,
-    "input_cost_per_1k": 0.00013,  # $0.13 per 1M tokens
-    "max_inputs_per_request": 2048
-}
+#### Gemini Models
+- **`gemini:native-embed`** - gemini-embedding-001 (1536 dimensions)
+- **`gemini:openai-2.5-flash-lite`** - Fast inference via OpenAI adapter
+- **`gemini:openai-3-flash-preview`** - Latest preview model
+- **`gemini:native-sdk-3-flash-preview`** - Native SDK endpoint
+- **`gemini:openai-reasoning-2.5-flash`** - Reasoning via OpenAI adapter
+- **`gemini:native-sdk-reasoning-2.5-flash`** - Reasoning via native SDK
 
-"openai:gpt-4o-mini": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "api_type": "responses",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00015,   # $0.15 per 1M tokens
-    "output_cost_per_1k": 0.00060,  # $0.60 per 1M tokens
-    "cached_input_per_1k": 0.000075, # $0.075 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": False
-}
+### Model Categories
 
-"openai:gpt-4o": {
-    "provider": "openai",
-    "model": "gpt-4o",
-    "api_type": "responses",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00250,   # $2.50 per 1M tokens
-    "output_cost_per_1k": 0.01000,  # $10.00 per 1M tokens
-    "cached_input_per_1k": 0.00125, # $1.25 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": False
-}
+| Category | Models | Use Case |
+|----------|--------|----------|
+| **Embeddings** | `openai:embed_*`, `gemini:native-embed` | Vector search and retrieval |
+| **Fast Inference** | `openai:gpt-4o-mini`, `gemini:*-flash*` | Chat responses, query rewriting |
+| **Standard Inference** | `openai:gpt-4o` | Complex tasks, summarization |
+| **Reasoning** | `openai:reasoning_*`, `gemini:*-reasoning*` | Complex problem solving |
 
-"openai:reasoning_o3-mini": {
-    "provider": "openai",
-    "model": "o3-mini",
-    "api_type": "responses",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00110,   # $1.10 per 1M tokens
-    "output_cost_per_1k": 0.00440,  # $4.40 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": True,
-    "reasoning_parameter": "reasoning_effort",
-    "reasoning_default": "low"
-}
+### Default Configuration
 
-"openai:reasoning_gpt-5-mini": {
-    "provider": "openai",
-    "model": "gpt-5-mini",
-    "api_type": "responses",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00025,   # $0.25 per 1M tokens
-    "output_cost_per_1k": 0.00200,  # $2.00 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": True,
-    "reasoning_parameter": "reasoning_effort",
-    "reasoning_default": "minimal"
-}
-```
+The system uses these default models:
+- **Embedding**: `openai:embed_small` (mountains domain) / `gemini:native-embed` (oceans domain)
+- **Inference**: `openai:gpt-4o`
+- **Query Rewrite**: `openai:gpt-4o`
+- **Summarization**: `openai:gpt-4o`
 
-### Gemini Models
-
-```python
-"gemini:native-embed": {
-    "provider": "gemini",
-    "model": "gemini-embedding-001",
-    "api_type": "embed_content", 
-    "dimensions": 1536,
-    "input_cost_per_1k": 0.00010,  # $0.10 per 1M tokens
-    "max_inputs_per_request": 250,
-    "max_tokens_per_input": 2048
-}
-
-"gemini:openai-2.5-flash-lite": {
-    "provider": "gemini",
-    "model": "models/gemini-2.5-flash-lite",
-    "api_type": "chat_completions",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00020,   # $0.20 per 1M tokens
-    "output_cost_per_1k": 0.00080,  # $0.80 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": False,
-    "thinking_tax": True
-}
-
-"gemini:openai-3-flash-preview": {
-    "provider": "gemini",
-    "model": "models/gemini-3-flash-preview",
-    "api_type": "chat_completions",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00050,   # $0.50 per 1M tokens
-    "output_cost_per_1k": 0.00300,  # $3.00 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": True,
-    "reasoning_parameter": "thinking_level",
-    "reasoning_default": "minimal",
-    "thinking_tax": True
-}
-
-"gemini:openai-reasoning-2.5-flash": {
-    "provider": "gemini",
-    "model": "models/gemini-2.5-flash",
-    "api_type": "chat_completions",
-    "max_tokens": 2000,
-    "input_cost_per_1k": 0.00030,   # $0.30 per 1M tokens
-    "output_cost_per_1k": 0.00250,  # $2.50 per 1M tokens
-    "supports_tools": True,
-    "supports_reasoning": True,
-    "reasoning_parameter": "thinking_budget",
-    "reasoning_default": "low",
-    "thinking_tax": True
-}
-```
+> **For detailed model specifications, pricing, and advanced configuration options, see the complete [Model Registry documentation](https://vrraj.github.io/llm-adapter/model-registry.html).**
 
 ---
 
@@ -492,17 +409,6 @@ params = {
 }
 ```
 
-### Legacy Model Override (Deprecated)
-
-```python
-params = {
-    "inference_model": "openai:gpt-4o",      # Legacy format
-    "rewrite_model": "openai:gpt-4o-mini",   # Legacy format
-    "summary_model": "openai:gpt-4o-mini",    # Legacy format
-    "rerank_model": "openai:gpt-4o-mini"      # Legacy format
-}
-```
-
 ---
 
 ## Configuration Validation
@@ -621,11 +527,35 @@ python -c "from backend.core.config import settings; print(settings.dict())"
 
 ### Reset Configuration
 
-```bash
-# Reset to defaults
-cp .env.example .env
+#### Reset Environment Configuration
 
-# Clear and re-index
-python scripts/qdrant_scripts/qdrant_ops.py --delete-collection document_index
+```bash
+# Reset environment variables to defaults
+cp .env.example .env
+# Edit .env with your API keys and restart application
+```
+
+#### Reset Qdrant Database
+
+```bash
+# Clear data but keep collection structure
+python scripts/qdrant_scripts/qdrant_ops.py truncate --collection document_index
+python scripts/qdrant_scripts/qdrant_ops.py truncate --collection document_index_gemini
+
+# Delete entire collection and re-seed
+python scripts/qdrant_scripts/qdrant_ops.py delete --collection document_index
+python scripts/qdrant_scripts/qdrant_ops.py delete --collection document_index_gemini
 make seed
+```
+
+#### Full System Reset
+
+```bash
+# Complete reset to factory defaults
+cp .env.example .env
+make stop
+python scripts/qdrant_scripts/qdrant_ops.py delete --collection document_index
+python scripts/qdrant_scripts/qdrant_ops.py delete --collection document_index_gemini
+make seed
+make start
 ```

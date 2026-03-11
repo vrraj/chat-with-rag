@@ -1,5 +1,11 @@
 # Embedded Chat UI (`chat-embed.html`)
 
+> **About this document**
+>
+> This page explains the **embeddable chat UI** for the *Chat-with-RAG* system, including configuration options, integration methods, and usage examples for third-party websites.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+
 This document describes the **embeddable chat UI** built on top of the existing stateless `/chat` endpoint.
 
 It is focused on:
@@ -22,7 +28,7 @@ Key properties:
 
 - **Embeddable** via `<iframe>` or a one-line `<script>` tag.
 - **No parameter sidebar or metrics bar** – those controls are hidden.
-- **Configuration via URL query parameters**.
+- **Configurable** via URL query parameters and data attributes.
 - Reuses the same `/chat` endpoint and `params` contract as documented in `docs/api-reference.md`.
 
 The intent is to allow a host site to preconfigure behavior (retrieval, rewrite, tools, etc.) and expose a simple “chat with my docs/data” experience.
@@ -85,7 +91,10 @@ It uses the exact same request shape as `docs/api-reference.md` describes:
     { "role": "user", "content": "..." },
     { "role": "assistant", "content": "..." }
   ],
-  "params": { /* see below */ }
+  "params": { 
+    "user_id": "Optional user identifier for token accounting",
+    "namespace": "Alternative way to provide a conversation identifier. If conversation_id is not provided, namespace will be used for params.conversation_id."
+  }
 }
 ```
 
@@ -142,11 +151,6 @@ These map directly to the stage-spec overrides used in `resolve_stage_specs`:
   }
   ```
 
-**Legacy format (deprecated):**
-- `inference_provider`, `inference_model`
-- `rewrite_provider`, `rewrite_model`
-- `summary_provider`, `summary_model`
-- `rerank_provider`, `rerank_model`
 
 If provided, they are passed through as strings to the backend and interpreted there.
 
@@ -289,7 +293,7 @@ For third-party websites that can only add a `<script>` tag, `embed-loader.js` p
 
 - The host page must allow loading the app’s domain in an iframe.
 - If you change the path to `chat-embed.html`, update the relative URL logic in `embed-loader.js` accordingly.
-- All configuration parameters are the same as the query parameters described in [Section 4](#4-configuration-via-url-query-parameters).
+- Configuration parameters are documented in **`docs/api-reference.md`**.
 
 ---
 

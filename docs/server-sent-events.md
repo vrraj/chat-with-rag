@@ -1,5 +1,11 @@
 # SSE (Server-Sent Events) Architecture for Chat-with-RAG
 
+> **About this document**
+>
+> This page explains the **Server-Sent Events (SSE) architecture** for the *Chat-with-RAG* system, including real-time streaming implementation, event formats, and integration details.
+>
+> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+
 ## 1. Overview
 
 This project implements Server-Sent Events (SSE) to enable real-time streaming of different stages in the chat-with-RAG pipeline. SSE allows the server to push updates to the client over a single HTTP connection, providing a continuous stream of JSON-encoded events representing the progress and results of chat processing stages. This approach enhances user experience by delivering incremental updates without requiring the client to poll the server repeatedly.
@@ -126,23 +132,26 @@ You can add debug logs or expose an admin endpoint to report current registry st
 
 - **Close Sentinel:** A `None` payload can be sent to explicitly close the stream. This is used for graceful shutdown of specific streams.
 
-## 8. Future Extension: Streaming the Final Model Answer
+## 8. Future Extension: Optional Answer Streaming
 
-Planned enhancements include streaming the final model answer in real-time using delta events:
+A planned enhancement is to make **answer streaming configurable** based on use case:
 
-- **Delta Events:** Incremental partial answers streamed as they are generated.
+- **Streaming:** Better perceived responsiveness for interactive use
+- **Non-streaming:** Faster total response time for batch/API use cases
 
-- **Answer-Final Event:** Marks the completion of the final answer.
-
-This will improve responsiveness by allowing users to see model outputs as they are produced.
+Implementation would include a configurable option (`stream_answer: true/false`) to let users choose the optimal approach for their needs.
 
 ## 9. Best Practices
 
-- **One Consumer per `query_id`:** Ensure only one client consumes events per `query_id` to avoid duplicate processing.
+- **Query ID Scope:** Each request generates a unique `query_id` for streaming. Multiple concurrent requests from the same user will have different `query_id`s.
 
-- **Proper Cleanup:** Always deregister consumers on disconnect to free resources.
+- **Conversation ID:** Separate from `query_id`, the `conversation_id` persists across the entire conversation session for state management.
 
-- **Browser Side Close:** Implement logic on the frontend to close SSE connections when no longer needed (e.g., on page unload).
+- **Stateful vs Stateless:** 
+  - **Stateless** (`/chat`): Uses `query_id` + `conversation_id` 
+  - **Stateful** (`/chat/{session_id}`): Uses `session_id` for server-managed conversation state
+
+- **Connection Cleanup:** Frontend automatically closes SSE connections and clears server-side summaries on page unload.
 
 ---
 
