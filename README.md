@@ -464,6 +464,16 @@ You can select a prompt domain per request using `params.prompt_domain`.
 
 In the UI (`frontend/chat.html`), the **Prompt Domain** dropdown under **Inference** controls the value sent on every chat request.
 
+#### Jinja2 Template System
+
+The prompt registry uses **Jinja2 templating** to safely inject conversation history and RAG context into prompts:
+
+- **Conversation Context**: Summarized history + recent conversation turns
+- **RAG Context**: Retrieved documents + web search results  
+- **User Input**: Current user question
+
+This ensures safe separation of system instructions from dynamic data while maintaining consistent formatting across all pipeline stages.
+
 For detailed configuration options, see the [Configuration Reference](https://github.com/vrraj/chat-with-rag/blob/main/docs/configuration.md#prompt-registry).
 
 

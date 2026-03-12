@@ -1,5 +1,7 @@
 
 
+[← Back to Chat with RAG Home](https://vrraj.github.io/chat-with-rag)
+
 # Technical Overview
 
 > **About this document**
@@ -834,7 +836,15 @@ Prompt registry coverage is stage-specific:
 - **Rerank**: registry-driven fixed rerank instruction + templated payload; candidate snippet formatting remains in code.
 - **Summary**: registry-driven fixed instruction/header; token-budget trimming and message cleanup remain in code.
 
-#### 5.1.4 Template variables by stage
+#### 5.1.4 Context Injection via Jinja Templates
+
+The prompt registry uses **Jinja2 templating** to inject conversation history and RAG context into user prompts. This ensures:
+
+- **Safe Context Injection**: Only predefined variables (`summary_text`, `recent_block_str`, `context_text`, etc.) are injected
+- **Structured Formatting**: Conversation context and RAG snippets are consistently formatted
+- **Domain Flexibility**: Template structure remains consistent across domain overrides
+
+#### Template variables by stage
 
 The registry uses Jinja templates. The orchestrator supplies variables per stage:
 

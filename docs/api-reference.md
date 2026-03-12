@@ -1,3 +1,5 @@
+[← Back to Chat with RAG Home](https://vrraj.github.io/chat-with-rag)
+
 # Chat API Reference (Stateless & Session-Based Endpoints)
 
 > **About this document**
