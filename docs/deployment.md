@@ -127,15 +127,20 @@ LOG_LEVEL=INFO
 
 ### Resource Requirements
 
-**Minimum:**
+**Minimum (Development/Small Dataset):**
 - CPU: 2 cores
 - Memory: 4GB RAM
-- Storage: 10GB (for Qdrant data)
+- Storage: 1GB (for Qdrant data + models)
 
-**Recommended:**
+**Recommended (Production/Large Dataset):**
 - CPU: 4 cores
 - Memory: 8GB RAM
-- Storage: 50GB SSD
+- Storage: 10GB SSD (for large knowledge bases)
+
+**Storage Scaling:**
+- Small datasets (~100 documents): ~100MB storage
+- Medium datasets (~1K documents): ~500MB storage  
+- Large datasets (~10K documents): ~2-5GB storage
 
 ### Health Checks
 
@@ -215,7 +220,7 @@ docker compose down
 docker compose build
 docker compose up -d
 
-# Re-seed if needed
+# Re-seed if needed (note: overwrites document_index and document_index_gemini collections)
 make seed
 ```
 
