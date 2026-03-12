@@ -4,7 +4,7 @@
 >
 > This page provides **troubleshooting guidance** for the *Chat-with-RAG* system, including common issues, error solutions, and debugging steps.
 >
-> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+> **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
 This guide covers common issues, errors, and solutions for the chat-with-rag system.
 

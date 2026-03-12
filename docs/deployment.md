@@ -4,7 +4,7 @@
 >
 > This page covers **tested deployment scenarios** for the *Chat-with-RAG* system, including Docker setup, production considerations, and security best practices.
 >
-> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+> **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
 ## Table of Contents
 

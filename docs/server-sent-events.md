@@ -4,7 +4,7 @@
 >
 > This page explains the **Server-Sent Events (SSE) architecture** for the *Chat-with-RAG* system, including real-time streaming implementation, event formats, and integration details.
 >
-> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+> **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
 ## 1. Overview
 

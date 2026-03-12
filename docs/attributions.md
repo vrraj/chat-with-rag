@@ -4,7 +4,7 @@
 >
 > This page provides **data attribution and licensing information** for the *Chat-with-RAG* system, including source credits and usage rights for sample data.
 >
-> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+> **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
 This project utilizes a sample knowledge base to demonstrate its RAG capabilities. We believe in transparent data sourcing and respect for open-content creators.
 
