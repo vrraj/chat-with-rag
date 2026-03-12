@@ -63,15 +63,15 @@ graph LR
     Core((Chat with RAG v2.0))
 
     %% Right-side spokes
-    Core --- F5[Context Window Management]
-    Core --- F6[Cost Tracking & Observability]
-    Core --- F7[Response Post-processing]
-    Core --- F8[Embeddable Chat Experience]
-    Core --- F9[Domain-Based Access Controls]
+    Core --- F6[Context Window Management]
+    Core --- F7[Cost Tracking & Observability]
+    Core --- F8[Response Post-processing]
+    Core --- F9[Embeddable Chat Experience]
+    Core --- F10[Domain-Based Access Controls]
 
     %% Applying styles
     class Core core;
-    class F1,F2,F3,F4,F5,F6,F7,F8,F9 feat;
+    class F1,F2,F3,F4,F5,F6,F7,F8,F9,F10 feat;
 ```
 
 > **Auth & Security Note**  
