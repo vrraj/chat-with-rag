@@ -86,7 +86,7 @@ The system is organized around two primary pipelines: **document ingestion** and
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
 | **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
-## 🗺️ Next Up (Roadmap)
+## 🗺️ What's Next
 
 Enhancements focused on retrieval precision and identity management:
 
