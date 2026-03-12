@@ -32,6 +32,16 @@ Chat with RAG implements a modular architecture for building **tool‑assisted R
 
 [View the Code](https://github.com/vrraj/chat-with-rag) | [Technical Deep Dive](technical-overview.md) | [API Reference](api-reference.md)
 
+## System Architecture Overview
+
+<p align="center">
+  <img
+    src="../images/chat-wiith-rag-architecture.png"
+    style="max-width: 100%; height: auto;"
+    alt="Chat with RAG architecture overview showing multi-LLM orchestration, prompt registry, context management, observability, and embeddable interfaces"
+  />
+</p>
+
 ## 🏗️ Architectural Pillars
 
 This framework separates knowledge preparation from runtime reasoning and orchestration.
