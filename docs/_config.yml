@@ -39,34 +39,34 @@ defaults:
       path: "index.md"
     values:
       title: "Chat with RAG: Advanced RAG System"
-      description: "Multi-provider RAG system with streaming capabilities and comprehensive documentation."
+      description: "Modular tool-assisted Retrieval-Augmented Generation (RAG) framework with multi-LLM orchestration, configurable pipelines, smart ingestion, and embeddable AI chat interfaces."
 
   - scope:
       path: "api-reference.md"
     values:
       title: "API Reference | Chat with RAG"
-      description: "Complete REST API documentation including endpoints, request/response formats, and streaming implementation."
+      description: "Complete REST API reference for Chat with RAG including chat endpoints, ingestion APIs, pipeline parameters, request and response schemas, and session-based workflows."
 
   - scope:
-      path: "embeddings.md"
+      path: "embedded-chat.md"
     values:
-      title: "Embeddings Guide | Chat with RAG"
-      description: "Comprehensive guide to embedding providers, configuration, and optimization strategies."
+      title: "Embedded Chat Guide | Chat with RAG"
+      description: "Guide to embedding the Chat with RAG assistant into websites using iframe or loader scripts, with configuration options for retrieval, prompts, and pipeline behavior."
 
   - scope:
       path: "server-sent-events.md"
     values:
       title: "Server-Sent Events | Chat with RAG"
-      description: "Real-time streaming implementation using Server-Sent Events for live response delivery."
+      description: "Server-Sent Events for real-time observability of the RAG pipeline, exposing retrieval, inference, and tool execution stages."
 
   - scope:
       path: "technical-overview.md"
     values:
       title: "Technical Overview | Chat with RAG"
-      description: "Architecture, design patterns, and technical implementation details of the RAG system."
+      description: "Deep technical overview of the Chat with RAG architecture including ingestion pipelines, orchestration flow, vector indexing, context management, and multi-LLM integration."
 
   - scope:
       path: "attributions.md"
     values:
       title: "Attributions | Chat with RAG"
-      description: "Credits, licenses, and attributions for third-party components and resources."
+      description: "Licensing details and attribution for third-party components, datasets, and resources used in the Chat with RAG project."
