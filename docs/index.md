@@ -70,11 +70,11 @@ A modular execution flow where the system determines the best path to an answer 
 
 Designed for developers who need visibility into each stage of the system's operation:
 
-- **Real-time SSE Streams:** Watch the pipeline execute stage-by-stage (Rewrite → Retrieve → Tool Use → Synthesis).
+**Real-time SSE Streams:** Watch the pipeline execute stage-by-stage (Rewrite → Retrieve → Tool Use → Synthesis).
 
-- **Per-Turn Accounting:** Precise tracking of token usage and actual cost for every single interaction.
+**Per-Turn Accounting:** Precise tracking of token usage and actual cost for every single interaction.
 
-- **Domain Isolation:** Securely serve different knowledge bases and prompt configurations to different websites from a single backend.
+**Domain Isolation:** Securely serve different knowledge bases and prompt configurations to different websites from a single backend.
 
 
 ## High-Level Pipeline Orchestration
@@ -86,7 +86,7 @@ The system is organized around two primary pipelines: **document ingestion** and
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
 | **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
-## 🗺️ What's Next
+## 🗺️ Next Up (Roadmap)
 
 Enhancements focused on retrieval precision and identity management:
 
