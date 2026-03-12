@@ -7,7 +7,7 @@ This release evolves the Chat-with-RAG application from a single‑provider prot
 **Key Achievements:**
 - 🏗️ **Model Registry Architecture** - Single source of truth for all model configurations
 - 🔄 **Multi-Provider Support** - OpenAI and Gemini with unified abstraction
-- 🧩 **Prompt Registry (YAML)** - Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain` 
+- 🧩 **Prompt Registry (YAML)** - Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain`
 - ⚡ **Performance Optimization** - Batch processing and rate limit management
 - 🔒 **Security Enhancements** - Embeddable chat with domain controls + API security
 - 📊 **Cost Management** - Provider-specific pricing and budget tracking
@@ -74,7 +74,10 @@ This release evolves the Chat-with-RAG application from a single‑provider prot
 ### **Registry-Driven Model Configuration**
 - **Gemini embeddings integration** with L2 normalization and batch processing
 - **Unified model selection** using stable registry keys across all pipeline stages
-- **Application now references stable registry keys** instead of provider-specific details. e.g `embedding_model_key: "openai:embed_small"`, `inference_model_key: "openai:gpt-4o-mini"` etc
+- **Application now references stable registry keys** instead of provider-specific details:
+  - `embedding_model_key: "openai:embed_small"` (domain-dependent)
+  - `inference_model_key: "openai:gpt-4o-mini"`
+  - `rerank_model_key: "openai:gpt-4o-mini"`
 - **Dramatically simplified config** - removed complex model parameter objects
 
 For complete model registry documentation, see: https://vrraj.github.io/llm-adapter/model-registry.html
@@ -84,13 +87,12 @@ For complete model registry documentation, see: https://vrraj.github.io/llm-adap
 
 ## What's Next
 
-**Retrieval Enhancement:** Implementing Query Expansion (Multi-query generation) to capture broader semantic intent.
-
-**Hybrid Search:** Augmenting vector-based retrieval with text-based search (BM25) to improve keyword accuracy.
-
-**Advanced Reranking:** Integration of cross-encoders for high-precision result filtering.
-
-**Identity Management:** Adding user authentication and management to enhance existing multi-user session isolation.
+### **Planned Enhancements**
+- **User Authentication & Login Process** - Secure user management system for multi-tenant deployments
+- Additional provider support (Anthropic, Cohere)
+- User query expansion for better retrieval
+- Enhanced security features
+- Product based retrieval optimization
 
 ---
 
