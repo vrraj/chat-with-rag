@@ -20,9 +20,19 @@ The backend logic (including `backend/chat/chat_manager.py` and `POST /chat` sem
 
 ---
 
-## 1. Overview
+## 2. Overview
 
 The embedded chat UI provides a **small, self-contained chat box** that can be dropped into other websites.
+
+### Example Embedded Chat Interface
+
+<p align="center">
+  <img
+    src="https://github.com/vrraj/chat-with-rag/blob/main/images/chat-embedding-options.png?raw=true"
+    style="max-width: 100%; height: auto;"
+    alt="Chat with RAG embedded chat interface showing configuration options and chat widget"
+  />
+</p>
 
 Key properties:
 
