@@ -8,7 +8,7 @@ This release evolves the Chat-with-RAG application from a single‑provider prot
 - 🏗️ **Model Registry Architecture** - Single source of truth for all model configurations
 - 🔄 **Multi-Provider Support** - OpenAI and Gemini with unified abstraction
 - 🧩 **Prompt Registry (YAML)** - Centralized prompt definitions in `prompts/prompt_registry.yaml` with domain-based overrides selected via `params.prompt_domain`
-- ⚡ **Performance Optimization** - Batch processing and rate limit management
+- ⚡ **Ingestion Performance Optimization** - Batch processing and rate limit management
 - 🔒 **Security Enhancements** - Embeddable chat with domain controls + API security
 - 📊 **Cost Management** - Provider-specific pricing and budget tracking
 - 🌐 **Embeddable Chat Widget** - Configurable chat for any website
