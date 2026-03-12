@@ -42,37 +42,13 @@ Support for both **stateless** (`/chat`) and **stateful** (`/chat/{session_id}`)
 
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
-```mermaid
-%%{init: {'themeVariables': { 'nodePadding': '5', 'mainBkg': '#fff'}, 'flowchart': { 'curve': 'basis', 'rankSpacing': 30, 'nodeSpacing': 20}}}%%
-graph LR
-    %% Lightened Theme Styling
-    %% Core: Light Mint/White (#f0fff4) with Teal border (#159957)
-    classDef core fill:#e2eeec,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,font-weight:bold,fsize:18px;
-    
-    %% Features: Clean white with softer Blue borders (#1e6bb8)
-    classDef feat fill:#ffffff,stroke:#1e6bb8,stroke-width:1px,color:#1e6bb8,fsize:14px;
-
-    %% Left-side spokes
-    F1[Multi-LLM Pipeline Orchestration] --- Core
-    F2[Stage-Specific Model Selection] --- Core
-    F3[Registry-Driven LLM Integration] --- Core
-    F4[Domain-Aware Prompt Registry] --- Core
-    F5[Dual Chat Modes: Stateful and Stateless] --- Core
-
-    %% The Hub (Now Light & Airy)
-    Core((Chat with RAG v2.0))
-
-    %% Right-side spokes
-    Core --- F6[Context Window Management]
-    Core --- F7[Cost Tracking & Observability]
-    Core --- F8[Response Post-processing]
-    Core --- F9[Embeddable Chat Experience]
-    Core --- F10[Domain-Based Access Controls]
-
-    %% Applying styles
-    class Core core;
-    class F1,F2,F3,F4,F5,F6,F7,F8,F9,F10 feat;
-```
+<p align="center">
+  <img
+    src="images/chat-with-rag-architecture.png"
+    style="max-width: 100%; height: auto;"
+    alt="Chat with RAG v2 architecture diagram showing multi‑LLM orchestration, prompt registry, observability, embeddable chat, and domain controls"
+  />
+</p>
 
 > **Auth & Security Note**  
 This app enforces **domain-based access controls** across APIs and embedded widgets (domain isolation, collection separation, widget lockdown). See **[Security & Deployment](#-security--deployment)** for more details.
