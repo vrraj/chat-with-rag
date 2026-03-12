@@ -1,12 +1,12 @@
-# Chat API (Stateless `/chat` Endpoint)
+# Chat API Reference (Stateless & Session-Based Endpoints)
 
 > **About this document**
 >
-> This page provides **complete API documentation** for the *Chat-with-RAG* system, including request/response formats, parameters, and integration examples for the stateless chat endpoint.
+> This page provides **complete API documentation** for the *Chat-with-RAG* system, including both stateless and session-based chat endpoints with request/response formats, parameters, and integration examples.
 >
 > **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
-This document is focused on the `/chat` endpoint used by `frontend/chat.html`.
+This document covers both the stateless `/chat` endpoint (used by `frontend/chat.html`) and the session-based `/chat/{session_id}` endpoint for server-side conversation management.
 
 ---
 
@@ -14,16 +14,19 @@ This document is focused on the `/chat` endpoint used by `frontend/chat.html`.
 
 1. [What this README covers](#1-what-this-readme-covers)  
 2. [High-level data flow](#2-high-level-data-flow)  
-3. [Request schema](#3-request-schema)  
+3. [Stateless API Reference](#3-stateless-api-reference)  
    3.1. [Top-level request body](#31-top-level-request-body)  
    3.2. [`params` contract](#32-params-contract)  
-4. [Backend defaults (`Settings`)](#4-backend-defaults-settings)  
-5. [Response shape](#5-response-shape)  
-6. [Example calls](#6-example-calls)  
-   6.1. [Curl example (minimal)](#61-curl-example-minimal)  
-   6.2. [Curl example with processing steps hidden](#62-curl-example-with-processing-steps-hidden)  
-   6.3. [Python example using `requests`](#63-python-example-using-requests)  
-7. [Notes for integrators](#7-notes-for-integrators)  
+4. [Session-Based API Reference](#4-session-based-api-reference)  
+   4.1. [Create Session](#41-create-session)  
+   4.2. [Send Message to Session](#42-send-message-to-session)  
+   4.3. [Get Session History](#43-get-session-history)  
+5. [Response Shape](#5-response-shape)  
+6. [Example Calls](#6-example-calls)  
+   6.1. [Stateless Examples](#61-stateless-examples)  
+   6.2. [Session-Based Examples](#62-session-based-examples)  
+7. [API Comparison](#7-api-comparison)  
+8. [Notes for Integrators](#8-notes-for-integrators)  
 
 ---
 
@@ -31,13 +34,14 @@ This document is focused on the `/chat` endpoint used by `frontend/chat.html`.
 
 - **Scope**
   - The `POST /chat` **stateless** endpoint.
-  - How the request maps to `ChatRequest`, `handle_chat`, and `run_pipeline`.
+  - The `POST /chat/{session_id}` **session-based** endpoint.
+  - Session management (`POST /chat/session`, `GET /chat/{session_id}/history`)
+  - How requests map to `ChatRequest`, `handle_chat`, and `run_pipeline`.
   - The JSON request/response shape, including the `params` contract.
   - How to control **processing stage streaming** via `show_processing_steps`.
 
 - **Out of scope**
   - Ingest endpoints (`/index`, `/mediawiki/url`, `/pdf`, etc.).
-  - Stateful endpoints such as `/chat/{session_id}` and session management.
   - SSE streaming internals (`backend/stream_stages.py`, `backend/stream_emit.py`).
 
 ---
@@ -583,9 +587,58 @@ curl -X POST http://localhost:8000/chat/session-id \
 
 ---
 
-## 4. Token Accounting & Namespaces
+## 4. Stateless vs Session-Based APIs
 
-### 4.1. Namespace Patterns
+### 4.1. Key Differences at a Glance
+
+| Feature | Stateless (`/chat`) | Session-Based (`/chat/{session_id}`) |
+|---------|-------------------|-------------------------------------|
+| **History Management** | Client sends full history each request | Server maintains history automatically |
+| **State** | No server state | Persistent session state |
+| **Setup** | No setup required | Create session first |
+| **Request Size** | Larger (includes history) | Smaller (message only) |
+| **Use Case** | Simple integrations, web UI | Backend systems, mobile apps |
+| **Token Limits** | Client manages context | Server manages context automatically |
+
+### 4.2. When to Use Which API
+
+| Scenario | Recommended API | Reason |
+|----------|----------------|--------|
+| **Web frontend** | Stateless (`/chat`) | Simpler, client-managed state |
+| **Mobile apps** | Session-based (`/chat/{session_id}`) | Server-side persistence |
+| **Backend integrations** | Session-based | Automatic context management |
+| **Multi-device access** | Session-based | Shared conversation state |
+| **Simple API calls** | Stateless | No session setup needed |
+| **Long-running conversations** | Session-based | Automatic history management |
+
+### 4.3. Request/Response Comparison
+
+#### Stateless Request
+```json
+{
+  "message": "What is Mount Everest?",
+  "history": [
+    {"role": "user", "content": "Tell me about mountains"},
+    {"role": "assistant", "content": "Mountains are..."}
+  ],
+  "params": {...}
+}
+```
+
+#### Session-Based Request
+```json
+{
+  "message": "What is Mount Everest?",
+  "params": {...}
+}
+```
+*(History is managed automatically by server)*
+
+---
+
+## 5. Token Accounting & Namespaces
+
+### 5.1. Namespace Patterns
 
 The system uses different namespace patterns for proper token accounting isolation:
 
