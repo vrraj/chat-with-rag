@@ -1,3 +1,5 @@
+[← Back to Chat with RAG Home](https://vrraj.github.io/chat-with-rag)
+
 # SSE (Server-Sent Events) Architecture for Chat-with-RAG
 
 > **About this document**

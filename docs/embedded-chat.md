@@ -1,3 +1,5 @@
+[← Back to Chat with RAG Home](https://vrraj.github.io/chat-with-rag)
+
 # Embedded Chat Integration Guide
 
 > **About this document**

@@ -1,3 +1,5 @@
+[← Back to Chat with RAG Home](https://vrraj.github.io/chat-with-rag)
+
 # Configuration Reference
 
 > **About this document**
@@ -458,6 +460,19 @@ You can select a prompt domain per request using `params.prompt_domain`.
 - If `prompt_domain` is set (example: `mountains`), the system applies domain-specific overrides (currently by appending additional domain system instructions).
 
 In the UI (`frontend/chat.html`), the **Prompt Domain** dropdown under **Inference** controls the value sent on every chat request.
+
+#### Template System and Context Injection
+
+The prompt registry uses **Jinja2 templating** to safely inject dynamic context into prompts:
+
+- **Conversation Context**: `summary_text` (summarized history) + `recent_block_str` (recent turns)
+- **RAG Context**: `context_text` (retrieved documents) + `web_context` (web search)
+- **User Input**: `message` (current user question)
+
+This templating approach allows:
+- Safe separation of system instructions from dynamic data
+- Consistent context formatting across all pipeline stages
+- Domain-specific prompt overrides while maintaining context structure
 
 #### Debug logging (safe by default)
 

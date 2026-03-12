@@ -1,3 +1,5 @@
+[← Back to Chat with RAG Home](https://vrraj.github.io/chat-with-rag)
+
 # 📄 Data Attribution & Licensing
 
 > **About this document**

@@ -86,13 +86,18 @@ For complete model registry documentation, see: https://vrraj.github.io/llm-adap
 ---
 
 ## What's Next
+Enhancements focused on retrieval precision and identity management:
 
-### **Planned Enhancements**
-- **User Authentication & Login Process** - Secure user management system for multi-tenant deployments
-- Additional provider support (Anthropic, Cohere)
-- User query expansion for better retrieval
-- Enhanced security features
-- Product based retrieval optimization
+**Retrieval Enhancement:** Implementing Query Expansion (Multi-query generation) to capture broader semantic intent.
+
+**Hybrid Search:** Augmenting vector-based retrieval with text-based search (BM25) to improve keyword accuracy.
+
+**Advanced Reranking:** Integration of cross-encoders for high-precision result filtering.
+
+**Identity Management:** Adding user authentication and management to enhance existing multi-user session isolation.
+
+**Extended Provider Support:** Anthropic, Cohere
+
 
 ---
 
