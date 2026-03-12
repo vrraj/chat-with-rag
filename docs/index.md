@@ -14,7 +14,7 @@ description: "Modular tool-assisted Retrieval-Augmented Generation (RAG) framewo
     <img src="https://img.shields.io/github/v/release/vrraj/chat-with-rag?label=github%20release&color=orange&logo=github" alt="GitHub Release">
   </a>
   <a href="https://github.com/vrraj/chat-with-rag/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/vrraj/chat-with-rag/python-app.yml?label=CI&logo=github" alt="CI Status">
+    <img src="https://img.shields.io/github/actions/workflow/status/vrraj/chat-with-rag/python-ci.yml?label=CI&logo=github" alt="CI Status">
   </a>
 </p>
 
