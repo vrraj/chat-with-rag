@@ -44,7 +44,7 @@ Support for both **stateless** (`/chat`) and **stateful** (`/chat/{session_id}`)
 
 <p align="center">
   <img
-    src="images/chat-with-rag-architecture.png"
+    src="images/chat-wiith-rag-architecture.png"
     style="max-width: 100%; height: auto;"
     alt="Chat with RAG v2 architecture diagram showing multi‑LLM orchestration, prompt registry, observability, embeddable chat, and domain controls"
   />
