@@ -1,4 +1,4 @@
-# Embedded Chat UI (`chat-embed.html`)
+# Embedded Chat Integration Guide
 
 > **About this document**
 >
