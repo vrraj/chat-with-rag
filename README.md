@@ -23,7 +23,7 @@ Model capabilities, pricing, and parameter policies are referenced from the adap
 Centralized prompt control layer that decouples prompts from application code. Prompts are grouped by domain/pipeline stage in a **YAML-driven registry** enabling rapid prompt experimentation and domain‑specific pipeline behavior.
 
 - **Advanced Context Window Management**  
-Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](docs/technical-overview.md#5-context-assembly) for implementation details.
+Hybrid strategy combining summarized conversation history with recent verbatim turns to maintain context while controlling token usage. [See Technical Overview](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md#5-context-assembly) for implementation details.
 
 - **Cost Tracking and Observability**  
 Real-time stage visibility, token accounting, and per-stage cost tracking across the pipeline.
@@ -381,11 +381,11 @@ docker image prune -f
 
 For additional Make targets (logs, reset, reseed, maintenance utilities), refer to:
 - the `Makefile` in the project root
-- **[docs/technical-overview.md](docs/technical-overview.md#developer--operator-utilities-makefile)**
+- **[docs/technical-overview.md](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md#developer--operator-utilities-makefile)**
 
 For details on the stateless chat API (`POST /chat`) used by `frontend/chat.html`, including request/response shape and parameter options, see:
 
-**👉 [docs/api-reference.md](docs/api-reference.md)**
+**👉 [docs/api-reference.md](https://github.com/vrraj/chat-with-rag/blob/main/docs/api-reference.md)**
 
 ---
 
@@ -464,7 +464,7 @@ You can select a prompt domain per request using `params.prompt_domain`.
 
 In the UI (`frontend/chat.html`), the **Prompt Domain** dropdown under **Inference** controls the value sent on every chat request.
 
-For detailed configuration options, see the [Configuration Reference](docs/configuration.md#prompt-registry).
+For detailed configuration options, see the [Configuration Reference](https://github.com/vrraj/chat-with-rag/blob/main/docs/configuration.md#prompt-registry).
 
 
 ---
@@ -473,7 +473,7 @@ For detailed configuration options, see the [Configuration Reference](docs/confi
 
 Batch ingestion is the recommended way to build or refresh a **knowledge base** from multiple sources at once. It supports local documents, remote URLs, and mixed source sets, with optional estimation before indexing.
 
-> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](docs/technical-overview.md)** for the recommended re-ingestion workflow.
+> **Note:** Changing the embedding model requires re-embedding and rebuilding the vector index. See **[docs/technical-overview.md](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md)** for the recommended re-ingestion workflow.
 
 ### 🎯 What It Does
 
@@ -537,7 +537,7 @@ This makes it easier to:
 
 >Start with **`"estimate": true`** to preview cost and processing behavior **before committing** a batch to storage.
 
-See **[Technical Documentation: Batch Ingestion](docs/technical-overview.md#2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
+See **[Technical Documentation: Batch Ingestion](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md#2a-batch-ingestion)** for provider-specific limits, embedding batch sizing, and advanced ingestion workflows.
 
 ---
 ## 🪟 Embeddable Widget Configuration
@@ -548,7 +548,7 @@ The widget exposes the same orchestration used by the main application — **ret
 
 > Supports **domain isolation** so different websites can use different knowledge bases and prompt domains.
 
-> **For complete documentation on the embedded chat UI, see the [Embedded Chat Guide](docs/embedded-chat.md).**
+> **For complete documentation on the embedded chat UI, see the [Embedded Chat Guide](https://github.com/vrraj/chat-with-rag/blob/main/docs/embedded-chat.md).**
 
 ### ⚙️ Configuration Options
 
@@ -777,8 +777,8 @@ curl -X POST http://localhost:8000/chat/12d8cd79-0ee8-4dcd-97a5-5983effcbccd \
 
 ### 📖 Learn More
 
-- **[Technical Overview](docs/technical-overview.md#session-based-stateful-chat)** - Detailed architecture and implementation
-- **[API Reference](docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
+- **[Technical Overview](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md#session-based-stateful-chat)** - Detailed architecture and implementation
+- **[API Reference](https://github.com/vrraj/chat-with-rag/blob/main/docs/api-reference.md#session-based-chat-api-stateful-chatsession_id-endpoint)** - Complete API documentation and examples
 
 ---
 
@@ -807,7 +807,7 @@ This project includes a sample knowledge base derived from Wikipedia.
 * **Source:** ~70 curated Wikipedia articles processed via a custom high-fidelity MediaWiki extraction pipeline.
 * **Integrity:** Source URLs and author metadata are preserved within the vector payloads to enable **verified citations**.
 * **License:** Distributed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-* **Full Credits:** Detailed source links and compliance information can be found in [docs/attributions.md](docs/attributions.md).
+* **Full Credits:** Detailed source links and compliance information can be found in [docs/attributions.md](https://github.com/vrraj/chat-with-rag/blob/main/docs/attributions.md).
 
 ### 🔍 Explore the Data
 
@@ -948,7 +948,7 @@ See the **[Model Registry documentation](https://vrraj.github.io/llm-adapter/mod
 
 Technical details about the system architecture, pipelines, design decisions, and engineering approach are available here:
 
-👉 **[docs/technical-overview.md](docs/technical-overview.md)**
+👉 **[docs/technical-overview.md](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md)**
 
 This overview covers module structure, extraction pipeline, embedding flow, Qdrant indexing, batch ingestion (local PDFs + URLs with optional cost estimation), chat orchestration, SSE streaming, and frontend–backend integration.
 
@@ -988,7 +988,7 @@ These security controls help prevent unauthorized access and ensure that differe
 ---
 ## 📡 API Usage
 
-For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](docs/api-reference.md)**.
+For complete API documentation including usage examples, request/response formats, and integration guides, see the **[API Reference](https://github.com/vrraj/chat-with-rag/blob/main/docs/api-reference.md)**.
 
 ---
 
@@ -1007,7 +1007,7 @@ python scripts/qdrant_scripts/qdrant_ops.py list-titles
 python scripts/qdrant_scripts/qdrant_ops.py --collection document_index_gemini export -f docs-index-seed-gemini.jsonl
 ```
 
-👉 **[Technical Overview: Qdrant Operations CLI](docs/technical-overview.md#qdrant-operations-cli)**
+👉 **[Technical Overview: Qdrant Operations CLI](https://github.com/vrraj/chat-with-rag/blob/main/docs/technical-overview.md#qdrant-operations-cli)**
 
 ---
 

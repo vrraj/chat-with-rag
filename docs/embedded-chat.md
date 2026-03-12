@@ -4,7 +4,7 @@
 >
 > This page explains the **embeddable chat UI** for the *Chat-with-RAG* system, including configuration options, integration methods, and usage examples for third-party websites.
 >
-> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+> **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
 This document describes the **embeddable chat UI** built on top of the existing stateless `/chat` endpoint.
 

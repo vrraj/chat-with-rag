@@ -4,7 +4,7 @@
 >
 > This page provides **complete API documentation** for the *Chat-with-RAG* system, including request/response formats, parameters, and integration examples for the stateless chat endpoint.
 >
-> If you landed here directly (for example from documentation hosting or search), start with the repository **[README](../README.md)** to see how to run the system locally and try the interactive demo.
+> **Note:** If you landed here directly (for example from documentation hosting or search), start with the repository **[README](https://github.com/vrraj/chat-with-rag/blob/main/README.md)** to see how to run the system locally and try the interactive demo.
 
 This document is focused on the `/chat` endpoint used by `frontend/chat.html`.
 
