@@ -171,7 +171,7 @@ The interface can also be **deployed on a server and accessed by multiple users*
 [Embedded Chat Guide](embedded-chat.md) | [Server-Sent Events](server-sent-events.md) | [Troubleshooting Guide](troubleshooting.md) | [Attributions](attributions.md)
 
 **Story on Medium:**
-[Beyond the Black Box: A Modular Reference Architecture for RAG](https://medium.com/@vr.rajkumar99/beyond-the-black-box-a-modular-reference-architecture-for-rag-7e36da8d161d)
+[Chat-with-rag: A Modular Reference Architecture for RAG](https://medium.com/@vr.rajkumar99/beyond-the-black-box-a-modular-reference-architecture-for-rag-7e36da8d161d)
 
 ---
 
