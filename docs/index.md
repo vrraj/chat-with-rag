@@ -36,7 +36,7 @@ Chat with RAG implements a modular architecture for building **tool‑assisted R
 
 <p align="center">
   <img
-    src="https://github.com/vrraj/chat-with-rag/blob/main/images/chat-with-rag-architecture.png?raw=true"
+    src="chat-with-rag-architecture.png"
     style="max-width: 100%; height: auto;"
     alt="Chat with RAG architecture overview showing multi-LLM orchestration, prompt registry, context management, observability, and embeddable interfaces"
   />
