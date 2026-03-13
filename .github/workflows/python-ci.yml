@@ -1,8 +1,10 @@
-name: Basic CI
+name: CI Pipeline
 
 on:
   push:
+    branches: [ main, develop ]
   pull_request:
+    branches: [ main ]
 
 jobs:
   syntax-check:
@@ -10,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -33,3 +35,12 @@ jobs:
       - name: Syntax check (compile project Python files)
         run: |
           python -m compileall backend scripts scripts/qdrant_scripts
+
+      - name: Check YAML syntax
+        run: |
+          python -c "import yaml; yaml.safe_load(open('prompts/prompt_registry.yaml'))"
+          python -c "import yaml; yaml.safe_load(open('docs/_config.yml'))"
+
+      - name: Validate documentation links
+        run: |
+          find docs -name "*.md" -exec grep -l "\[.*\](.*\.md)" {} \;
