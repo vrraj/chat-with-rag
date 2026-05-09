@@ -33,6 +33,11 @@ class SummaryPromptSpec:
     full_payload_template: str = ""
 
 
+@dataclass(frozen=True)
+class ToolsSynthPromptSpec:
+    system_instruction: str
+
+
 _CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
@@ -350,6 +355,47 @@ def resolve_summary_prompt(*, registry_path: str, domain: Optional[str]) -> Summ
         system_instruction=system_instruction,
         full_payload_template=full_payload_template
     )
+
+
+def resolve_tools_synth_prompt(*, registry_path: str, domain: Optional[str]) -> ToolsSynthPromptSpec:
+    """Resolve tools synthesis prompt spec.
+
+    Rules:
+    - Base prompt is global_defaults.tools_synth
+    - If domain is provided and domains.<domain>.tools_synth.system_instruction exists,
+      append it to the base system_instruction.
+    """
+
+    reg = _get_cached_yaml(registry_path)
+
+    try:
+        base_ts = (reg.get("global_defaults") or {}).get("tools_synth") or {}
+    except Exception:
+        base_ts = {}
+
+    base_sys = str(base_ts.get("system_instruction") or "").strip()
+    if not base_sys:
+        raise LLMError(
+            provider="internal",
+            kind="config",
+            message="Prompt registry missing required global_defaults.tools_synth.system_instruction",
+        )
+
+    dom = (domain or "").strip()
+    dom_sys = ""
+    if dom:
+        try:
+            dom_ts = ((reg.get("domains") or {}).get(dom) or {}).get("tools_synth") or {}
+            dom_sys = str(dom_ts.get("system_instruction") or "").strip()
+        except Exception:
+            dom_sys = ""
+
+    if dom_sys:
+        system_instruction = base_sys + "\n\n" + dom_sys
+    else:
+        system_instruction = base_sys
+
+    return ToolsSynthPromptSpec(system_instruction=system_instruction)
 
 
 def resolve_summary_update_prompt(*, registry_path: str, domain: Optional[str]) -> SummaryPromptSpec:

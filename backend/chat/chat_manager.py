@@ -55,6 +55,7 @@ from backend.chat.prompt_registry import (
     resolve_rewrite_prompt,
     resolve_rerank_prompt,
     resolve_summary_prompt,
+    resolve_tools_synth_prompt,
     render_full_payload,
 )
 
@@ -3491,20 +3492,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
 
-            tools_synth_system_prompt = (
-                "You are a question-answering assistant for a retrieval-augmented system.\n"
-                "STRICT RULES:\n"
-                "1. Base your answer ONLY on information in the provided SOURCES (e.g., [SOURCE: KNOWLEDGE_BASE], [SOURCE: TOOL - ...]).\n"
-                "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond those SOURCES.\n"
-                "3. If the SOURCES still do not contain enough information to answer the question, reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-                "4. If any Context chunk has a citation like [1], [2], etc., retain it in your response when you use that Context.\n"
-                "5. Do not fabricate sources or facts.\n"
-                "6. Integrate Tool results only when relevant, and do not invent citations for tool facts.\n"
-                "7. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. Do not invent citations for tool facts.\n"
-                "8. Be concise and answer the user’s question directly.\n"
-                "9. If tool output contains SVG markup and the user asked for a chart/visual, include that SVG markup verbatim in the answer.\n"
-                "10. Do not add any extra text beyond what is in the Context or Tool results."
+            ts_prompt_domain = (prompt_domain or "").strip()
+            ts_registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+            ts_prompt_spec = resolve_tools_synth_prompt(
+                registry_path=ts_registry_path,
+                domain=ts_prompt_domain,
             )
+            tools_synth_system_prompt = (ts_prompt_spec.system_instruction or "").strip()
 
             synth_messages = _build_tools_synth_messages(
                 system_prompt=tools_synth_system_prompt,

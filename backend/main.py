@@ -1604,7 +1604,7 @@ def _validate_prompt_registry_shape(registry: Dict[str, Any]) -> None:
     if not isinstance(global_defaults, dict):
         raise HTTPException(status_code=400, detail="Missing required key: global_defaults")
 
-    required_stages = ["inference", "rewrite", "rerank", "summary"]
+    required_stages = ["inference", "rewrite", "rerank", "summary", "tools_synth"]
     for stage in required_stages:
         stage_cfg = global_defaults.get(stage)
         if not isinstance(stage_cfg, dict):
