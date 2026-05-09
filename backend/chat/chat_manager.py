@@ -3538,6 +3538,50 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     **_kwargs_synth,
                 )
                 combined = _extract_text_from_responses(resp_synth).strip()
+
+                # Prefer canonical SVG from tool output when synthesis text is truncated.
+                def _extract_svg_from_tool_outputs(_tool_outputs: List[Dict[str, Any]]) -> str:
+                    for _t in (_tool_outputs or []):
+                        _out = str(_t.get("output") or "")
+                        try:
+                            _parsed = json.loads(_out)
+                            if isinstance(_parsed, dict):
+                                _svg_val = _parsed.get("svg")
+                                if isinstance(_svg_val, str) and _svg_val.strip():
+                                    return _svg_val.strip()
+                        except Exception:
+                            pass
+
+                        try:
+                            _m = re.search(r"<svg\\b[\\s\\S]*?</svg>", _out, flags=re.IGNORECASE)
+                            if _m and _m.group(0).strip():
+                                return _m.group(0).strip()
+                        except Exception:
+                            pass
+                    return ""
+
+                _svg_from_tool = _extract_svg_from_tool_outputs(tool_outputs_list)
+                _chart_requested = bool(re.search(r"\b(chart|sparkline|trend|line\s*chart|bar\s*chart|time[-\s]?series|visual)\b", str(message or ""), flags=re.IGNORECASE))
+                if _svg_from_tool and _chart_requested:
+                    _has_svg = "<svg" in combined.lower()
+                    _has_svg_close = "</svg>" in combined.lower()
+
+                    # If synthesis missed/trimmed SVG, keep narrative prefix and inject full tool SVG.
+                    if not _has_svg or not _has_svg_close:
+                        _prefix = ""
+                        if _has_svg:
+                            try:
+                                _prefix = combined.split("<svg", 1)[0].strip()
+                            except Exception:
+                                _prefix = ""
+                        else:
+                            _prefix = combined.strip()
+
+                        if _prefix:
+                            combined = f"{_prefix}\n\n{_svg_from_tool}"
+                        else:
+                            combined = _svg_from_tool
+
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
 
                 if combined and ("NO_SUPPORTED_SOURCES" not in combined):

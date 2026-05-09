@@ -78,6 +78,10 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
     except Exception:
         thought_blocks = []
 
+    # SVG-only raw HTML pass-through:
+    # - stash <svg> blocks before markdown conversion,
+    # - escape all other raw tags,
+    # - restore only SVG blocks before bleach sanitization.
     svg_blocks: list[str] = []
     svg_token_prefix = "RAWSVGBLOCKTOKEN"
 
@@ -129,6 +133,7 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
                 raw_html = raw_html.replace(f"<strong>RAW_SVG_BLOCK_{i}</strong>", block)
                 raw_html = raw_html.replace(f"RAW_SVG_BLOCK_{i}", block)
 
+            # Any leftover token means markdown transformed or dropped placeholder text.
             if svg_token_prefix in raw_html:
                 logger.warning("[MD-SVG] leftover_svg_tokens_detected_after_restore")
 
@@ -151,6 +156,7 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
 
     if svg_blocks:
         try:
+            # Basic structural sanity check for truncated SVG after sanitize.
             open_count = len(re.findall(r"<svg\b", clean_html, flags=re.IGNORECASE))
             close_count = len(re.findall(r"</svg>", clean_html, flags=re.IGNORECASE))
             logger.info(
