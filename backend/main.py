@@ -1654,6 +1654,47 @@ def _validate_tool_registry_shape(registry: Dict[str, Any]) -> None:
     if not isinstance(registry, dict):
         raise HTTPException(status_code=400, detail="Registry must be a JSON object")
 
+    artifact_injection = registry.get("artifact_injection")
+    if not isinstance(artifact_injection, dict):
+        raise HTTPException(status_code=400, detail="Missing required key: artifact_injection")
+
+    enabled = artifact_injection.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="artifact_injection.enabled must be boolean")
+
+    allowed_tools = artifact_injection.get("allowed_tools")
+    if not isinstance(allowed_tools, list):
+        raise HTTPException(status_code=400, detail="artifact_injection.allowed_tools must be a list")
+    for i, name in enumerate(allowed_tools):
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=400, detail=f"artifact_injection.allowed_tools[{i}] must be a non-empty string")
+
+    security = artifact_injection.get("security")
+    if not isinstance(security, dict):
+        raise HTTPException(status_code=400, detail="artifact_injection.security must be an object")
+
+    max_artifact_chars = security.get("max_artifact_chars")
+    if not isinstance(max_artifact_chars, int) or max_artifact_chars <= 0:
+        raise HTTPException(status_code=400, detail="artifact_injection.security.max_artifact_chars must be a positive integer")
+
+    allowed_artifact_types = security.get("allowed_artifact_types")
+    if not isinstance(allowed_artifact_types, list) or not allowed_artifact_types:
+        raise HTTPException(status_code=400, detail="artifact_injection.security.allowed_artifact_types must be a non-empty list")
+    for i, value in enumerate(allowed_artifact_types):
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"artifact_injection.security.allowed_artifact_types[{i}] must be a non-empty string")
+
+    allowed_injection_modes = security.get("allowed_injection_modes")
+    if not isinstance(allowed_injection_modes, list) or not allowed_injection_modes:
+        raise HTTPException(status_code=400, detail="artifact_injection.security.allowed_injection_modes must be a non-empty list")
+    for i, value in enumerate(allowed_injection_modes):
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"artifact_injection.security.allowed_injection_modes[{i}] must be a non-empty string")
+
+    enforce_placeholder_format = security.get("enforce_placeholder_format")
+    if not isinstance(enforce_placeholder_format, bool):
+        raise HTTPException(status_code=400, detail="artifact_injection.security.enforce_placeholder_format must be boolean")
+
     tools = registry.get("tools")
     if not isinstance(tools, list) or not tools:
         raise HTTPException(status_code=400, detail="Missing required non-empty key: tools")

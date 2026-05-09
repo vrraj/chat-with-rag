@@ -1,6 +1,12 @@
 let registryData = null;
 
 const els = {
+  artifactInjectionEnabled: document.getElementById('artifactInjectionEnabled'),
+  artifactAllowedTools: document.getElementById('artifactAllowedTools'),
+  artifactMaxChars: document.getElementById('artifactMaxChars'),
+  artifactEnforcePlaceholder: document.getElementById('artifactEnforcePlaceholder'),
+  artifactAllowedTypes: document.getElementById('artifactAllowedTypes'),
+  artifactAllowedModes: document.getElementById('artifactAllowedModes'),
   toolSelect: document.getElementById('toolSelect'),
   toolEnabled: document.getElementById('toolEnabled'),
   producesArtifact: document.getElementById('producesArtifact'),
@@ -31,6 +37,47 @@ function getTools() {
   return Array.isArray(tools) ? tools : [];
 }
 
+function ensureArtifactInjectionConfig() {
+  if (!registryData || !registryData.registry || typeof registryData.registry !== 'object') {
+    return { enabled: true, allowed_tools: [] };
+  }
+  if (!registryData.registry.artifact_injection || typeof registryData.registry.artifact_injection !== 'object') {
+    registryData.registry.artifact_injection = {
+      enabled: true,
+      allowed_tools: [],
+      security: {
+        max_artifact_chars: 120000,
+        allowed_artifact_types: ['svg'],
+        allowed_injection_modes: ['verbatim'],
+        enforce_placeholder_format: true,
+      },
+    };
+  }
+  const cfg = registryData.registry.artifact_injection;
+  if (!Array.isArray(cfg.allowed_tools)) {
+    cfg.allowed_tools = [];
+  }
+  if (typeof cfg.enabled !== 'boolean') {
+    cfg.enabled = true;
+  }
+  if (!cfg.security || typeof cfg.security !== 'object') {
+    cfg.security = {};
+  }
+  if (!Number.isInteger(cfg.security.max_artifact_chars) || cfg.security.max_artifact_chars <= 0) {
+    cfg.security.max_artifact_chars = 120000;
+  }
+  if (!Array.isArray(cfg.security.allowed_artifact_types) || cfg.security.allowed_artifact_types.length === 0) {
+    cfg.security.allowed_artifact_types = ['svg'];
+  }
+  if (!Array.isArray(cfg.security.allowed_injection_modes) || cfg.security.allowed_injection_modes.length === 0) {
+    cfg.security.allowed_injection_modes = ['verbatim'];
+  }
+  if (typeof cfg.security.enforce_placeholder_format !== 'boolean') {
+    cfg.security.enforce_placeholder_format = true;
+  }
+  return cfg;
+}
+
 function getSelectedTool() {
   const name = els.toolSelect.value;
   return getTools().find((t) => t && t.name === name) || null;
@@ -54,6 +101,15 @@ function refreshPreview() {
 }
 
 function refreshEditors() {
+  const policy = ensureArtifactInjectionConfig();
+  const security = policy.security || {};
+  els.artifactInjectionEnabled.checked = !!policy.enabled;
+  els.artifactAllowedTools.value = (policy.allowed_tools || []).join(', ');
+  els.artifactMaxChars.value = Number.isInteger(security.max_artifact_chars) ? String(security.max_artifact_chars) : '120000';
+  els.artifactEnforcePlaceholder.checked = !!security.enforce_placeholder_format;
+  els.artifactAllowedTypes.value = (security.allowed_artifact_types || []).join(', ');
+  els.artifactAllowedModes.value = (security.allowed_injection_modes || []).join(', ');
+
   const tool = getSelectedTool();
   if (!tool) {
     els.toolEnabled.checked = false;
@@ -86,6 +142,33 @@ function refreshEditors() {
 }
 
 function persistCurrentTool() {
+  const policy = ensureArtifactInjectionConfig();
+  policy.enabled = !!els.artifactInjectionEnabled.checked;
+  policy.allowed_tools = (els.artifactAllowedTools.value || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!policy.security || typeof policy.security !== 'object') {
+    policy.security = {};
+  }
+  const parsedMax = parseInt(els.artifactMaxChars.value || '120000', 10);
+  policy.security.max_artifact_chars = Number.isInteger(parsedMax) && parsedMax > 0 ? parsedMax : 120000;
+  policy.security.enforce_placeholder_format = !!els.artifactEnforcePlaceholder.checked;
+  policy.security.allowed_artifact_types = (els.artifactAllowedTypes.value || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (policy.security.allowed_artifact_types.length === 0) {
+    policy.security.allowed_artifact_types = ['svg'];
+  }
+  policy.security.allowed_injection_modes = (els.artifactAllowedModes.value || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (policy.security.allowed_injection_modes.length === 0) {
+    policy.security.allowed_injection_modes = ['verbatim'];
+  }
+
   const tool = getSelectedTool();
   if (!tool) return;
 
@@ -152,6 +235,12 @@ function onAnyInputChanged() {
 }
 
 els.toolSelect.addEventListener('change', refreshEditors);
+els.artifactInjectionEnabled.addEventListener('change', onAnyInputChanged);
+els.artifactAllowedTools.addEventListener('input', onAnyInputChanged);
+els.artifactMaxChars.addEventListener('input', onAnyInputChanged);
+els.artifactEnforcePlaceholder.addEventListener('change', onAnyInputChanged);
+els.artifactAllowedTypes.addEventListener('input', onAnyInputChanged);
+els.artifactAllowedModes.addEventListener('input', onAnyInputChanged);
 els.toolEnabled.addEventListener('change', onAnyInputChanged);
 els.producesArtifact.addEventListener('change', onAnyInputChanged);
 els.artifactType.addEventListener('input', onAnyInputChanged);

@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from collections import defaultdict
 import yaml
+import bleach
 # NOTE: SSE stage emission is centralized in backend/stream_emit.py so chat_manager stays agnostic of registry details.
 # Stream emission helpers (centralized in backend/stream_emit.py)
 from backend.stream_emit import emit_stage, close_stream
@@ -2206,22 +2207,77 @@ def _load_tool_registry(settings_obj: Any) -> Dict[str, Dict[str, Any]]:
         if not name:
             continue
         by_name[name] = item
-    return by_name
+
+    artifact_injection = data.get("artifact_injection") if isinstance(data, dict) else {}
+    if not isinstance(artifact_injection, dict):
+        artifact_injection = {}
+
+    return {
+        "tools_by_name": by_name,
+        "artifact_injection": artifact_injection,
+    }
 
 
 def _extract_artifacts_from_tool_outputs(
     tool_outputs_list: List[Dict[str, Any]],
-    tool_registry: Dict[str, Dict[str, Any]],
+    tool_registry: Dict[str, Any],
 ) -> List[Dict[str, str]]:
     artifacts: List[Dict[str, str]] = []
-    allowed_artifact_tools = {"get_timeseries_sparklines_svg"}
+    default_max_artifact_chars = 120000
+    placeholder_re = re.compile(r"^\{\{ARTIFACT:[A-Za-z0-9_.:-]{1,64}\}\}$")
+    artifact_injection = tool_registry.get("artifact_injection") if isinstance(tool_registry, dict) else {}
+    if not isinstance(artifact_injection, dict):
+        artifact_injection = {}
+    if not bool(artifact_injection.get("enabled", True)):
+        return artifacts
+
+    security_cfg = artifact_injection.get("security") if isinstance(artifact_injection, dict) else {}
+    if not isinstance(security_cfg, dict):
+        security_cfg = {}
+
+    try:
+        max_artifact_chars = int(security_cfg.get("max_artifact_chars", default_max_artifact_chars) or default_max_artifact_chars)
+    except Exception:
+        max_artifact_chars = default_max_artifact_chars
+    if max_artifact_chars <= 0:
+        max_artifact_chars = default_max_artifact_chars
+
+    allowed_artifact_types = {
+        str(v).strip().lower()
+        for v in (security_cfg.get("allowed_artifact_types") or ["svg"])
+        if isinstance(v, str) and str(v).strip()
+    }
+    if not allowed_artifact_types:
+        allowed_artifact_types = {"svg"}
+
+    allowed_injection_modes = {
+        str(v).strip().lower()
+        for v in (security_cfg.get("allowed_injection_modes") or ["verbatim"])
+        if isinstance(v, str) and str(v).strip()
+    }
+    if not allowed_injection_modes:
+        allowed_injection_modes = {"verbatim"}
+
+    enforce_placeholder_format = bool(security_cfg.get("enforce_placeholder_format", True))
+
+    raw_allowed = artifact_injection.get("allowed_tools")
+    allowed_artifact_tools = {
+        str(n).strip()
+        for n in (raw_allowed or [])
+        if isinstance(n, str) and str(n).strip()
+    }
+
+    tools_by_name = tool_registry.get("tools_by_name") if isinstance(tool_registry, dict) else {}
+    if not isinstance(tools_by_name, dict):
+        tools_by_name = {}
+
     for t in (tool_outputs_list or []):
         tool_name = str(t.get("name") or "").strip()
         if not tool_name:
             continue
-        if tool_name not in allowed_artifact_tools:
+        if allowed_artifact_tools and tool_name not in allowed_artifact_tools:
             continue
-        cfg = tool_registry.get(tool_name) or {}
+        cfg = tools_by_name.get(tool_name) or {}
         artifact_cfg = cfg.get("artifact") if isinstance(cfg, dict) else None
         if not isinstance(artifact_cfg, dict):
             continue
@@ -2233,6 +2289,15 @@ def _extract_artifacts_from_tool_outputs(
         artifact_type = str(artifact_cfg.get("artifact_type") or "").strip().lower()
         injection_mode = str(artifact_cfg.get("injection_mode") or "").strip().lower()
         if not artifact_key:
+            continue
+        if artifact_type not in allowed_artifact_types:
+            logger.warning("[ARTIFACT] tool=%s skipped: unsupported artifact_type=%s", tool_name, artifact_type)
+            continue
+        if injection_mode not in allowed_injection_modes:
+            logger.warning("[ARTIFACT] tool=%s skipped: unsupported injection_mode=%s", tool_name, injection_mode)
+            continue
+        if enforce_placeholder_format and placeholder and not placeholder_re.match(placeholder):
+            logger.warning("[ARTIFACT] tool=%s skipped: invalid placeholder format", tool_name)
             continue
 
         payload = ""
@@ -2253,6 +2318,52 @@ def _extract_artifacts_from_tool_outputs(
                     payload = m.group(0).strip()
             except Exception:
                 payload = ""
+
+        if payload and len(payload) > max_artifact_chars:
+            logger.warning(
+                "[ARTIFACT] tool=%s skipped: payload too large chars=%d max=%d",
+                tool_name,
+                len(payload),
+                max_artifact_chars,
+            )
+            payload = ""
+
+        if payload and artifact_type == "svg":
+            # Runtime hardening: reject known-unsafe patterns and sanitize SVG before injection.
+            lower_payload = payload.lower()
+            if (
+                "<script" in lower_payload
+                or "javascript:" in lower_payload
+                or "<foreignobject" in lower_payload
+                or re.search(r"\son[a-z]+\s*=", lower_payload) is not None
+            ):
+                logger.warning("[ARTIFACT] tool=%s skipped: unsafe svg pattern detected", tool_name)
+                payload = ""
+            else:
+                try:
+                    sanitized = bleach.clean(
+                        payload,
+                        tags=["svg", "polyline", "line", "rect", "path", "text", "g"],
+                        attributes={
+                            "svg": ["width", "height", "viewBox", "role", "aria-hidden", "xmlns"],
+                            "polyline": ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "points"],
+                            "line": ["x1", "y1", "x2", "y2", "stroke", "stroke-width", "stroke-linecap"],
+                            "rect": ["x", "y", "width", "height", "fill", "rx", "ry", "stroke", "stroke-width"],
+                            "path": ["d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"],
+                            "text": ["x", "y", "text-anchor", "fill", "font-size", "font-weight"],
+                            "g": ["transform", "fill", "stroke", "stroke-width"],
+                        },
+                        protocols=["http", "https"],
+                        strip=True,
+                    ).strip()
+                    if "<svg" not in sanitized.lower() or "</svg>" not in sanitized.lower():
+                        logger.warning("[ARTIFACT] tool=%s skipped: sanitized svg invalid", tool_name)
+                        payload = ""
+                    else:
+                        payload = sanitized
+                except Exception:
+                    logger.warning("[ARTIFACT] tool=%s skipped: svg sanitization failed", tool_name)
+                    payload = ""
 
         if payload:
             artifacts.append(

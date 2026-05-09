@@ -1,4 +1,15 @@
 version: 1
+artifact_injection:
+  enabled: true
+  allowed_tools:
+    - get_timeseries_sparklines_svg
+  security:
+    max_artifact_chars: 120000
+    allowed_artifact_types:
+      - svg
+    allowed_injection_modes:
+      - verbatim
+    enforce_placeholder_format: true
 tools:
   - name: get_weather
     enabled: true
