@@ -36,7 +36,9 @@ import re
 import uuid
 import tiktoken
 import time
+from pathlib import Path
 from collections import defaultdict
+import yaml
 # NOTE: SSE stage emission is centralized in backend/stream_emit.py so chat_manager stays agnostic of registry details.
 # Stream emission helpers (centralized in backend/stream_emit.py)
 from backend.stream_emit import emit_stage, close_stream
@@ -2172,6 +2174,127 @@ def parse_tool_args(raw: Any) -> Dict[str, Any]:
             return {}
     return {}
 
+
+def _tool_registry_path(settings_obj: Any) -> Path:
+    raw_path = str(getattr(settings_obj, "tool_registry_path", "") or "").strip() or "prompts/tool_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / candidate
+
+
+def _load_tool_registry(settings_obj: Any) -> Dict[str, Dict[str, Any]]:
+    path = _tool_registry_path(settings_obj)
+    try:
+        if not path.exists():
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    tools = data.get("tools") if isinstance(data, dict) else []
+    if not isinstance(tools, list):
+        return {}
+
+    by_name: Dict[str, Dict[str, Any]] = {}
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        by_name[name] = item
+    return by_name
+
+
+def _extract_artifacts_from_tool_outputs(
+    tool_outputs_list: List[Dict[str, Any]],
+    tool_registry: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    artifacts: List[Dict[str, str]] = []
+    allowed_artifact_tools = {"get_timeseries_sparklines_svg"}
+    for t in (tool_outputs_list or []):
+        tool_name = str(t.get("name") or "").strip()
+        if not tool_name:
+            continue
+        if tool_name not in allowed_artifact_tools:
+            continue
+        cfg = tool_registry.get(tool_name) or {}
+        artifact_cfg = cfg.get("artifact") if isinstance(cfg, dict) else None
+        if not isinstance(artifact_cfg, dict):
+            continue
+        if not bool(artifact_cfg.get("produces_artifact")):
+            continue
+
+        artifact_key = str(artifact_cfg.get("artifact_key") or "").strip()
+        placeholder = str(artifact_cfg.get("placeholder") or "").strip()
+        artifact_type = str(artifact_cfg.get("artifact_type") or "").strip().lower()
+        injection_mode = str(artifact_cfg.get("injection_mode") or "").strip().lower()
+        if not artifact_key:
+            continue
+
+        payload = ""
+        out = str(t.get("output") or "")
+        try:
+            parsed = json.loads(out)
+            if isinstance(parsed, dict):
+                v = parsed.get(artifact_key)
+                if isinstance(v, str) and v.strip():
+                    payload = v.strip()
+        except Exception:
+            payload = ""
+
+        if not payload and artifact_type == "svg":
+            try:
+                m = re.search(r"<svg\\b[\\s\\S]*?</svg>", out, flags=re.IGNORECASE)
+                if m and m.group(0).strip():
+                    payload = m.group(0).strip()
+            except Exception:
+                payload = ""
+
+        if payload:
+            artifacts.append(
+                {
+                    "tool": tool_name,
+                    "payload": payload,
+                    "placeholder": placeholder,
+                    "injection_mode": injection_mode,
+                    "artifact_type": artifact_type,
+                }
+            )
+    return artifacts
+
+
+def _inject_registered_artifacts(text: str, artifacts: List[Dict[str, str]]) -> str:
+    combined = str(text or "")
+    for a in artifacts:
+        tool_name = str(a.get("tool") or "unknown")
+        payload = str(a.get("payload") or "").strip()
+        placeholder = str(a.get("placeholder") or "").strip()
+        injection_mode = str(a.get("injection_mode") or "").strip().lower()
+        if not payload:
+            logger.debug("[ARTIFACT] tool=%s skipped: empty payload", tool_name)
+            continue
+
+        if placeholder and placeholder in combined:
+            combined = combined.replace(placeholder, payload)
+            logger.debug("[ARTIFACT] tool=%s placeholder_hit=true placeholder=%s", tool_name, placeholder)
+            continue
+        if placeholder:
+            logger.debug("[ARTIFACT] tool=%s placeholder_hit=false placeholder=%s", tool_name, placeholder)
+
+        if injection_mode == "verbatim" and payload not in combined:
+            if combined.strip():
+                combined = f"{combined.strip()}\n\n{payload}"
+            else:
+                combined = payload
+            logger.debug("[ARTIFACT] tool=%s appended_verbatim=true", tool_name)
+        elif injection_mode == "verbatim":
+            logger.debug("[ARTIFACT] tool=%s appended_verbatim=false reason=already_present", tool_name)
+    return combined
+
 #
 # --- History slicing helper moved to utils.py ---
 
@@ -3492,6 +3615,14 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
 
+            tool_registry = _load_tool_registry(settings_obj)
+            artifacts_from_registry = _extract_artifacts_from_tool_outputs(tool_outputs_list, tool_registry)
+            logger.debug(
+                "[ARTIFACT] extracted_count=%d tools=%s",
+                len(artifacts_from_registry),
+                [a.get("tool") for a in artifacts_from_registry],
+            )
+
             ts_prompt_domain = (prompt_domain or "").strip()
             ts_registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
             ts_prompt_spec = resolve_tools_synth_prompt(
@@ -3538,6 +3669,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     **_kwargs_synth,
                 )
                 combined = _extract_text_from_responses(resp_synth).strip()
+                combined = _inject_registered_artifacts(combined, artifacts_from_registry)
 
                 # Prefer canonical SVG from tool output when synthesis text is truncated.
                 def _extract_svg_from_tool_outputs(_tool_outputs: List[Dict[str, Any]]) -> str:

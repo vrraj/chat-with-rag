@@ -1,0 +1,37 @@
+version: 1
+tools:
+  - name: get_weather
+    enabled: true
+    artifact:
+      produces_artifact: false
+      artifact_type: ""
+      artifact_key: ""
+      injection_mode: ""
+      placeholder: ""
+
+  - name: web_search
+    enabled: true
+    artifact:
+      produces_artifact: false
+      artifact_type: ""
+      artifact_key: ""
+      injection_mode: ""
+      placeholder: ""
+
+  - name: get_nearby_airports
+    enabled: true
+    artifact:
+      produces_artifact: false
+      artifact_type: ""
+      artifact_key: ""
+      injection_mode: ""
+      placeholder: ""
+
+  - name: get_timeseries_sparklines_svg
+    enabled: true
+    artifact:
+      produces_artifact: true
+      artifact_type: svg
+      artifact_key: svg
+      injection_mode: verbatim
+      placeholder: "{{ARTIFACT:chart_svg}}"

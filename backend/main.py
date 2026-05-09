@@ -1585,9 +1585,25 @@ class PromptRegistryUpdateRequest(BaseModel):
     registry: Dict[str, Any]
 
 
+class ToolRegistryUpdateRequest(BaseModel):
+    """Request model for writing tool registry YAML."""
+
+    registry: Dict[str, Any]
+
+
 def _prompt_registry_path() -> Path:
     """Resolve configured prompt registry path to absolute path."""
     raw_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip() or "prompts/prompt_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / candidate
+
+
+def _tool_registry_path() -> Path:
+    """Resolve tool registry path to absolute path."""
+    raw_path = str(getattr(settings, "tool_registry_path", "") or "").strip() or "prompts/tool_registry.yaml"
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return candidate
@@ -1633,6 +1649,45 @@ def _validate_prompt_registry_shape(registry: Dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail=f"Missing full_payload template for stage: {stage}")
 
 
+def _validate_tool_registry_shape(registry: Dict[str, Any]) -> None:
+    """Basic schema validation for tool registry editor writes."""
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=400, detail="Registry must be a JSON object")
+
+    tools = registry.get("tools")
+    if not isinstance(tools, list) or not tools:
+        raise HTTPException(status_code=400, detail="Missing required non-empty key: tools")
+
+    seen_names: set[str] = set()
+    for idx, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            raise HTTPException(status_code=400, detail=f"tools[{idx}] must be an object")
+
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail=f"tools[{idx}].name is required")
+        if name in seen_names:
+            raise HTTPException(status_code=400, detail=f"Duplicate tool name in registry: {name}")
+        seen_names.add(name)
+
+        artifact = tool.get("artifact")
+        if not isinstance(artifact, dict):
+            raise HTTPException(status_code=400, detail=f"tools[{idx}].artifact must be an object")
+
+        produces_artifact = artifact.get("produces_artifact")
+        if not isinstance(produces_artifact, bool):
+            raise HTTPException(status_code=400, detail=f"tools[{idx}].artifact.produces_artifact must be boolean")
+
+        if produces_artifact:
+            for key in ("artifact_type", "artifact_key", "injection_mode", "placeholder"):
+                value = str(artifact.get(key) or "").strip()
+                if not value:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"tools[{idx}].artifact.{key} is required when produces_artifact=true",
+                    )
+
+
 @app.get(
     "/api/prompt-registry",
     tags=["5. Debug"],
@@ -1660,6 +1715,33 @@ async def get_prompt_registry():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read prompt registry: {e}")
+
+
+@app.get(
+    "/api/tool-registry",
+    tags=["5. Debug"],
+    summary="Get tool registry YAML",
+)
+async def get_tool_registry():
+    """Return parsed tool registry YAML for UI editing."""
+    path = _tool_registry_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Tool registry not found at {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            registry = yaml.safe_load(f) or {}
+
+        tools = registry.get("tools") if isinstance(registry, dict) else []
+        tool_names = [str(t.get("name") or "") for t in tools if isinstance(t, dict)]
+        return {
+            "registry_path": str(path),
+            "registry": registry,
+            "tools": tool_names,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read tool registry: {e}")
 
 
 @app.put(
@@ -1701,6 +1783,42 @@ async def update_prompt_registry(payload: PromptRegistryUpdateRequest, request: 
         raise HTTPException(status_code=500, detail=f"Failed to write prompt registry: {e}")
 
 
+@app.put(
+    "/api/tool-registry",
+    tags=["5. Debug"],
+    summary="Update tool registry YAML",
+)
+async def update_tool_registry(payload: ToolRegistryUpdateRequest, request: Request):
+    """Validate and write tool registry YAML from editor UI."""
+    enforce_origin_host(request)
+    registry = payload.registry or {}
+    _validate_tool_registry_shape(registry)
+
+    path = _tool_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak")
+
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                previous = f.read()
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(previous)
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
+
+        return {
+            "ok": True,
+            "registry_path": str(path),
+            "backup_path": str(backup_path) if backup_path.exists() else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write tool registry: {e}")
+
+
 @app.post(
     "/api/prompt-registry/reload-cache",
     tags=["5. Debug"],
@@ -1717,6 +1835,18 @@ async def reload_prompt_registry_cache(request: Request):
         "cache_entries_cleared": int(removed),
         "message": "Prompt registry cache cleared. New prompts will be used on the next request.",
     }
+
+
+@app.get(
+    "/tool-registry",
+    tags=["1. UI Pages"],
+    summary="8. Tool Registry editor (HTML)",
+    response_class=HTMLResponse,
+)
+async def tool_registry_page():
+    """Serve the tool-registry HTML page for editing tool artifact metadata."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "tool-registry.html"))
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():

@@ -130,6 +130,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const openChatBtn = document.getElementById('openChatBtn');
     const openDeleteIndexBtn = document.getElementById('openDeleteIndexBtn');
     const openPromptRegistryBtn = document.getElementById('openPromptRegistryBtn');
+    const openToolRegistryBtn = document.getElementById('openToolRegistryBtn');
     const openProcessBatchBtn = document.getElementById('openProcessBatchBtn');
     
     try {
@@ -417,6 +418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     openDebugBtn && openDebugBtn.addEventListener('click', () => window.open('/debug_index', '_blank'));
     openDeleteIndexBtn && openDeleteIndexBtn.addEventListener('click', () => window.open('/delete_index', '_blank'));
     openPromptRegistryBtn && openPromptRegistryBtn.addEventListener('click', () => window.open('/prompt-registry', '_blank'));
+    openToolRegistryBtn && openToolRegistryBtn.addEventListener('click', () => window.open('/tool-registry', '_blank'));
     openListDocsBtn && openListDocsBtn.addEventListener('click', () => window.open('/list-docs.html', '_blank'));
     openChatBtn && openChatBtn.addEventListener('click', () => window.open('/chat.html', '_blank'));
     
