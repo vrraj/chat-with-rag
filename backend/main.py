@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Any
 import uvicorn
 import re
 import requests
+import yaml
 from urllib.parse import urlsplit, urlunsplit, urlparse
 from qdrant_client.http import models
 from backend.core import settings
@@ -1428,6 +1429,18 @@ async def delete_index_page():
     return FileResponse(os.path.join(frontend_dir, "delete-index.html"))
 
 
+@app.get(
+    "/prompt-registry",
+    tags=["1. UI Pages"],
+    summary="7. Prompt Registry editor (HTML)",
+    response_class=HTMLResponse,
+)
+async def prompt_registry_page():
+    """Serve the prompt-registry HTML page for editing YAML prompts by domain/stage."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "prompt-registry.html"))
+
+
 class DeleteByBaseURLRequest(BaseModel):
     """Request body for deleting Qdrant points grouped by base URL.
 
@@ -1563,6 +1576,125 @@ class ModelConfig(BaseModel):
     rewrite_tail_turns: Optional[int] = None
     rewrite_summary_turns: Optional[int] = None
     inference_context_rows: Optional[int] = None
+
+
+class PromptRegistryUpdateRequest(BaseModel):
+    """Request model for writing prompt registry YAML."""
+
+    registry: Dict[str, Any]
+
+
+def _prompt_registry_path() -> Path:
+    """Resolve configured prompt registry path to absolute path."""
+    raw_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip() or "prompts/prompt_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / candidate
+
+
+def _validate_prompt_registry_shape(registry: Dict[str, Any]) -> None:
+    """Basic schema validation for prompt registry editor writes."""
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=400, detail="Registry must be a JSON object")
+
+    global_defaults = registry.get("global_defaults")
+    if not isinstance(global_defaults, dict):
+        raise HTTPException(status_code=400, detail="Missing required key: global_defaults")
+
+    required_stages = ["inference", "rewrite", "rerank", "summary"]
+    for stage in required_stages:
+        stage_cfg = global_defaults.get(stage)
+        if not isinstance(stage_cfg, dict):
+            raise HTTPException(status_code=400, detail=f"Missing required stage config: global_defaults.{stage}")
+        system_instruction = stage_cfg.get("system_instruction")
+        if not isinstance(system_instruction, str) or not system_instruction.strip():
+            raise HTTPException(status_code=400, detail=f"Missing required system_instruction for stage: {stage}")
+
+    stages_requiring_full_payload = ["inference", "rewrite", "rerank"]
+    for stage in stages_requiring_full_payload:
+        stage_cfg = global_defaults.get(stage) or {}
+        user_messages = stage_cfg.get("user_messages")
+        if not isinstance(user_messages, list):
+            raise HTTPException(status_code=400, detail=f"Missing user_messages list for stage: {stage}")
+
+        has_full_payload = False
+        for item in user_messages:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "") == "full_payload":
+                template = item.get("template")
+                if isinstance(template, str) and template.strip():
+                    has_full_payload = True
+                    break
+        if not has_full_payload:
+            raise HTTPException(status_code=400, detail=f"Missing full_payload template for stage: {stage}")
+
+
+@app.get(
+    "/api/prompt-registry",
+    tags=["5. Debug"],
+    summary="Get prompt registry YAML",
+)
+async def get_prompt_registry():
+    """Return parsed prompt registry YAML for UI editing."""
+    path = _prompt_registry_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Prompt registry not found at {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            registry = yaml.safe_load(f) or {}
+
+        global_defaults = registry.get("global_defaults") if isinstance(registry, dict) else {}
+        stages = list(global_defaults.keys()) if isinstance(global_defaults, dict) else []
+        domains = sorted(list((registry.get("domains") or {}).keys())) if isinstance(registry, dict) else []
+        return {
+            "registry_path": str(path),
+            "registry": registry,
+            "stages": stages,
+            "domains": domains,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read prompt registry: {e}")
+
+
+@app.put(
+    "/api/prompt-registry",
+    tags=["5. Debug"],
+    summary="Update prompt registry YAML",
+)
+async def update_prompt_registry(payload: PromptRegistryUpdateRequest, request: Request):
+    """Validate and write prompt registry YAML from editor UI."""
+    enforce_origin_host(request)
+    registry = payload.registry or {}
+    _validate_prompt_registry_shape(registry)
+
+    path = _prompt_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak")
+
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                previous = f.read()
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(previous)
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
+
+        return {
+            "ok": True,
+            "registry_path": str(path),
+            "backup_path": str(backup_path) if backup_path.exists() else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write prompt registry: {e}")
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():

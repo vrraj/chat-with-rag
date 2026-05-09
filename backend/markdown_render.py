@@ -30,6 +30,13 @@ _ALLOWED_TAGS = [
     "th",
     "td",
     "div",
+    "svg",
+    "polyline",
+    "line",
+    "rect",
+    "path",
+    "text",
+    "g",
 ]
 
 _ALLOWED_ATTRS = {
@@ -38,6 +45,20 @@ _ALLOWED_ATTRS = {
     "td": ["colspan", "rowspan"],
     "div": ["class"],
     "details": ["class"],
+    "svg": [
+        "width",
+        "height",
+        "viewBox",
+        "role",
+        "aria-hidden",
+        "xmlns",
+    ],
+    "polyline": ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "points"],
+    "line": ["x1", "y1", "x2", "y2", "stroke", "stroke-width", "stroke-linecap"],
+    "rect": ["x", "y", "width", "height", "fill", "rx", "ry", "stroke", "stroke-width"],
+    "path": ["d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"],
+    "text": ["x", "y", "text-anchor", "fill", "font-size", "font-weight"],
+    "g": ["transform", "fill", "stroke", "stroke-width"],
 }
 
 

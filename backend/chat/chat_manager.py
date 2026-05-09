@@ -3461,7 +3461,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if name:
                     used_tools.append(name)
 
-                tool_outputs_list.append({"tool_call_id": call_id or "", "name": name, "output": str(result_text)})
+                try:
+                    if isinstance(result_text, (dict, list)):
+                        normalized_tool_output = json.dumps(result_text, ensure_ascii=False)
+                    else:
+                        normalized_tool_output = str(result_text)
+                except Exception:
+                    normalized_tool_output = str(result_text)
+
+                tool_outputs_list.append({"tool_call_id": call_id or "", "name": name, "output": normalized_tool_output})
                 
                 # Preserve first non-empty tool message for final fallback rendering
                 try:
@@ -3494,7 +3502,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 "6. Integrate Tool results only when relevant, and do not invent citations for tool facts.\n"
                 "7. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. Do not invent citations for tool facts.\n"
                 "8. Be concise and answer the user’s question directly.\n"
-                "9. Do not add any extra text beyond what is in the Context or Tool results."
+                "9. If tool output contains SVG markup and the user asked for a chart/visual, include that SVG markup verbatim in the answer.\n"
+                "10. Do not add any extra text beyond what is in the Context or Tool results."
             )
 
             synth_messages = _build_tools_synth_messages(

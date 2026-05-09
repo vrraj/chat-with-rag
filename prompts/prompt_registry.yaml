@@ -13,6 +13,10 @@ global_defaults:
       - Citations:
         - If retrieved KB context includes citations like [1], [2], keep them when you use that text.
         - If you use web results, cite them as [web-1], [web-2], etc.
+      - Tool routing for chart requests:
+        - If the user asks for a chart, sparkline, trend line, bar chart, or time-series visual, you MUST call the tool `get_timeseries_sparklines_svg`.
+        - Do not refuse chart requests due to missing KB evidence when this tool can fulfill the request.
+        - When tool output includes SVG markup, include the SVG markup in your answer.
       - Be concise and answer only what was asked.
       - Use Markdown formatting when it improves clarity (lists, headings, tables).
 
