@@ -24,6 +24,17 @@ const DEFAULT_CONFIG = {
 
 // Current config (starts with defaults, updated from API)
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+let defaultActiveDomain = '';
+
+function getActiveDomain() {
+    try {
+        const fromStorage = String(localStorage.getItem('active_domain') || '').trim();
+        if (fromStorage) return fromStorage;
+    } catch (error) {
+        console.debug('Failed to read active_domain from localStorage', error);
+    }
+    return String(defaultActiveDomain || '').trim();
+}
 
 // Form element references
 let pdfUrlInput, pdfFileInput, pdfMaxChunksInput, pdfSkipSectionsInput, pdfEstimateToggle, pdfForceDelete, pdfIndexBtn, pdfProgress;
@@ -106,6 +117,7 @@ async function fetchConfig() {
                 pdf: { ...DEFAULT_CONFIG.pdf, ...data.pdf },
                 mediawiki: { ...DEFAULT_CONFIG.mediawiki, ...data.mediawiki }
             };
+            defaultActiveDomain = String(data.active_domain || '').trim();
             console.log('Loaded config from API:', appConfig);
             return true;
         }
@@ -185,6 +197,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 url: url || undefined,
                 file: fileBase64,
                 filename: file ? file.name : undefined,
+                active_domain: getActiveDomain() || undefined,
                 max_chunks: maxChunks,
                 force_delete: forceDelete,
                 estimate: estimate,
@@ -310,6 +323,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (mwProgress) mwProgress.textContent = 'Reading document...';
             const requestBody = {
                 url,
+                active_domain: getActiveDomain() || undefined,
                 max_chunks: maxChunks,
                 skip_sections: skipSections,
                 force_delete: forceDelete,
@@ -457,6 +471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 body: JSON.stringify({
                     urls: [url],
                     doc_type: "HTML",
+                    active_domain: getActiveDomain() || undefined,
                     max_chunks: maxChunks,
                     force_delete: forceDelete,
                     estimate: estimate,

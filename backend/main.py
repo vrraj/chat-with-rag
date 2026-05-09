@@ -98,6 +98,32 @@ def _get_embedding_rate_per_mm_tokens() -> float:
         return default_rate
 
 
+def _resolve_domain_config(active_domain: Optional[str]) -> Dict[str, str]:
+    available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+    configured_default_domain = str(getattr(settings, "active_domain", "") or "").strip() or "default"
+    requested_domain = str(active_domain or configured_default_domain).strip()
+    effective_domain = requested_domain if requested_domain in available_domains else configured_default_domain
+    cfg = available_domains.get(effective_domain) or available_domains.get(configured_default_domain) or {}
+    collection_name = str(cfg.get("collection_name") or settings.collection_name)
+    embedding_model_key = str(cfg.get("embedding_model_key") or settings.embedding_model_key)
+    return {
+        "requested_domain": requested_domain,
+        "effective_domain": effective_domain,
+        "collection_name": collection_name,
+        "embedding_model_key": embedding_model_key,
+    }
+
+
+def _build_domain_qdrant(active_domain: Optional[str]) -> QdrantDB:
+    domain_cfg = _resolve_domain_config(active_domain)
+    return QdrantDB(
+        host=settings.qdrant_host,
+        port=settings.qdrant_port,
+        collection_name=domain_cfg["collection_name"],
+        embedding_model_key=domain_cfg["embedding_model_key"],
+    )
+
+
 def enforce_origin_host(request: Request) -> None:
     """Best-effort origin/host check for critical FastAPI routes.
 
@@ -244,7 +270,7 @@ async def debug_index_page():
     summary="4. List Documents Data (JSON)",
     responses={200: {"content": {"application/json": {"example": "{\"documents\": []}"}}}},
 )
-async def list_docs_data(limit: int = None, url: str = None):
+async def list_docs_data(limit: int = None, url: str = None, active_domain: Optional[str] = None):
     """Return a JSON payload containing documents for display, optionally filtered by URL.
 
     Each item includes: base_url, title, total_chunks, updated_at.
@@ -263,7 +289,13 @@ async def list_docs_data(limit: int = None, url: str = None):
         from qdrant_client import models
 
         # Initialize DB handle
-        qd = QdrantDB(host=settings.qdrant_host, port=settings.qdrant_port, collection_name=settings.collection_name)
+        domain_cfg = _resolve_domain_config(active_domain)
+        qd = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=domain_cfg["collection_name"],
+            embedding_model_key=domain_cfg["embedding_model_key"],
+        )
         
         # Create filter if URL is provided
         scroll_filter = None
@@ -411,11 +443,9 @@ async def index_mediawiki_url(
     # Enforce origin/host allowlist for this ingestion endpoint.
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        #logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
-        embeddings_manager = EmbeddingsManager()
-        #logger.info("TRACE MW: Embeddings manager initialized")
+    domain_cfg = _resolve_domain_config(mediawiki_input.active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
+    qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #logger.info("TRACE MW: Before MediaWikiExtractor init")
         extractor = MediaWikiExtractor(
@@ -437,15 +467,8 @@ async def index_mediawiki_url(
         #logger.info(f"TRACE MW: Read URL: {url}")
         # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
         if bool(settings.check_document_indexed):
-            global qdrant_db
-            if qdrant_db is None:
-                qdrant_db = QdrantDB(
-                    host=settings.qdrant_host,
-                    port=settings.qdrant_port,
-                    collection_name=settings.collection_name,
-                )
             try:
-                existing_count = qdrant_db.count_points_by_url(url)
+                existing_count = qdrant_for_check.count_points_by_url(url)
                 logger.info("Existing vectors found for URL: %s", existing_count)
                 #logger.info("Confirm reindex: %s", force_delete)
             except Exception as e:
@@ -561,9 +584,9 @@ async def index_pdf(
     """Index a PDF either by uploaded file or by URL."""
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(pdf_input.active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
+    qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     
     logger.info(
         "PDF DEBUG: url=%s has_file=%s max_chunks=%s force_delete=%s estimate=%s pdfinputfilename=%s",
@@ -580,23 +603,14 @@ async def index_pdf(
     if not pdf_input.file and not pdf_input.url:
         raise HTTPException(status_code=400, detail="Provide either a PDF file or a URL")
     
-    # Initialize qdrant_db at function start
-    global qdrant_db
-    
     try:
         source = pdf_input.url if pdf_input.url else "uploaded://file.pdf"
         skip_sections = pdf_input.skip_sections
         
         # For URL-based PDFs, check if already indexed
         if pdf_input.url and bool(settings.check_document_indexed):
-            if qdrant_db is None:
-                qdrant_db = QdrantDB(
-                    host=settings.qdrant_host,
-                    port=settings.qdrant_port,
-                    collection_name=settings.collection_name,
-                )
             try:
-                existing_count = qdrant_db.count_points_by_url(pdf_input.url)
+                existing_count = qdrant_for_check.count_points_by_url(pdf_input.url)
                 logger.info("Existing vectors found for PDF URL: %s", existing_count)
             except Exception as e:
                 # If counting fails, proceed without blocking indexing
@@ -650,14 +664,8 @@ async def index_pdf(
                 logger.info("PDF DEBUG filename : source=%s", source)
                 # Check for existing indexed content with the same hash
                 if bool(settings.check_document_indexed):
-                    if qdrant_db is None:
-                        qdrant_db = QdrantDB(
-                            host=settings.qdrant_host,
-                            port=settings.qdrant_port,
-                            collection_name=settings.collection_name,
-                        )
                     try:
-                        existing_count = qdrant_db.count_points_by_url(source)
+                        existing_count = qdrant_for_check.count_points_by_url(source)
                         logger.info("Existing vectors found for PDF hash: %s", existing_count)
                         
                         if existing_count > 0 and not pdf_input.estimate and not bool(pdf_input.force_delete):
@@ -852,13 +860,31 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Req
         # Add session_id to params for namespace/token accounting
         chat_params = chat_request.params or {}
         chat_params["session_id"] = session_id
-        
-        response = await asyncio.to_thread(chat_manager.chat,
-            message=chat_request.message,
-            context=context,
-            use_web_search=chat_request.use_web_search,
-            params=chat_params
-        )
+
+        # Domain-aware path: route through stateless handle_chat orchestration when
+        # a domain selector is present, so retrieval/embedding config is per-request.
+        requested_domain = str(chat_params.get("active_domain") or chat_params.get("prompt_domain") or "").strip()
+        if requested_domain:
+            payload = {
+                "message": chat_request.message,
+                "params": chat_params,
+                "history": context,
+                "use_web_search": chat_request.use_web_search,
+            }
+            handler = getattr(chat_manager, "handle_chat", None)
+            if handler is None:
+                from backend.chat import chat_manager as cm_module
+
+                handler = getattr(cm_module, "handle_chat")
+            response = await asyncio.to_thread(handler, payload)
+        else:
+            response = await asyncio.to_thread(
+                chat_manager.chat,
+                message=chat_request.message,
+                context=context,
+                use_web_search=chat_request.use_web_search,
+                params=chat_params,
+            )
         
         # Update session with new message and response
         chat_session_manager.update_session(session_id, {
@@ -916,9 +942,9 @@ async def index_content(url_input: URLInput, request: Request):
     """Index content from URLs (HTML or PDF)"""
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(url_input.active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
+    qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #print("DEBUG: Entered index_content route")
         #print("Received input:", url_input.dict())  # Debugging line
@@ -943,15 +969,8 @@ async def index_content(url_input: URLInput, request: Request):
                     url = page['url']
                     # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
                     if bool(settings.check_document_indexed):
-                        global qdrant_db
-                        if qdrant_db is None:
-                            qdrant_db = QdrantDB(
-                                host=settings.qdrant_host,
-                                port=settings.qdrant_port,
-                                collection_name=settings.collection_name,
-                            )
                         try:
-                            existing_count = qdrant_db.count_points_by_url(url)
+                            existing_count = qdrant_for_check.count_points_by_url(url)
                             logger.info("Existing vectors found for URL: %s", existing_count)
                         except Exception as e:
                             # If counting fails, proceed without blocking indexing
@@ -1120,13 +1139,7 @@ async def index_content(url_input: URLInput, request: Request):
 @app.post("/search", tags=["3. Search & Chat"], summary="4. Vector search")
 async def search_content(search_request: SearchRequest):
     """Search indexed content"""
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name
-        )
+    qdrant_db = _build_domain_qdrant(search_request.active_domain)
     try:
         if not search_request.query:
             if search_request.query_filter and "url" in search_request.query_filter:
@@ -1203,9 +1216,8 @@ async def generate_embedding(embedding_request: EmbeddingRequest, request: Reque
     """Generate embedding for a specific document"""
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(embedding_request.domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         document = {
             'url': embedding_request.url,
@@ -1224,11 +1236,10 @@ async def generate_embedding(embedding_request: EmbeddingRequest, request: Reque
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/delete/{url}", tags=["2. Ingest"], summary="4. Delete by URL")
-async def delete_document(url: str):
+async def delete_document(url: str, active_domain: Optional[str] = None):
     """Delete embeddings for a specific document"""
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         embeddings_manager.delete_document(url)
         return {"message": "Document deleted successfully"}
@@ -1236,11 +1247,10 @@ async def delete_document(url: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug-index", tags=["5. Debug"], summary="1. Inspect Qdrant collections")
-def debug_index(url: Optional[str] = None):
+def debug_index(url: Optional[str] = None, active_domain: Optional[str] = None):
     """List current indexed collections and their first 10 documents, optionally filtered by URL"""
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         collections_info = embeddings_manager.qdrant.client.get_collections()
         collection_names = [col.name for col in collections_info.collections]
@@ -1337,18 +1347,17 @@ def debug_index(url: Optional[str] = None):
 
 
 @app.get("/list-docs-debug", tags=["5. Debug"], summary="List all documents in Qdrant (debug)")
-def list_docs(url: Optional[str] = None):
+def list_docs(url: Optional[str] = None, active_domain: Optional[str] = None):
     """Return a JSON list of all documents in Qdrant with selected fields.
 
     The returned structure is: {"documents": [ {document_title, url, total_chunks, updated_at, collection} ]}
     """
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         collection_docs = []
         # Restrict to the configured collection name only
-        configured = getattr(settings, 'collection_name', None)
+        configured = domain_cfg.get("collection_name") or getattr(settings, 'collection_name', None)
         if not configured:
             raise HTTPException(status_code=500, detail='No collection_name configured in settings')
         collection_names = [configured]
@@ -1452,6 +1461,7 @@ class DeleteByBaseURLRequest(BaseModel):
 
     url: Optional[str] = None
     base_url: Optional[str] = None
+    active_domain: Optional[str] = None
 
 
 def _strip_fragment_url(u: str) -> str:
@@ -1466,7 +1476,11 @@ def _strip_fragment_url(u: str) -> str:
     tags=["4. Index Admin"],
     summary="Preview Qdrant chunks matched by base_url_lower before delete",
 )
-def delete_preview(url: str = Query(..., description="Full URL of the document to delete"), sample_limit: int = Query(5, ge=1, le=500)):
+def delete_preview(
+    url: str = Query(..., description="Full URL of the document to delete"),
+    sample_limit: int = Query(5, ge=1, le=500),
+    active_domain: Optional[str] = Query(None, description="Optional domain for selecting collection/model"),
+):
     """Return a count and sample of chunks that would be deleted for the given URL's base_url.
 
     - Normalizes the provided URL to a base URL (no fragment) and lowercases it.
@@ -1474,13 +1488,7 @@ def delete_preview(url: str = Query(..., description="Full URL of the document t
     - Returns up to `sample_limit` example chunks for review.
     """
 
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name,
-        )
+    qdrant_db = _build_domain_qdrant(active_domain)
     try:
         base = _strip_fragment_url(url)
         total = qdrant_db.count_points_by_base_url(base)
@@ -1519,13 +1527,7 @@ def delete_by_base_url(request: DeleteByBaseURLRequest, http_request: Request):
     - `url`: a full URL, from which base_url will be derived, or
     - `base_url`: used directly.
     """
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name,
-        )
+    qdrant_db = _build_domain_qdrant(request.active_domain)
     try:
         base = request.base_url or _strip_fragment_url(request.url or "")
         if not base:
@@ -2036,6 +2038,7 @@ class BatchURLItem(BaseModel):
     skip_sections: List[str] = Field(
         default_factory=lambda: ["References", "External links", "See also", "Further reading"]
     )
+    active_domain: Optional[str] = None
     user_agent: Optional[str] = None
     api_url: Optional[str] = None  # For MediaWiki API URL override
 
@@ -2046,6 +2049,7 @@ class BatchRequest(BaseModel):
     estimate: bool = True  # Default to True for safety
     force_delete: bool = False
     filename: Optional[str] = None
+    active_domain: Optional[str] = None
 
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
@@ -2089,6 +2093,7 @@ async def process_item(item, request, settings):
                             'file': file_b64,
                             'estimate': request.estimate,
                             'force_delete': request.force_delete,
+                            'active_domain': item.active_domain or request.active_domain,
                             'url': item.url,
                             'filename': os.path.basename(file_path)
                         }
@@ -2126,6 +2131,7 @@ async def process_item(item, request, settings):
                 url=item.url,
                 max_chunks=request.max_chunks,
                 force_delete=request.force_delete,
+                active_domain=item.active_domain or request.active_domain,
                 estimate=request.estimate
             )
             handler = index_pdf
@@ -2135,6 +2141,7 @@ async def process_item(item, request, settings):
                 url=item.url,
                 max_chunks=request.max_chunks,
                 force_delete=request.force_delete,
+                active_domain=item.active_domain or request.active_domain,
                 estimate=request.estimate
             )
             handler = index_mediawiki_url
@@ -2145,6 +2152,7 @@ async def process_item(item, request, settings):
                 doc_type='html',
                 max_chunks=request.max_chunks,
                 force_delete=request.force_delete,
+                active_domain=item.active_domain or request.active_domain,
                 estimate=request.estimate,
                 skip_sections=item.skip_sections,
                 user_agent=item.user_agent or settings.default_user_agent
@@ -2306,13 +2314,7 @@ async def update_payload_field(update_request: PayloadUpdateRequest, request: Re
     """
     enforce_origin_host(request)
 
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name
-        )
+    qdrant_db = _build_domain_qdrant(update_request.active_domain)
     try:
         updated = qdrant_db.update_payload_by_url(update_request)
         return {

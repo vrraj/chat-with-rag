@@ -178,6 +178,10 @@ class Settings(BaseSettings):
         "oceans": {
             "collection_name": "document_index_gemini",
             "embedding_model_key": "gemini:native-embed"
+        },
+        "finance": {
+            "collection_name": "document_index_finance",
+            "embedding_model_key": "openai:embed_small"
         }
     }
     

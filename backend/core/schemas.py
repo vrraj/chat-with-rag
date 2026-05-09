@@ -19,6 +19,7 @@ class SearchRequest(BaseModel):
     score_threshold: Optional[float] = 0.35  # Default threshold for Cosine similarity is 0.35
     exact: Optional[bool] = False
     with_payload: Optional[bool] = True
+    active_domain: Optional[str] = ""
 
 class SearchResponse(BaseModel):
     results: List[Dict]
@@ -46,6 +47,7 @@ class ChatResponse(BaseModel):
 class MediaWikiURLInput(BaseModel):
     url: str
     max_chunks: Optional[int] = None
+    active_domain: Optional[str] = ""
     skip_sections: Optional[List[str]] = Field(
         default_factory=lambda: ["References", "External Links", "Further reading", "Notes"],
         description="List of section titles to skip when parsing the wiki page"
@@ -67,6 +69,7 @@ class MediaWikiURLInput(BaseModel):
 class URLInput(BaseModel):
     urls: List[str]
     doc_type: str = "HTML"  # 'HTML' or 'PDF'
+    active_domain: Optional[str] = ""
     force_crawl: Optional[bool] = True
     max_chunks: Optional[int] = 0  # 0 or less means no user limit; hard cap still applies
     force_delete: Optional[bool] = True
@@ -111,6 +114,7 @@ class PDFInput(BaseModel):
         None,
         description="PDF file content (base64 encoded) for direct upload"
     )
+    active_domain: Optional[str] = ""
     filename: Optional[str] = Field(
         None,
         description="Original filename of the uploaded PDF"
@@ -141,3 +145,4 @@ class PayloadUpdateRequest(BaseModel):
     url: str
     meta_key: str
     meta_value: str
+    active_domain: Optional[str] = ""

@@ -2,7 +2,7 @@ version: 1
 artifact_injection:
   enabled: true
   allowed_tools:
-    - get_timeseries_sparklines_svg
+    - get_stock_price_history
   security:
     max_artifact_chars: 120000
     allowed_artifact_types:
@@ -38,11 +38,11 @@ tools:
       injection_mode: ""
       placeholder: ""
 
-  - name: get_timeseries_sparklines_svg
+  - name: get_stock_price_history
     enabled: true
     artifact:
       produces_artifact: true
       artifact_type: svg
       artifact_key: svg
       injection_mode: verbatim
-      placeholder: "{{ARTIFACT:chart_svg}}"
+      placeholder: "{{ARTIFACT:stock_chart_svg}}"

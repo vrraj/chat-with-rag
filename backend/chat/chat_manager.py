@@ -4213,12 +4213,39 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Fresh Qdrant client for stateless path
+    # Resolve effective retrieval domain for this request.
+    # Priority: params.active_domain -> params.prompt_domain -> settings.active_domain
+    available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+    configured_default_domain = str(getattr(settings, "active_domain", "") or "").strip() or "default"
+    requested_domain = str(
+        (params or {}).get("active_domain")
+        or (params or {}).get("prompt_domain")
+        or configured_default_domain
+    ).strip()
+    effective_domain = requested_domain if requested_domain in available_domains else configured_default_domain
+    domain_cfg = available_domains.get(effective_domain) or available_domains.get(configured_default_domain) or {}
+    domain_collection = str(domain_cfg.get("collection_name") or settings.collection_name)
+    domain_embedding_model_key = str(domain_cfg.get("embedding_model_key") or settings.embedding_model_key)
+
+    # Fresh Qdrant client for stateless path using per-request domain routing
     db = QdrantDB(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
-        collection_name=settings.collection_name,
+        collection_name=domain_collection,
+        embedding_model_key=domain_embedding_model_key,
     )
+
+    try:
+        logger.info(
+            "[REQ %s] domain routing requested=%s effective=%s collection=%s embedding_model_key=%s",
+            req_id,
+            requested_domain,
+            effective_domain,
+            domain_collection,
+            domain_embedding_model_key,
+        )
+    except Exception:
+        pass
 
     # Determine tools flag (preserve prior behavior)
     enable_tools = False
