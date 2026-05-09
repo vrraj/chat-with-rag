@@ -2496,6 +2496,26 @@ def _redact_tool_outputs_for_synth(tool_outputs_list: List[Dict[str, Any]], tool
 
     return redacted
 
+
+def _strip_svg_from_messages(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+    """Best-effort removal of raw SVG blocks from model input messages.
+
+    This is a last-mile safety guard to ensure tools_synth never receives raw
+    artifact payloads, even if an upstream path accidentally includes them.
+    """
+    stripped_count = 0
+    out: List[Dict[str, Any]] = []
+    for m in (messages or []):
+        item = dict(m or {})
+        content = item.get("content")
+        if isinstance(content, str):
+            new_content, n = re.subn(r"<svg\b[\s\S]*?</svg>", "[SVG_ARTIFACT_OMITTED]", content, flags=re.IGNORECASE)
+            if n > 0:
+                stripped_count += int(n)
+            item["content"] = new_content
+        out.append(item)
+    return out, stripped_count
+
 #
 # --- History slicing helper moved to utils.py ---
 
@@ -3843,6 +3863,8 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 tools_text=tools_text,
                 message=message,
             )
+            synth_messages, stripped_svg_blocks = _strip_svg_from_messages(synth_messages)
+            logger.debug("[ARTIFACT] tools_synth_svg_blocks_stripped=%d", stripped_svg_blocks)
 
             ts_spec = (stage_specs or {}).get("tools_synth") or {}
             _ts_provider = str(ts_spec.get("provider") or "openai")

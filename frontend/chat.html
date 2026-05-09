@@ -199,6 +199,18 @@
         </form>
       </aside>
 
+      <button
+        id="sidebar_toggle"
+        type="button"
+        class="sidebar-toggle"
+        aria-label="Collapse parameters panel"
+        aria-controls="sidebar"
+        aria-expanded="true"
+        title="Hide parameters"
+      >
+        ◀
+      </button>
+
       <main id="main" aria-label="Chat Area">
         <!-- Turn rollups -->
         <section id="metrics_bar" class="metrics-compact" aria-label="Metrics">
@@ -273,6 +285,21 @@
           <div class="metric"><span class="metric-label">Input Tokens</span><span id="conversation_input_tokens" class="metric-value" data-sum="conversation_totals.tokens.embedding, conversation_totals.tokens.llm_input">0</span></div>
           <div class="metric"><span class="metric-label">Output Tokens</span><span id="conversation_output_tokens" class="metric-value" data-metric="conversation_totals.tokens.llm_output">0</span></div>
         </section>
+
+        <div class="metrics-toggle-row">
+          <button
+            id="metrics_toggle"
+            type="button"
+            class="metrics-toggle"
+            aria-controls="metrics_bar"
+            aria-expanded="true"
+            aria-label="Collapse metrics"
+            title="Hide metrics"
+          >
+            <span class="metrics-toggle-label">Metrics</span>
+            <span id="metrics_toggle_arrow" aria-hidden="true">▲</span>
+          </button>
+        </div>
 
         <!-- Scrollable chat history -->
         <section id="chat_history" role="log" aria-live="polite" aria-label="Chat History"></section>
@@ -359,6 +386,51 @@
           console.debug('Failed to toggle collapsible group', e);
         }
       }
+
+      (function setupSidebarToggle() {
+        const app = document.getElementById('app');
+        const sidebar = document.getElementById('sidebar');
+        const toggleBtn = document.getElementById('sidebar_toggle');
+        if (!app || !sidebar || !toggleBtn) return;
+
+        const setCollapsedState = (collapsed) => {
+          app.classList.toggle('sidebar-collapsed', collapsed);
+          toggleBtn.textContent = collapsed ? '▶' : '◀';
+          toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          toggleBtn.setAttribute('aria-label', collapsed ? 'Expand parameters panel' : 'Collapse parameters panel');
+          toggleBtn.title = collapsed ? 'Show parameters' : 'Hide parameters';
+        };
+
+        toggleBtn.addEventListener('click', () => {
+          const collapsed = !app.classList.contains('sidebar-collapsed');
+          setCollapsedState(collapsed);
+        });
+
+        const isMobile = window.matchMedia('(max-width: 768px)').matches;
+        setCollapsedState(isMobile);
+      })();
+
+      (function setupMetricsToggle() {
+        const metricsBar = document.getElementById('metrics_bar');
+        const toggleBtn = document.getElementById('metrics_toggle');
+        const arrow = document.getElementById('metrics_toggle_arrow');
+        if (!metricsBar || !toggleBtn || !arrow) return;
+
+        const setCollapsedState = (collapsed) => {
+          metricsBar.classList.toggle('is-collapsed', collapsed);
+          arrow.textContent = collapsed ? '▼' : '▲';
+          toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          toggleBtn.setAttribute('aria-label', collapsed ? 'Expand metrics' : 'Collapse metrics');
+          toggleBtn.title = collapsed ? 'Show metrics' : 'Hide metrics';
+        };
+
+        toggleBtn.addEventListener('click', () => {
+          const collapsed = !metricsBar.classList.contains('is-collapsed');
+          setCollapsedState(collapsed);
+        });
+
+        setCollapsedState(false);
+      })();
     </script>
   <footer class="text-center text-xs text-gray-500 mt-8">
     <p>
