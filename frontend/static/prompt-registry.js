@@ -11,6 +11,7 @@ const els = {
   status: document.getElementById('status'),
   saveBtn: document.getElementById('saveBtn'),
   reloadBtn: document.getElementById('reloadBtn'),
+  reloadCacheBtn: document.getElementById('reloadCacheBtn'),
   resetOverrideBtn: document.getElementById('resetOverrideBtn'),
 };
 
@@ -181,7 +182,30 @@ async function saveRegistry() {
 
   const data = await resp.json();
   const backup = data && data.backup_path ? ` Backup: ${data.backup_path}` : '';
-  setStatus(`Saved successfully.${backup}`, 'success');
+  const cleared = Number(data?.cache_entries_cleared ?? 0);
+  setStatus(`Saved successfully.${backup} Cache entries cleared: ${cleared}.`, 'success');
+}
+
+async function reloadPromptCache() {
+  setStatus('Reloading prompt cache...');
+  const resp = await fetch('/api/prompt-registry/reload-cache', {
+    method: 'POST',
+  });
+
+  if (!resp.ok) {
+    let detail = '';
+    try {
+      const data = await resp.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch (_) {
+      detail = await resp.text();
+    }
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  const cleared = Number(data?.cache_entries_cleared ?? 0);
+  setStatus(`Prompt cache reloaded. Cache entries cleared: ${cleared}.`, 'success');
 }
 
 function resetCurrentOverride() {
@@ -230,6 +254,14 @@ els.reloadBtn.addEventListener('click', async () => {
     await loadRegistry();
   } catch (err) {
     setStatus(`Reload failed: ${err.message || String(err)}`, 'error');
+  }
+});
+
+els.reloadCacheBtn.addEventListener('click', async () => {
+  try {
+    await reloadPromptCache();
+  } catch (err) {
+    setStatus(`Reload cache failed: ${err.message || String(err)}`, 'error');
   }
 });
 

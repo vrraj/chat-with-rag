@@ -36,6 +36,25 @@ class SummaryPromptSpec:
 _CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
+def clear_prompt_registry_cache(path: Optional[str] = None) -> int:
+    """Clear in-memory prompt registry cache.
+
+    Args:
+        path: Optional specific registry path to clear. If omitted, clears all cache entries.
+
+    Returns:
+        Number of cache entries removed.
+    """
+    if path:
+        existed = path in _CACHE
+        _CACHE.pop(path, None)
+        return 1 if existed else 0
+
+    removed = len(_CACHE)
+    _CACHE.clear()
+    return removed
+
+
 def _load_yaml(path: str) -> Dict[str, Any]:
     try:
         import yaml  # type: ignore

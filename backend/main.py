@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from pydantic import BaseModel, Field
 from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
+from backend.chat.prompt_registry import clear_prompt_registry_cache
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
 from backend.llm.llm_client import generate, embed, get_pricing_for_model
@@ -1686,15 +1687,36 @@ async def update_prompt_registry(payload: PromptRegistryUpdateRequest, request: 
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
 
+        removed = clear_prompt_registry_cache(str(path))
+
         return {
             "ok": True,
             "registry_path": str(path),
             "backup_path": str(backup_path) if backup_path.exists() else None,
+            "cache_entries_cleared": int(removed),
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write prompt registry: {e}")
+
+
+@app.post(
+    "/api/prompt-registry/reload-cache",
+    tags=["5. Debug"],
+    summary="Reload prompt registry cache",
+)
+async def reload_prompt_registry_cache(request: Request):
+    """Clear prompt registry cache so latest YAML is used on next prompt resolution."""
+    enforce_origin_host(request)
+    path = _prompt_registry_path()
+    removed = clear_prompt_registry_cache(str(path))
+    return {
+        "ok": True,
+        "registry_path": str(path),
+        "cache_entries_cleared": int(removed),
+        "message": "Prompt registry cache cleared. New prompts will be used on the next request.",
+    }
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():
