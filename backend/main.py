@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from backend.chat.prompt_registry import clear_prompt_registry_cache
+from backend.chat.chat_manager import clear_tool_registry_cache
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
 from backend.llm.llm_client import generate, embed, get_pricing_for_model
@@ -1849,10 +1850,13 @@ async def update_tool_registry(payload: ToolRegistryUpdateRequest, request: Requ
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
 
+        removed = clear_tool_registry_cache(str(path))
+
         return {
             "ok": True,
             "registry_path": str(path),
             "backup_path": str(backup_path) if backup_path.exists() else None,
+            "cache_entries_cleared": int(removed),
         }
     except HTTPException:
         raise
@@ -1875,6 +1879,24 @@ async def reload_prompt_registry_cache(request: Request):
         "registry_path": str(path),
         "cache_entries_cleared": int(removed),
         "message": "Prompt registry cache cleared. New prompts will be used on the next request.",
+    }
+
+
+@app.post(
+    "/api/tool-registry/reload-cache",
+    tags=["5. Debug"],
+    summary="Reload tool registry cache",
+)
+async def reload_tool_registry_cache(request: Request):
+    """Clear tool registry cache so latest YAML is used on next tool synthesis."""
+    enforce_origin_host(request)
+    path = _tool_registry_path()
+    removed = clear_tool_registry_cache(str(path))
+    return {
+        "ok": True,
+        "registry_path": str(path),
+        "cache_entries_cleared": int(removed),
+        "message": "Tool registry cache cleared. New tool artifact policy will be used on the next request.",
     }
 
 

@@ -67,6 +67,8 @@ from backend.markdown_render import render_markdown_to_html
 _SUMMARY_CACHE: Dict[str, str] = {}
 _SUMMARY_CACHE_LAST_SEEN: Dict[str, float] = {}
 
+_TOOL_REGISTRY_CACHE: Dict[str, Dict[str, Any]] = {}
+
 _CHUNK_MANAGERS_BY_NS: Dict[str, ChunkedHistoryManager] = {}
 _CHUNK_MANAGERS_LAST_SEEN: Dict[str, float] = {}
 
@@ -2185,8 +2187,32 @@ def _tool_registry_path(settings_obj: Any) -> Path:
     return repo_root / candidate
 
 
+def clear_tool_registry_cache(path: str | None = None) -> int:
+    """Clear cached tool registry entries and return number removed."""
+    if path:
+        key = str(path)
+        return 1 if _TOOL_REGISTRY_CACHE.pop(key, None) is not None else 0
+    removed = len(_TOOL_REGISTRY_CACHE)
+    _TOOL_REGISTRY_CACHE.clear()
+    return removed
+
+
 def _load_tool_registry(settings_obj: Any) -> Dict[str, Dict[str, Any]]:
     path = _tool_registry_path(settings_obj)
+    cache_key = str(path)
+    try:
+        mtime = float(path.stat().st_mtime) if path.exists() else -1.0
+    except Exception:
+        mtime = -1.0
+
+    cached = _TOOL_REGISTRY_CACHE.get(cache_key)
+    if isinstance(cached, dict):
+        try:
+            if float(cached.get("mtime", -2.0)) == mtime and isinstance(cached.get("value"), dict):
+                return dict(cached.get("value") or {})
+        except Exception:
+            pass
+
     try:
         if not path.exists():
             return {}
@@ -2212,10 +2238,12 @@ def _load_tool_registry(settings_obj: Any) -> Dict[str, Dict[str, Any]]:
     if not isinstance(artifact_injection, dict):
         artifact_injection = {}
 
-    return {
+    loaded = {
         "tools_by_name": by_name,
         "artifact_injection": artifact_injection,
     }
+    _TOOL_REGISTRY_CACHE[cache_key] = {"mtime": mtime, "value": loaded}
+    return loaded
 
 
 def _extract_artifacts_from_tool_outputs(
@@ -2385,6 +2413,7 @@ def _inject_registered_artifacts(text: str, artifacts: List[Dict[str, str]]) -> 
         payload = str(a.get("payload") or "").strip()
         placeholder = str(a.get("placeholder") or "").strip()
         injection_mode = str(a.get("injection_mode") or "").strip().lower()
+        artifact_type = str(a.get("artifact_type") or "").strip().lower()
         if not payload:
             logger.debug("[ARTIFACT] tool=%s skipped: empty payload", tool_name)
             continue
@@ -2396,6 +2425,19 @@ def _inject_registered_artifacts(text: str, artifacts: List[Dict[str, str]]) -> 
         if placeholder:
             logger.debug("[ARTIFACT] tool=%s placeholder_hit=false placeholder=%s", tool_name, placeholder)
 
+        # If model output contains a truncated SVG fragment, remove the broken tail before
+        # injecting canonical SVG. This prevents malformed nested markup in finalHtml.
+        if artifact_type == "svg":
+            has_svg_open = "<svg" in combined.lower()
+            has_svg_close = "</svg>" in combined.lower()
+            if has_svg_open and not has_svg_close:
+                try:
+                    prefix = combined.split("<svg", 1)[0].rstrip()
+                    combined = prefix
+                    logger.debug("[ARTIFACT] tool=%s removed_truncated_svg_prefix=true", tool_name)
+                except Exception:
+                    pass
+
         if injection_mode == "verbatim" and payload not in combined:
             if combined.strip():
                 combined = f"{combined.strip()}\n\n{payload}"
@@ -2405,6 +2447,54 @@ def _inject_registered_artifacts(text: str, artifacts: List[Dict[str, str]]) -> 
         elif injection_mode == "verbatim":
             logger.debug("[ARTIFACT] tool=%s appended_verbatim=false reason=already_present", tool_name)
     return combined
+
+
+def _redact_tool_outputs_for_synth(tool_outputs_list: List[Dict[str, Any]], tool_registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return tool outputs safe for tools_synth prompt by removing artifact payload fields.
+
+    The second LLM synthesis pass should not receive large binary-like artifacts (e.g., SVG).
+    We keep compact metadata so the model can still reference tool results in prose.
+    """
+    redacted: List[Dict[str, Any]] = []
+    tools_by_name = tool_registry.get("tools_by_name") if isinstance(tool_registry, dict) else {}
+    if not isinstance(tools_by_name, dict):
+        tools_by_name = {}
+
+    for t in (tool_outputs_list or []):
+        item = dict(t or {})
+        tool_name = str(item.get("name") or "").strip()
+        output_text = str(item.get("output") or "")
+
+        cfg = tools_by_name.get(tool_name) if tool_name else None
+        artifact_cfg = cfg.get("artifact") if isinstance(cfg, dict) else None
+        produces_artifact = bool(isinstance(artifact_cfg, dict) and artifact_cfg.get("produces_artifact"))
+        artifact_key = str((artifact_cfg or {}).get("artifact_key") or "").strip()
+        placeholder = str((artifact_cfg or {}).get("placeholder") or "").strip()
+
+        if not produces_artifact or not artifact_key:
+            redacted.append(item)
+            continue
+
+        compact = ""
+        try:
+            parsed = json.loads(output_text)
+            if isinstance(parsed, dict):
+                if artifact_key in parsed:
+                    parsed.pop(artifact_key, None)
+                if placeholder:
+                    parsed["artifact_placeholder"] = placeholder
+                parsed["artifact_payload_omitted"] = True
+                compact = json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            compact = ""
+
+        if not compact:
+            compact = f"Artifact payload omitted for synthesis. placeholder={placeholder or '(none)'}"
+
+        item["output"] = compact
+        redacted.append(item)
+
+    return redacted
 
 #
 # --- History slicing helper moved to utils.py ---
@@ -3717,17 +3807,18 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not tool_outputs_list:
                 raise StopIteration
 
+            tool_registry = _load_tool_registry(settings_obj)
+            artifacts_from_registry = _extract_artifacts_from_tool_outputs(tool_outputs_list, tool_registry)
+            redacted_tool_outputs_for_synth = _redact_tool_outputs_for_synth(tool_outputs_list, tool_registry)
+
             tools_text = "\n\n".join(
                 [
                     f"[SOURCE: TOOL - {t.get('name') or 'unknown'}]\n{str(t.get('output', ''))}"
-                    for t in tool_outputs_list
+                    for t in redacted_tool_outputs_for_synth
                 ]
             ).strip()
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
-
-            tool_registry = _load_tool_registry(settings_obj)
-            artifacts_from_registry = _extract_artifacts_from_tool_outputs(tool_outputs_list, tool_registry)
             logger.debug(
                 "[ARTIFACT] extracted_count=%d tools=%s",
                 len(artifacts_from_registry),
@@ -3747,7 +3838,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 summary_text=summary_text,
                 recent_block_str=recent_block_str,
                 context_text=context_text,
-                tool_outputs_list=tool_outputs_list,
+                tool_outputs_list=redacted_tool_outputs_for_synth,
                 used_tools=used_tools,
                 tools_text=tools_text,
                 message=message,
