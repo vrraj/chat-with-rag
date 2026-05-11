@@ -124,6 +124,183 @@ def _build_domain_qdrant(active_domain: Optional[str]) -> QdrantDB:
     )
 
 
+def _get_embedding_spec_for_domain(active_domain: Optional[str]) -> Dict[str, Any]:
+    """Get embedding spec from retrieval config for the given domain."""
+    from backend.retrieval.config import resolve_retrieval_specs
+    
+    domain_cfg = _resolve_domain_config(active_domain)
+    retrieval_specs = resolve_retrieval_specs(
+        domain=domain_cfg["effective_domain"],
+        config_path=str(getattr(settings, "retrieval_config_path", "prompts/retrieval_registry.yaml") or "").strip() or None,
+    )
+    
+    emb_cfg = (retrieval_specs or {}).get("embedding") or {}
+    
+    # Fall back to legacy config if retrieval config is empty
+    if not emb_cfg:
+        from backend.embeddings.specs import resolve_embedding_spec
+        legacy_spec = resolve_embedding_spec(settings) or {}
+        return {
+            "runtime": "hosted",
+            "provider": legacy_spec.get("provider", "openai"),
+            "model": domain_cfg["embedding_model_key"],
+            "dimensions": legacy_spec.get("dimensions"),
+            "normalize": True,
+            "batch_size": 32,
+            "device": None,
+            "extra": {},
+        }
+    
+    return {
+        "runtime": emb_cfg.get("runtime", "hosted"),
+        "provider": emb_cfg.get("provider", "openai"),
+        "model": emb_cfg.get("model", domain_cfg["embedding_model_key"]),
+        "dimensions": emb_cfg.get("dimensions"),
+        "normalize": emb_cfg.get("normalize", True),
+        "batch_size": emb_cfg.get("batch_size", 32),
+        "device": emb_cfg.get("device"),
+        "extra": emb_cfg.get("extra") if isinstance(emb_cfg.get("extra"), dict) else {},
+    }
+
+
+def _generate_embeddings_with_retrieval(texts: List[str], active_domain: Optional[str]) -> List[List[float]]:
+    """Generate embeddings using the retrieval module."""
+    from backend.retrieval.embedding_router import EmbeddingRouter
+    from backend.retrieval.schemas import EmbeddingSpec
+    
+    spec_dict = _get_embedding_spec_for_domain(active_domain)
+    spec = EmbeddingSpec(
+        task="embedding",
+        runtime=spec_dict["runtime"],
+        provider=spec_dict["provider"],
+        model=spec_dict["model"],
+        dimensions=spec_dict["dimensions"],
+        normalize=spec_dict["normalize"],
+        batch_size=spec_dict["batch_size"],
+        device=spec_dict["device"],
+        extra=spec_dict["extra"],
+    )
+    
+    router = EmbeddingRouter()
+    result = router.embed(texts, spec)
+    return result.vectors
+
+
+def _index_chunks_with_retrieval(
+    chunks: List[Dict[str, Any]],
+    active_domain: Optional[str],
+    force_delete: bool = True,
+    max_chunks: Optional[int] = None,
+) -> Dict[str, int]:
+    """Index chunks using the retrieval module instead of EmbeddingsManager."""
+    import uuid
+    import tiktoken
+    from qdrant_client import models
+    
+    domain_cfg = _resolve_domain_config(active_domain)
+    qdrant = _build_domain_qdrant(active_domain)
+    collection_name = domain_cfg["collection_name"]
+    
+    # Ensure collection exists
+    try:
+        qdrant.client.get_collection(collection_name)
+    except Exception:
+        logger.debug("Collection not found, creating it now...")
+        qdrant.create_collection()
+    
+    # Cap chunks if needed
+    effective_cap = int(getattr(settings, "max_chunks_per_doc", 500))
+    if max_chunks is not None:
+        try:
+            user_cap = int(max_chunks)
+            if user_cap > 0:
+                effective_cap = min(effective_cap, user_cap)
+        except Exception:
+            pass
+    if len(chunks) > effective_cap:
+        chunks = chunks[:effective_cap]
+    
+    # Get embedding spec for metadata
+    spec_dict = _get_embedding_spec_for_domain(active_domain)
+    
+    # Process in batches
+    batch_size = spec_dict["batch_size"]
+    points = []
+    tokens_used = 0
+    
+    # Token encoder for estimation
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        encoding = None
+    
+    for batch_start in range(0, len(chunks), batch_size):
+        batch = chunks[batch_start:batch_start + batch_size]
+        batch_texts = []
+        for chunk in batch:
+            text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+            batch_texts.append(text)
+        
+        # Generate embeddings
+        embeddings = _generate_embeddings_with_retrieval(batch_texts, active_domain)
+        
+        # Create points
+        for offset, chunk in enumerate(batch):
+            idx = batch_start + offset
+            text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+            embedding = embeddings[offset]
+            
+            # Estimate tokens
+            if encoding:
+                try:
+                    tokens_used += len(encoding.encode(text, disallowed_special=()))
+                except Exception:
+                    pass
+            
+            # Build payload
+            payload = {
+                "text": text,
+                "chunk_index": idx,
+                "total_chunks": len(chunks),
+                "url": chunk.get("url", ""),
+                "url_lower": (chunk.get("url", "") or "").lower(),
+                "base_url": chunk.get("base_url", chunk.get("url", "")),
+                "base_url_lower": (chunk.get("base_url", chunk.get("url", "")) or "").lower(),
+                "document_type": chunk.get("document_type", "mediawiki"),
+                "source": chunk.get("url", ""),
+                "title": chunk.get("title", ""),
+                "section": chunk.get("section", "Lead"),
+                "subsection": chunk.get("subsection"),
+                "embedding_model": spec_dict["model"],
+                "embedding_provider": spec_dict["provider"],
+                "embedding_runtime": spec_dict["runtime"],
+            }
+            
+            point_id = str(uuid.uuid4())
+            points.append(models.PointStruct(
+                id=point_id,
+                vector=embedding,
+                payload=payload,
+            ))
+    
+    # Delete existing if force_delete
+    if force_delete and chunks:
+        url = chunks[0].get("url", "")
+        if url:
+            qdrant.delete_by_url(url)
+    
+    # Insert points
+    qdrant.client.upsert(
+        collection_name=collection_name,
+        points=points,
+    )
+    
+    return {
+        "vectors_indexed": len(points),
+        "tokens_used": tokens_used,
+    }
+
+
 def enforce_origin_host(request: Request) -> None:
     """Best-effort origin/host check for critical FastAPI routes.
 
@@ -487,7 +664,6 @@ async def index_mediawiki_url(
     enforce_origin_host(request)
 
     domain_cfg = _resolve_domain_config(mediawiki_input.active_domain)
-    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #logger.info("TRACE MW: Before MediaWikiExtractor init")
@@ -539,14 +715,17 @@ async def index_mediawiki_url(
             chunks = chunks[:max_chunks]
         #logger.info(f"TRACE MW: Chunks after capping (if any): {len(chunks)}")
         if mediawiki_input.estimate:
-            # Calculate estimated tokens using the embeddings manager's token counter
+            # Calculate estimated tokens
             tokens_used = 0
-            for chunk in chunks:
-                if isinstance(chunk, dict) and 'text' in chunk:
-                    tokens_used += embeddings_manager.estimate_tokens(chunk['text'])
-                elif isinstance(chunk, str):
-                    tokens_used += embeddings_manager.estimate_tokens(chunk)
-                    
+            import tiktoken
+            try:
+                encoding = tiktoken.get_encoding("cl100k_base")
+                for chunk in chunks:
+                    text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+                    tokens_used += len(encoding.encode(text, disallowed_special=()))
+            except Exception:
+                pass
+
             # logger.info("Estimate only; planned chunks: %d, tokens: %d", len(chunks), tokens_used)
             # Calculate estimated embedding cost using provider/model-aware rate
             rate_per_mm = _get_embedding_rate_per_mm_tokens()
@@ -558,10 +737,11 @@ async def index_mediawiki_url(
                 "embedding_cost": round(estimated_cost, 8)
             }
         #logger.info(f"TRACE MW: Sending {len(chunks)} chunks for embedding")
-        result = embeddings_manager.index_chunks(
+        result = _index_chunks_with_retrieval(
             chunks,
-            force_delete=  force_delete,
-            max_chunks=max_chunks
+            active_domain=mediawiki_input.active_domain,
+            force_delete=force_delete,
+            max_chunks=max_chunks,
         )
         logger.info(
             "Embedding finished. vectors_indexed=%s, tokens_used=%s",
@@ -628,9 +808,8 @@ async def index_pdf(
     enforce_origin_host(request)
 
     domain_cfg = _resolve_domain_config(pdf_input.active_domain)
-    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
-    
+
     logger.info(
         "PDF DEBUG: url=%s has_file=%s max_chunks=%s force_delete=%s estimate=%s pdfinputfilename=%s",
         pdf_input.url,
@@ -738,26 +917,30 @@ async def index_pdf(
             chunks = chunks[:pdf_input.max_chunks]
         logger.debug("PDF: Final chunks for embedding=%d", len(chunks))  
         if pdf_input.estimate:
-            # Calculate estimated tokens using the embeddings manager's token counter
+            # Calculate estimated tokens
             tokens_used = 0
-            for chunk in chunks:
-                if isinstance(chunk, dict) and 'text' in chunk:
-                    tokens_used += embeddings_manager.estimate_tokens(chunk['text'])
-                elif isinstance(chunk, str):
-                    tokens_used += embeddings_manager.estimate_tokens(chunk)
-                    
+            import tiktoken
+            try:
+                encoding = tiktoken.get_encoding("cl100k_base")
+                for chunk in chunks:
+                    text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+                    tokens_used += len(encoding.encode(text, disallowed_special=()))
+            except Exception:
+                pass
+
             # Calculate estimated embedding cost using provider/model-aware rate
             rate_per_mm = _get_embedding_rate_per_mm_tokens()
             estimated_cost = (tokens_used * rate_per_mm) / 1_000_000.0
             return {
-                "message": "Estimate only", 
+                "message": "Estimate only",
                 "chunks_planned": len(chunks),
                 "tokens_used": tokens_used,
                 "embedding_cost": round(estimated_cost, 8)
             }
-            
-        result = embeddings_manager.index_chunks(
+
+        result = _index_chunks_with_retrieval(
             chunks,
+            active_domain=pdf_input.active_domain,
             force_delete=pdf_input.force_delete,
             max_chunks=pdf_input.max_chunks,
         )
@@ -986,7 +1169,6 @@ async def index_content(url_input: URLInput, request: Request):
     enforce_origin_host(request)
 
     domain_cfg = _resolve_domain_config(url_input.active_domain)
-    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #print("DEBUG: Entered index_content route")
@@ -1098,15 +1280,19 @@ async def index_content(url_input: URLInput, request: Request):
                         planned_chunks = min(len(chunks), effective_cap)
                         planned_chunks_total += planned_chunks
                         # Calculate tokens for the planned chunks
-                        for chunk in chunks[:planned_chunks]:
-                            if isinstance(chunk, dict) and 'text' in chunk:
-                                tokens_total += embeddings_manager.estimate_tokens(chunk['text'])
-                            elif isinstance(chunk, str):
-                                tokens_total += embeddings_manager.estimate_tokens(chunk)
+                        import tiktoken
+                        try:
+                            encoding = tiktoken.get_encoding("cl100k_base")
+                            for chunk in chunks[:planned_chunks]:
+                                text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+                                tokens_total += len(encoding.encode(text, disallowed_special=()))
+                        except Exception:
+                            pass
                     else:
                         #logger.debug("Indexing HTML chunks for: %s", page['url'])
-                        result = embeddings_manager.index_chunks(
+                        result = _index_chunks_with_retrieval(
                             chunks,
+                            active_domain=url_input.active_domain,
                             force_delete=url_input.force_delete,
                             max_chunks=user_max_chunks,
                         )

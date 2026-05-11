@@ -71,7 +71,16 @@
 
         <!-- Right Main Content -->
         <div class="flex-1 p-4">
-            <h1 class="text-2xl font-semibold mb-6">Content - Extract and Generate Embeddings</h1>
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-2xl font-semibold">Content - Extract and Generate Embeddings</h1>
+                <div class="flex items-center gap-2">
+                    <label class="text-sm font-medium text-gray-700">Active Domain:</label>
+                    <select id="activeDomain" class="px-3 py-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm">
+                        <option value="">(default)</option>
+                        <!-- Options will be populated dynamically -->
+                    </select>
+                </div>
+            </div>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
 
             <!-- Batch Upload Pane -->
