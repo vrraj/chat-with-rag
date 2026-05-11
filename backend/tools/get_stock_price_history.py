@@ -92,19 +92,56 @@ def _extract_points(payload: Any, symbol: str) -> List[Dict[str, Any]]:
         if isinstance(candidate, list):
             rows = candidate
         else:
-            rows = (
-                payload.get("data")
-                or payload.get("prices")
-                or payload.get("history")
-                or payload.get("results")
-                or []
-            )
-            if isinstance(rows, dict):
-                nested = rows.get(key)
-                if isinstance(nested, list):
-                    rows = nested
+            # Handle items[0].history structure from price-history API
+            items = payload.get("items")
+            if isinstance(items, list) and items:
+                first_item = items[0]
+                if isinstance(first_item, dict):
+                    history = first_item.get("history")
+                    if isinstance(history, list):
+                        rows = history
+                    else:
+                        rows = (
+                            payload.get("data")
+                            or payload.get("prices")
+                            or payload.get("history")
+                            or payload.get("results")
+                            or []
+                        )
+                        if isinstance(rows, dict):
+                            nested = rows.get(key)
+                            if isinstance(nested, list):
+                                rows = nested
+                            else:
+                                rows = rows.get("data") or rows.get("prices") or rows.get("history") or []
                 else:
-                    rows = rows.get("data") or rows.get("prices") or rows.get("history") or []
+                    rows = (
+                        payload.get("data")
+                        or payload.get("prices")
+                        or payload.get("history")
+                        or payload.get("results")
+                        or []
+                    )
+                    if isinstance(rows, dict):
+                        nested = rows.get(key)
+                        if isinstance(nested, list):
+                            rows = nested
+                        else:
+                            rows = rows.get("data") or rows.get("prices") or rows.get("history") or []
+            else:
+                rows = (
+                    payload.get("data")
+                    or payload.get("prices")
+                    or payload.get("history")
+                    or payload.get("results")
+                    or []
+                )
+                if isinstance(rows, dict):
+                    nested = rows.get(key)
+                    if isinstance(nested, list):
+                        rows = nested
+                    else:
+                        rows = rows.get("data") or rows.get("prices") or rows.get("history") or []
     else:
         rows = []
 
