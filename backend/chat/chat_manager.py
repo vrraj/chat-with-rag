@@ -2226,6 +2226,14 @@ def _load_tool_registry(settings_obj: Any) -> Dict[str, Dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         if not name:
             continue
+        runtime = item.get("runtime") if isinstance(item.get("runtime"), dict) else {}
+        endpoint = runtime.get("endpoint") if isinstance(runtime.get("endpoint"), dict) else {}
+        endpoint_type = str(endpoint.get("type") or "").strip()
+        endpoint_url = str(endpoint.get("url") or "").strip()
+        if not endpoint_type or not endpoint_url:
+            raise ValueError(
+                f"Tool '{name}' in tool registry must define runtime.endpoint.type and runtime.endpoint.url"
+            )
         by_name[name] = item
 
     artifact_injection = data.get("artifact_injection") if isinstance(data, dict) else {}
@@ -2418,6 +2426,22 @@ def _inject_registered_artifacts(text: str, artifacts: List[Dict[str, str]]) -> 
             continue
         if placeholder:
             logger.debug("[ARTIFACT] tool=%s placeholder_hit=false placeholder=%s", tool_name, placeholder)
+            try:
+                token_match = re.match(r"^\{\{(ARTIFACT:[A-Za-z0-9_.:-]{1,64})\}\}$", placeholder)
+                token = token_match.group(1) if token_match else ""
+                if token:
+                    loose_pattern = re.compile(r"\{+\s*" + re.escape(token) + r"\s*\}+")
+                    combined, loose_count = loose_pattern.subn(payload, combined)
+                    logger.debug(
+                        "[ARTIFACT] tool=%s placeholder_loose_match_replacements=%d token=%s",
+                        tool_name,
+                        int(loose_count),
+                        token,
+                    )
+                    if loose_count > 0:
+                        continue
+            except Exception:
+                logger.debug("[ARTIFACT] tool=%s placeholder_loose_match_failed", tool_name, exc_info=True)
 
         # If model output contains a truncated SVG fragment, remove the broken tail before
         # injecting canonical SVG. This prevents malformed nested markup in finalHtml.
@@ -3624,8 +3648,22 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not _is_web_search_requested(message):
                 tools = [t for t in tools if (t.get("name") or t.get("function", {}).get("name")) != "web_search"]
             _kwargs_inf["tools"] = tools
+            try:
+                offered_tool_names = [
+                    str(t.get("name") or t.get("function", {}).get("name") or "")
+                    for t in (tools or [])
+                ]
+                logger.info(
+                    "[TOOLS] (%s) tools_offered_to_inference count=%d names=%s",
+                    log_origin,
+                    len([n for n in offered_tool_names if n]),
+                    [n for n in offered_tool_names if n],
+                )
+            except Exception:
+                pass
         except Exception:
             _kwargs_inf["tools"] = []
+            logger.info("[TOOLS] (%s) tools_offered_to_inference count=0 (list_tools failed)", log_origin)
 
     logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
     
@@ -3743,10 +3781,25 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # NOTE: Single-pass tool execution.
         try:
+            tool_registry = _load_tool_registry(settings_obj)
+            tools_by_name = tool_registry.get("tools_by_name") if isinstance(tool_registry, dict) else {}
+            if not isinstance(tools_by_name, dict):
+                tools_by_name = {}
+
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
+            try:
+                logger.debug(
+                    "[TOOLS] (%s) extracted_tool_calls count=%d names=%s",
+                    log_origin,
+                    len(tool_calls or []),
+                    [str((c or {}).get("name") or "") for c in (tool_calls or [])],
+                )
+            except Exception:
+                pass
             
             if not tool_calls:
+                logger.debug("[TOOLS] (%s) no_tool_calls_from_inference", log_origin)
                 raise StopIteration  # handled by outer try/except; leaves answer_override=None
 
             # Only show "Tool Calls" stage when actually executing tools
@@ -3782,6 +3835,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if show_processing_steps:
                     emit_stage(req_id, f"Calling Tool: {name}")
                 executor = get_executor_fn(name)
+                logger.debug(
+                    "[TOOLS] (%s) tool_dispatch name=%s call_id=%s executor_found=%s",
+                    log_origin,
+                    name,
+                    call_id,
+                    bool(executor),
+                )
 
                 if not executor:
                     result_text: Any = f"Tool '{name}' is not available."
@@ -3802,8 +3862,37 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                 for it in (reranked or [])
                             ]
 
-                        result_text = executor(args, chat_context, existing_context=exec_combined_context)
+                        tool_registry_entry = tools_by_name.get(name) if isinstance(tools_by_name, dict) else None
+                        runtime_cfg = (
+                            tool_registry_entry.get("runtime")
+                            if isinstance(tool_registry_entry, dict) and isinstance(tool_registry_entry.get("runtime"), dict)
+                            else {}
+                        )
+                        endpoint_cfg = runtime_cfg.get("endpoint") if isinstance(runtime_cfg.get("endpoint"), dict) else {}
+                        logger.debug(
+                            "[TOOLS] (%s) tool_execute_start name=%s args=%s endpoint_type=%s endpoint_url=%s",
+                            log_origin,
+                            name,
+                            args,
+                            str(endpoint_cfg.get("type") or ""),
+                            str(endpoint_cfg.get("url") or ""),
+                        )
+                        result_text = executor(
+                            args,
+                            chat_context,
+                            existing_context=exec_combined_context,
+                            tool_runtime=runtime_cfg,
+                            tool_registry_entry=tool_registry_entry,
+                        )
+                        logger.debug(
+                            "[TOOLS] (%s) tool_execute_done name=%s output_type=%s output_len=%d",
+                            log_origin,
+                            name,
+                            type(result_text).__name__,
+                            len(str(result_text or "")),
+                        )
                     except Exception as ex:
+                        logger.debug("[TOOLS] (%s) tool_execute_error name=%s err=%s", log_origin, name, ex, exc_info=True)
                         result_text = f"Tool '{name}' failed: {ex}"
 
                 # Normalize empty tool outputs so the user can see a clear outcome.
@@ -3837,9 +3926,9 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     pass
 
             if not tool_outputs_list:
+                logger.debug("[TOOLS] (%s) no_tool_outputs_after_execution", log_origin)
                 raise StopIteration
 
-            tool_registry = _load_tool_registry(settings_obj)
             artifacts_from_registry = _extract_artifacts_from_tool_outputs(tool_outputs_list, tool_registry)
             redacted_tool_outputs_for_synth = _redact_tool_outputs_for_synth(tool_outputs_list, tool_registry)
 
@@ -3929,6 +4018,21 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     return ""
 
                 _svg_from_tool = _extract_svg_from_tool_outputs(tool_outputs_list)
+                _has_artifact_token = bool(re.search(r"\{+\s*ARTIFACT:[A-Za-z0-9_.:-]{1,64}\s*\}+", combined or ""))
+                if _svg_from_tool and _has_artifact_token:
+                    try:
+                        combined, _n_repl = re.subn(
+                            r"\{+\s*ARTIFACT:[A-Za-z0-9_.:-]{1,64}\s*\}+",
+                            _svg_from_tool,
+                            combined,
+                        )
+                        logger.info(
+                            "[ARTIFACT] (%s) unresolved_artifact_token_replacements=%d",
+                            log_origin,
+                            int(_n_repl),
+                        )
+                    except Exception:
+                        logger.debug("[ARTIFACT] (%s) unresolved_artifact_token_replace_failed", log_origin, exc_info=True)
                 _chart_requested = bool(re.search(r"\b(chart|sparkline|trend|line\s*chart|bar\s*chart|time[-\s]?series|visual)\b", str(message or ""), flags=re.IGNORECASE))
                 if _svg_from_tool and _chart_requested:
                     _has_svg = "<svg" in combined.lower()

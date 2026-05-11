@@ -9,7 +9,6 @@ from .get_timeseries_sparklines_svg import generate_timeseries_sparklines
 
 
 TOOL_NAME = "get_stock_price_history"
-PRICE_HISTORY_URL = "http://localhost:9000/api/price-history/stocks"
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +154,34 @@ def _extract_points(payload: Any, symbol: str) -> List[Dict[str, Any]]:
     return points
 
 
-def _fetch_price_history(symbol: str, period: str) -> List[Dict[str, Any]]:
+def _resolve_endpoint_url(tool_runtime: Dict[str, Any] | None) -> str:
+    runtime = tool_runtime if isinstance(tool_runtime, dict) else {}
+    endpoint = runtime.get("endpoint") if isinstance(runtime.get("endpoint"), dict) else {}
+    endpoint_type = str(endpoint.get("type") or "").strip()
+    endpoint_url = str(endpoint.get("url") or "").strip()
+    if not endpoint_type or not endpoint_url:
+        raise ValueError("Missing runtime.endpoint.type or runtime.endpoint.url for get_stock_price_history")
+    if endpoint_type.lower() != "rest":
+        raise ValueError(f"Unsupported endpoint type '{endpoint_type}' for get_stock_price_history")
+    return endpoint_url
+
+
+def _fetch_price_history(symbol: str, period: str, endpoint_url: str) -> List[Dict[str, Any]]:
+    logger.info(
+        "[TOOL_API] get_stock_price_history request method=GET url=%s params=%s timeout=%s",
+        endpoint_url,
+        {"symbols": symbol.upper(), "period": period},
+        12,
+    )
     response = requests.get(
-        PRICE_HISTORY_URL,
+        endpoint_url,
         params={"symbols": symbol.upper(), "period": period},
         timeout=12,
+    )
+    logger.info(
+        "[TOOL_API] get_stock_price_history response status=%s url=%s",
+        response.status_code,
+        response.url,
     )
     response.raise_for_status()
     payload = response.json()
@@ -169,16 +191,17 @@ def _fetch_price_history(symbol: str, period: str) -> List[Dict[str, Any]]:
     return points
 
 
-def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None = None, **_: Any) -> Dict[str, Any]:
+def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None = None, **kwargs: Any) -> Dict[str, Any]:
     _ = chat_context
     args = args or {}
 
     symbol = (args.get("symbol") or "AAPL").strip().upper()
     period = _normalize_period(args.get("period"))
     title = (args.get("title") or "").strip() or f"{symbol} {period}"
+    endpoint_url = _resolve_endpoint_url(kwargs.get("tool_runtime"))
 
     try:
-        points = _fetch_price_history(symbol, period)
+        points = _fetch_price_history(symbol, period, endpoint_url)
     except Exception as ex:
         try:
             logger.debug(
@@ -223,4 +246,4 @@ def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None =
     }
 
 
-__all__ = ["TOOL_NAME", "PRICE_HISTORY_URL", "tool_definition", "run"]
+__all__ = ["TOOL_NAME", "tool_definition", "run"]
