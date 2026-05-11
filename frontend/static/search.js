@@ -1,6 +1,36 @@
 document.addEventListener('DOMContentLoaded', () => {
     const searchForm = document.getElementById('searchForm');
     const searchResults = document.getElementById('searchResults');
+    const activeDomainSelect = document.getElementById('activeDomain');
+
+    function getActiveDomain() {
+        try {
+            return String(localStorage.getItem('active_domain') || '').trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function setActiveDomain(domain) {
+        try {
+            const val = String(domain || '').trim();
+            if (val) {
+                localStorage.setItem('active_domain', val);
+            } else {
+                localStorage.removeItem('active_domain');
+            }
+        } catch (_) {
+            // no-op
+        }
+    }
+
+    const initialDomain = getActiveDomain();
+    if (activeDomainSelect) {
+        activeDomainSelect.value = initialDomain || '';
+        activeDomainSelect.addEventListener('change', () => {
+            setActiveDomain(activeDomainSelect.value);
+        });
+    }
 
     console.log('Search form initialized');
     console.log('Form elements:', {
@@ -43,7 +73,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const payload = {
                 query: query.trim() || null,
                 query_filter: urlFilter ? { url: urlFilter } : null,
-                limit
+                limit,
+                active_domain: getActiveDomain() || undefined,
             };
             if (Number.isFinite(scoreThreshold)) {
                 payload.score_threshold = scoreThreshold;

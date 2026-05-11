@@ -24,6 +24,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
   # 2. Uvicorn Web Application Service
   webapp:
@@ -53,7 +57,7 @@ services:
       # Debug only: logs full resolved prompts/payloads (may include sensitive data). Disable in prod.
       PROMPT_REGISTRY_LOG_FULL: ${PROMPT_REGISTRY_LOG_FULL:-0}
       # Use the service name 'qdrant' for connection inside the Docker network
-      QDRANT_HOST: qdrant 
+      QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
 
     volumes:
@@ -65,3 +69,7 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535

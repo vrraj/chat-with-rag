@@ -63,6 +63,23 @@ def tool_definition() -> Dict[str, Any]:
 
 # --- Implementation ---
 
+def _resolve_runtime_endpoints(tool_runtime: Dict[str, Any] | None) -> Tuple[str, str]:
+    runtime = tool_runtime if isinstance(tool_runtime, dict) else {}
+    endpoint = runtime.get("endpoint") if isinstance(runtime.get("endpoint"), dict) else {}
+    endpoint_type = str(endpoint.get("type") or "").strip().lower()
+    forecast_url = str(endpoint.get("url") or "").strip()
+    if endpoint_type != "rest" or not forecast_url:
+        raise ValueError("Missing or invalid runtime.endpoint for get_weather (expected type=rest and non-empty url)")
+
+    deps = runtime.get("dependencies") if isinstance(runtime.get("dependencies"), dict) else {}
+    geocoding = deps.get("geocoding") if isinstance(deps.get("geocoding"), dict) else {}
+    geocoding_type = str(geocoding.get("type") or "").strip().lower()
+    geocoding_url = str(geocoding.get("url") or "").strip()
+    if geocoding_type != "rest" or not geocoding_url:
+        raise ValueError("Missing or invalid runtime.dependencies.geocoding for get_weather (expected type=rest and non-empty url)")
+
+    return geocoding_url, forecast_url
+
 @dataclass
 class Weather:
     location: str
@@ -102,13 +119,24 @@ def _infer_location_from_chat(chat_context: List[Dict[str, str]]) -> Optional[st
     return caps[-1].strip() if caps else None
 
 
-def _geocode_location(name: str, *, timeout: float = 7.0) -> Optional[Tuple[float, float, str]]:
+def _geocode_location(name: str, geocoding_url: str, *, timeout: float = 7.0) -> Optional[Tuple[float, float, str]]:
     """Resolve a free-form place name to (lat, lon, display_name) via Open‑Meteo Geocoding API."""
     try:
+        logger.info(
+            "[TOOL_API] get_weather geocoding request method=GET url=%s params=%s timeout=%s",
+            geocoding_url,
+            {"name": name, "count": 1, "language": "en", "format": "json"},
+            timeout,
+        )
         resp = requests.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
+            geocoding_url,
             params={"name": name, "count": 1, "language": "en", "format": "json"},
             timeout=timeout,
+        )
+        logger.info(
+            "[TOOL_API] get_weather geocoding response status=%s url=%s",
+            resp.status_code,
+            resp.url,
         )
         resp.raise_for_status()
         data = resp.json() or {}
@@ -129,7 +157,7 @@ def _geocode_location(name: str, *, timeout: float = 7.0) -> Optional[Tuple[floa
         return None
 
 
-def _fetch_weather(location: str, *, timeout: float = 10.0) -> Optional[Weather]:
+def _fetch_weather(location: str, geocoding_url: str, forecast_url: str, *, timeout: float = 10.0) -> Optional[Weather]:
     """Fetch weather for a location using Open‑Meteo.
 
     Steps:
@@ -137,13 +165,25 @@ def _fetch_weather(location: str, *, timeout: float = 10.0) -> Optional[Weather]
     - Fetch daily max/min and current temperature.
     - Compute average as (max+min)/2.
     """
-    geo = _geocode_location(location, timeout=timeout)
+    geo = _geocode_location(location, geocoding_url, timeout=timeout)
     if not geo:
         return None
     lat, lon, display = geo
     try:
+        logger.info(
+            "[TOOL_API] get_weather forecast request method=GET url=%s params=%s timeout=%s",
+            forecast_url,
+            {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": ["temperature_2m_max", "temperature_2m_min"],
+                "current_weather": True,
+                "timezone": "auto",
+            },
+            timeout,
+        )
         resp = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
+            forecast_url,
             params={
                 "latitude": lat,
                 "longitude": lon,
@@ -153,6 +193,11 @@ def _fetch_weather(location: str, *, timeout: float = 10.0) -> Optional[Weather]
             },
             headers={"User-Agent": "chat-with-rag/1.0 (+https://github.com/)"},
             timeout=timeout,
+        )
+        logger.info(
+            "[TOOL_API] get_weather forecast response status=%s url=%s",
+            resp.status_code,
+            resp.url,
         )
         resp.raise_for_status()
         data = resp.json() or {}
@@ -212,7 +257,7 @@ def _format_output(w: Weather, preferred_unit: str = "C") -> str:
     )
 
 
-def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None = None, **_: Any) -> str:
+def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None = None, **kwargs: Any) -> str:
     """Execute the weather tool.
 
     Args:
@@ -223,6 +268,7 @@ def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None =
     """
     args = args or {}
     chat_context = chat_context or []
+    geocoding_url, forecast_url = _resolve_runtime_endpoints(kwargs.get("tool_runtime"))
     location = (args.get("location") or "").strip()
     unit = (args.get("unit") or "C").strip().upper()
 
@@ -234,12 +280,12 @@ def run(args: Dict[str, Any] | None, chat_context: List[Dict[str, str]] | None =
             # Sensible default to avoid failures
             location = "Unknown Location"
 
-    weather = _fetch_weather(location)
+    weather = _fetch_weather(location, geocoding_url, forecast_url)
     if not weather:
         # One simple retry for common phrasing artifacts (e.g., "Region of X")
         simplified = re.sub(r"\bof\b", ",", location, flags=re.IGNORECASE).strip(" ,")
         if simplified and simplified.lower() != location.lower():
-            weather = _fetch_weather(simplified)
+            weather = _fetch_weather(simplified, geocoding_url, forecast_url)
             if weather:
                 return _format_output(weather, preferred_unit=unit)
         return (

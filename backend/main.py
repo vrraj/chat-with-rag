@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Any
 import uvicorn
 import re
 import requests
+import yaml
 from urllib.parse import urlsplit, urlunsplit, urlparse
 from qdrant_client.http import models
 from backend.core import settings
@@ -35,6 +36,8 @@ from pydantic import BaseModel, Field
 from pydantic import BaseModel, Field
 from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
+from backend.chat.prompt_registry import clear_prompt_registry_cache
+from backend.chat.chat_manager import clear_tool_registry_cache
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
 from backend.llm.llm_client import generate, embed, get_pricing_for_model
@@ -93,6 +96,32 @@ def _get_embedding_rate_per_mm_tokens() -> float:
     except Exception:
         # Any lookup or config issue should silently fall back to the prior behavior.
         return default_rate
+
+
+def _resolve_domain_config(active_domain: Optional[str]) -> Dict[str, str]:
+    available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+    configured_default_domain = str(getattr(settings, "active_domain", "") or "").strip() or "default"
+    requested_domain = str(active_domain or configured_default_domain).strip()
+    effective_domain = requested_domain if requested_domain in available_domains else configured_default_domain
+    cfg = available_domains.get(effective_domain) or available_domains.get(configured_default_domain) or {}
+    collection_name = str(cfg.get("collection_name") or settings.collection_name)
+    embedding_model_key = str(cfg.get("embedding_model_key") or settings.embedding_model_key)
+    return {
+        "requested_domain": requested_domain,
+        "effective_domain": effective_domain,
+        "collection_name": collection_name,
+        "embedding_model_key": embedding_model_key,
+    }
+
+
+def _build_domain_qdrant(active_domain: Optional[str]) -> QdrantDB:
+    domain_cfg = _resolve_domain_config(active_domain)
+    return QdrantDB(
+        host=settings.qdrant_host,
+        port=settings.qdrant_port,
+        collection_name=domain_cfg["collection_name"],
+        embedding_model_key=domain_cfg["embedding_model_key"],
+    )
 
 
 def enforce_origin_host(request: Request) -> None:
@@ -241,7 +270,7 @@ async def debug_index_page():
     summary="4. List Documents Data (JSON)",
     responses={200: {"content": {"application/json": {"example": "{\"documents\": []}"}}}},
 )
-async def list_docs_data(limit: int = None, url: str = None):
+async def list_docs_data(limit: int = None, url: str = None, active_domain: Optional[str] = None):
     """Return a JSON payload containing documents for display, optionally filtered by URL.
 
     Each item includes: base_url, title, total_chunks, updated_at.
@@ -260,7 +289,13 @@ async def list_docs_data(limit: int = None, url: str = None):
         from qdrant_client import models
 
         # Initialize DB handle
-        qd = QdrantDB(host=settings.qdrant_host, port=settings.qdrant_port, collection_name=settings.collection_name)
+        domain_cfg = _resolve_domain_config(active_domain)
+        qd = QdrantDB(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            collection_name=domain_cfg["collection_name"],
+            embedding_model_key=domain_cfg["embedding_model_key"],
+        )
         
         # Create filter if URL is provided
         scroll_filter = None
@@ -408,11 +443,9 @@ async def index_mediawiki_url(
     # Enforce origin/host allowlist for this ingestion endpoint.
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        #logger.info("TRACE MW: Embeddings manager not initialized; initializing now")
-        embeddings_manager = EmbeddingsManager()
-        #logger.info("TRACE MW: Embeddings manager initialized")
+    domain_cfg = _resolve_domain_config(mediawiki_input.active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
+    qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #logger.info("TRACE MW: Before MediaWikiExtractor init")
         extractor = MediaWikiExtractor(
@@ -434,15 +467,8 @@ async def index_mediawiki_url(
         #logger.info(f"TRACE MW: Read URL: {url}")
         # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
         if bool(settings.check_document_indexed):
-            global qdrant_db
-            if qdrant_db is None:
-                qdrant_db = QdrantDB(
-                    host=settings.qdrant_host,
-                    port=settings.qdrant_port,
-                    collection_name=settings.collection_name,
-                )
             try:
-                existing_count = qdrant_db.count_points_by_url(url)
+                existing_count = qdrant_for_check.count_points_by_url(url)
                 logger.info("Existing vectors found for URL: %s", existing_count)
                 #logger.info("Confirm reindex: %s", force_delete)
             except Exception as e:
@@ -558,9 +584,9 @@ async def index_pdf(
     """Index a PDF either by uploaded file or by URL."""
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(pdf_input.active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
+    qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     
     logger.info(
         "PDF DEBUG: url=%s has_file=%s max_chunks=%s force_delete=%s estimate=%s pdfinputfilename=%s",
@@ -577,23 +603,14 @@ async def index_pdf(
     if not pdf_input.file and not pdf_input.url:
         raise HTTPException(status_code=400, detail="Provide either a PDF file or a URL")
     
-    # Initialize qdrant_db at function start
-    global qdrant_db
-    
     try:
         source = pdf_input.url if pdf_input.url else "uploaded://file.pdf"
         skip_sections = pdf_input.skip_sections
         
         # For URL-based PDFs, check if already indexed
         if pdf_input.url and bool(settings.check_document_indexed):
-            if qdrant_db is None:
-                qdrant_db = QdrantDB(
-                    host=settings.qdrant_host,
-                    port=settings.qdrant_port,
-                    collection_name=settings.collection_name,
-                )
             try:
-                existing_count = qdrant_db.count_points_by_url(pdf_input.url)
+                existing_count = qdrant_for_check.count_points_by_url(pdf_input.url)
                 logger.info("Existing vectors found for PDF URL: %s", existing_count)
             except Exception as e:
                 # If counting fails, proceed without blocking indexing
@@ -647,14 +664,8 @@ async def index_pdf(
                 logger.info("PDF DEBUG filename : source=%s", source)
                 # Check for existing indexed content with the same hash
                 if bool(settings.check_document_indexed):
-                    if qdrant_db is None:
-                        qdrant_db = QdrantDB(
-                            host=settings.qdrant_host,
-                            port=settings.qdrant_port,
-                            collection_name=settings.collection_name,
-                        )
                     try:
-                        existing_count = qdrant_db.count_points_by_url(source)
+                        existing_count = qdrant_for_check.count_points_by_url(source)
                         logger.info("Existing vectors found for PDF hash: %s", existing_count)
                         
                         if existing_count > 0 and not pdf_input.estimate and not bool(pdf_input.force_delete):
@@ -849,13 +860,31 @@ async def chat_endpoint(session_id: str, chat_request: ChatRequest, request: Req
         # Add session_id to params for namespace/token accounting
         chat_params = chat_request.params or {}
         chat_params["session_id"] = session_id
-        
-        response = await asyncio.to_thread(chat_manager.chat,
-            message=chat_request.message,
-            context=context,
-            use_web_search=chat_request.use_web_search,
-            params=chat_params
-        )
+
+        # Domain-aware path: route through stateless handle_chat orchestration when
+        # a domain selector is present, so retrieval/embedding config is per-request.
+        requested_domain = str(chat_params.get("active_domain") or chat_params.get("prompt_domain") or "").strip()
+        if requested_domain:
+            payload = {
+                "message": chat_request.message,
+                "params": chat_params,
+                "history": context,
+                "use_web_search": chat_request.use_web_search,
+            }
+            handler = getattr(chat_manager, "handle_chat", None)
+            if handler is None:
+                from backend.chat import chat_manager as cm_module
+
+                handler = getattr(cm_module, "handle_chat")
+            response = await asyncio.to_thread(handler, payload)
+        else:
+            response = await asyncio.to_thread(
+                chat_manager.chat,
+                message=chat_request.message,
+                context=context,
+                use_web_search=chat_request.use_web_search,
+                params=chat_params,
+            )
         
         # Update session with new message and response
         chat_session_manager.update_session(session_id, {
@@ -913,9 +942,9 @@ async def index_content(url_input: URLInput, request: Request):
     """Index content from URLs (HTML or PDF)"""
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(url_input.active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
+    qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #print("DEBUG: Entered index_content route")
         #print("Received input:", url_input.dict())  # Debugging line
@@ -940,15 +969,8 @@ async def index_content(url_input: URLInput, request: Request):
                     url = page['url']
                     # Optional pre-check: if the document is already indexed in Qdrant, prompt for confirmation
                     if bool(settings.check_document_indexed):
-                        global qdrant_db
-                        if qdrant_db is None:
-                            qdrant_db = QdrantDB(
-                                host=settings.qdrant_host,
-                                port=settings.qdrant_port,
-                                collection_name=settings.collection_name,
-                            )
                         try:
-                            existing_count = qdrant_db.count_points_by_url(url)
+                            existing_count = qdrant_for_check.count_points_by_url(url)
                             logger.info("Existing vectors found for URL: %s", existing_count)
                         except Exception as e:
                             # If counting fails, proceed without blocking indexing
@@ -1117,13 +1139,7 @@ async def index_content(url_input: URLInput, request: Request):
 @app.post("/search", tags=["3. Search & Chat"], summary="4. Vector search")
 async def search_content(search_request: SearchRequest):
     """Search indexed content"""
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name
-        )
+    qdrant_db = _build_domain_qdrant(search_request.active_domain)
     try:
         if not search_request.query:
             if search_request.query_filter and "url" in search_request.query_filter:
@@ -1200,9 +1216,8 @@ async def generate_embedding(embedding_request: EmbeddingRequest, request: Reque
     """Generate embedding for a specific document"""
     enforce_origin_host(request)
 
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(embedding_request.domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         document = {
             'url': embedding_request.url,
@@ -1221,11 +1236,10 @@ async def generate_embedding(embedding_request: EmbeddingRequest, request: Reque
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/delete/{url}", tags=["2. Ingest"], summary="4. Delete by URL")
-async def delete_document(url: str):
+async def delete_document(url: str, active_domain: Optional[str] = None):
     """Delete embeddings for a specific document"""
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         embeddings_manager.delete_document(url)
         return {"message": "Document deleted successfully"}
@@ -1233,11 +1247,10 @@ async def delete_document(url: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug-index", tags=["5. Debug"], summary="1. Inspect Qdrant collections")
-def debug_index(url: Optional[str] = None):
+def debug_index(url: Optional[str] = None, active_domain: Optional[str] = None):
     """List current indexed collections and their first 10 documents, optionally filtered by URL"""
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         collections_info = embeddings_manager.qdrant.client.get_collections()
         collection_names = [col.name for col in collections_info.collections]
@@ -1334,18 +1347,17 @@ def debug_index(url: Optional[str] = None):
 
 
 @app.get("/list-docs-debug", tags=["5. Debug"], summary="List all documents in Qdrant (debug)")
-def list_docs(url: Optional[str] = None):
+def list_docs(url: Optional[str] = None, active_domain: Optional[str] = None):
     """Return a JSON list of all documents in Qdrant with selected fields.
 
     The returned structure is: {"documents": [ {document_title, url, total_chunks, updated_at, collection} ]}
     """
-    global embeddings_manager
-    if embeddings_manager is None:
-        embeddings_manager = EmbeddingsManager()
+    domain_cfg = _resolve_domain_config(active_domain)
+    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     try:
         collection_docs = []
         # Restrict to the configured collection name only
-        configured = getattr(settings, 'collection_name', None)
+        configured = domain_cfg.get("collection_name") or getattr(settings, 'collection_name', None)
         if not configured:
             raise HTTPException(status_code=500, detail='No collection_name configured in settings')
         collection_names = [configured]
@@ -1428,6 +1440,18 @@ async def delete_index_page():
     return FileResponse(os.path.join(frontend_dir, "delete-index.html"))
 
 
+@app.get(
+    "/prompt-registry",
+    tags=["1. UI Pages"],
+    summary="7. Prompt Registry editor (HTML)",
+    response_class=HTMLResponse,
+)
+async def prompt_registry_page():
+    """Serve the prompt-registry HTML page for editing YAML prompts by domain/stage."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "prompt-registry.html"))
+
+
 class DeleteByBaseURLRequest(BaseModel):
     """Request body for deleting Qdrant points grouped by base URL.
 
@@ -1437,6 +1461,7 @@ class DeleteByBaseURLRequest(BaseModel):
 
     url: Optional[str] = None
     base_url: Optional[str] = None
+    active_domain: Optional[str] = None
 
 
 def _strip_fragment_url(u: str) -> str:
@@ -1451,7 +1476,11 @@ def _strip_fragment_url(u: str) -> str:
     tags=["4. Index Admin"],
     summary="Preview Qdrant chunks matched by base_url_lower before delete",
 )
-def delete_preview(url: str = Query(..., description="Full URL of the document to delete"), sample_limit: int = Query(5, ge=1, le=500)):
+def delete_preview(
+    url: str = Query(..., description="Full URL of the document to delete"),
+    sample_limit: int = Query(5, ge=1, le=500),
+    active_domain: Optional[str] = Query(None, description="Optional domain for selecting collection/model"),
+):
     """Return a count and sample of chunks that would be deleted for the given URL's base_url.
 
     - Normalizes the provided URL to a base URL (no fragment) and lowercases it.
@@ -1459,13 +1488,7 @@ def delete_preview(url: str = Query(..., description="Full URL of the document t
     - Returns up to `sample_limit` example chunks for review.
     """
 
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name,
-        )
+    qdrant_db = _build_domain_qdrant(active_domain)
     try:
         base = _strip_fragment_url(url)
         total = qdrant_db.count_points_by_base_url(base)
@@ -1504,13 +1527,7 @@ def delete_by_base_url(request: DeleteByBaseURLRequest, http_request: Request):
     - `url`: a full URL, from which base_url will be derived, or
     - `base_url`: used directly.
     """
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name,
-        )
+    qdrant_db = _build_domain_qdrant(request.active_domain)
     try:
         base = request.base_url or _strip_fragment_url(request.url or "")
         if not base:
@@ -1563,6 +1580,338 @@ class ModelConfig(BaseModel):
     rewrite_tail_turns: Optional[int] = None
     rewrite_summary_turns: Optional[int] = None
     inference_context_rows: Optional[int] = None
+
+
+class PromptRegistryUpdateRequest(BaseModel):
+    """Request model for writing prompt registry YAML."""
+
+    registry: Dict[str, Any]
+
+
+class ToolRegistryUpdateRequest(BaseModel):
+    """Request model for writing tool registry YAML."""
+
+    registry: Dict[str, Any]
+
+
+def _prompt_registry_path() -> Path:
+    """Resolve configured prompt registry path to absolute path."""
+    raw_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip() or "prompts/prompt_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / candidate
+
+
+def _tool_registry_path() -> Path:
+    """Resolve tool registry path to absolute path."""
+    raw_path = str(getattr(settings, "tool_registry_path", "") or "").strip() or "prompts/tool_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / candidate
+
+
+def _validate_prompt_registry_shape(registry: Dict[str, Any]) -> None:
+    """Basic schema validation for prompt registry editor writes."""
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=400, detail="Registry must be a JSON object")
+
+    global_defaults = registry.get("global_defaults")
+    if not isinstance(global_defaults, dict):
+        raise HTTPException(status_code=400, detail="Missing required key: global_defaults")
+
+    required_stages = ["inference", "rewrite", "rerank", "summary", "tools_synth"]
+    for stage in required_stages:
+        stage_cfg = global_defaults.get(stage)
+        if not isinstance(stage_cfg, dict):
+            raise HTTPException(status_code=400, detail=f"Missing required stage config: global_defaults.{stage}")
+        system_instruction = stage_cfg.get("system_instruction")
+        if not isinstance(system_instruction, str) or not system_instruction.strip():
+            raise HTTPException(status_code=400, detail=f"Missing required system_instruction for stage: {stage}")
+
+    stages_requiring_full_payload = ["inference", "rewrite", "rerank"]
+    for stage in stages_requiring_full_payload:
+        stage_cfg = global_defaults.get(stage) or {}
+        user_messages = stage_cfg.get("user_messages")
+        if not isinstance(user_messages, list):
+            raise HTTPException(status_code=400, detail=f"Missing user_messages list for stage: {stage}")
+
+        has_full_payload = False
+        for item in user_messages:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "") == "full_payload":
+                template = item.get("template")
+                if isinstance(template, str) and template.strip():
+                    has_full_payload = True
+                    break
+        if not has_full_payload:
+            raise HTTPException(status_code=400, detail=f"Missing full_payload template for stage: {stage}")
+
+
+def _validate_tool_registry_shape(registry: Dict[str, Any]) -> None:
+    """Basic schema validation for tool registry editor writes."""
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=400, detail="Registry must be a JSON object")
+
+    artifact_injection = registry.get("artifact_injection")
+    if not isinstance(artifact_injection, dict):
+        raise HTTPException(status_code=400, detail="Missing required key: artifact_injection")
+
+    enabled = artifact_injection.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="artifact_injection.enabled must be boolean")
+
+    allowed_tools = artifact_injection.get("allowed_tools")
+    if not isinstance(allowed_tools, list):
+        raise HTTPException(status_code=400, detail="artifact_injection.allowed_tools must be a list")
+    for i, name in enumerate(allowed_tools):
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=400, detail=f"artifact_injection.allowed_tools[{i}] must be a non-empty string")
+
+    security = artifact_injection.get("security")
+    if not isinstance(security, dict):
+        raise HTTPException(status_code=400, detail="artifact_injection.security must be an object")
+
+    max_artifact_chars = security.get("max_artifact_chars")
+    if not isinstance(max_artifact_chars, int) or max_artifact_chars <= 0:
+        raise HTTPException(status_code=400, detail="artifact_injection.security.max_artifact_chars must be a positive integer")
+
+    allowed_artifact_types = security.get("allowed_artifact_types")
+    if not isinstance(allowed_artifact_types, list) or not allowed_artifact_types:
+        raise HTTPException(status_code=400, detail="artifact_injection.security.allowed_artifact_types must be a non-empty list")
+    for i, value in enumerate(allowed_artifact_types):
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"artifact_injection.security.allowed_artifact_types[{i}] must be a non-empty string")
+
+    allowed_injection_modes = security.get("allowed_injection_modes")
+    if not isinstance(allowed_injection_modes, list) or not allowed_injection_modes:
+        raise HTTPException(status_code=400, detail="artifact_injection.security.allowed_injection_modes must be a non-empty list")
+    for i, value in enumerate(allowed_injection_modes):
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"artifact_injection.security.allowed_injection_modes[{i}] must be a non-empty string")
+
+    enforce_placeholder_format = security.get("enforce_placeholder_format")
+    if not isinstance(enforce_placeholder_format, bool):
+        raise HTTPException(status_code=400, detail="artifact_injection.security.enforce_placeholder_format must be boolean")
+
+    tools = registry.get("tools")
+    if not isinstance(tools, list) or not tools:
+        raise HTTPException(status_code=400, detail="Missing required non-empty key: tools")
+
+    seen_names: set[str] = set()
+    for idx, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            raise HTTPException(status_code=400, detail=f"tools[{idx}] must be an object")
+
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail=f"tools[{idx}].name is required")
+        if name in seen_names:
+            raise HTTPException(status_code=400, detail=f"Duplicate tool name in registry: {name}")
+        seen_names.add(name)
+
+        artifact = tool.get("artifact")
+        if not isinstance(artifact, dict):
+            raise HTTPException(status_code=400, detail=f"tools[{idx}].artifact must be an object")
+
+        produces_artifact = artifact.get("produces_artifact")
+        if not isinstance(produces_artifact, bool):
+            raise HTTPException(status_code=400, detail=f"tools[{idx}].artifact.produces_artifact must be boolean")
+
+        if produces_artifact:
+            for key in ("artifact_type", "artifact_key", "injection_mode", "placeholder"):
+                value = str(artifact.get(key) or "").strip()
+                if not value:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"tools[{idx}].artifact.{key} is required when produces_artifact=true",
+                    )
+
+
+@app.get(
+    "/api/prompt-registry",
+    tags=["5. Debug"],
+    summary="Get prompt registry YAML",
+)
+async def get_prompt_registry():
+    """Return parsed prompt registry YAML for UI editing."""
+    path = _prompt_registry_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Prompt registry not found at {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            registry = yaml.safe_load(f) or {}
+
+        global_defaults = registry.get("global_defaults") if isinstance(registry, dict) else {}
+        stages = list(global_defaults.keys()) if isinstance(global_defaults, dict) else []
+        domains = sorted(list((registry.get("domains") or {}).keys())) if isinstance(registry, dict) else []
+        return {
+            "registry_path": str(path),
+            "registry": registry,
+            "stages": stages,
+            "domains": domains,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read prompt registry: {e}")
+
+
+@app.get(
+    "/api/tool-registry",
+    tags=["5. Debug"],
+    summary="Get tool registry YAML",
+)
+async def get_tool_registry():
+    """Return parsed tool registry YAML for UI editing."""
+    path = _tool_registry_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Tool registry not found at {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            registry = yaml.safe_load(f) or {}
+
+        tools = registry.get("tools") if isinstance(registry, dict) else []
+        tool_names = [str(t.get("name") or "") for t in tools if isinstance(t, dict)]
+        return {
+            "registry_path": str(path),
+            "registry": registry,
+            "tools": tool_names,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read tool registry: {e}")
+
+
+@app.put(
+    "/api/prompt-registry",
+    tags=["5. Debug"],
+    summary="Update prompt registry YAML",
+)
+async def update_prompt_registry(payload: PromptRegistryUpdateRequest, request: Request):
+    """Validate and write prompt registry YAML from editor UI."""
+    enforce_origin_host(request)
+    registry = payload.registry or {}
+    _validate_prompt_registry_shape(registry)
+
+    path = _prompt_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak")
+
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                previous = f.read()
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(previous)
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
+
+        removed = clear_prompt_registry_cache(str(path))
+
+        return {
+            "ok": True,
+            "registry_path": str(path),
+            "backup_path": str(backup_path) if backup_path.exists() else None,
+            "cache_entries_cleared": int(removed),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write prompt registry: {e}")
+
+
+@app.put(
+    "/api/tool-registry",
+    tags=["5. Debug"],
+    summary="Update tool registry YAML",
+)
+async def update_tool_registry(payload: ToolRegistryUpdateRequest, request: Request):
+    """Validate and write tool registry YAML from editor UI."""
+    enforce_origin_host(request)
+    registry = payload.registry or {}
+    _validate_tool_registry_shape(registry)
+
+    path = _tool_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak")
+
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                previous = f.read()
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(previous)
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
+
+        removed = clear_tool_registry_cache(str(path))
+
+        return {
+            "ok": True,
+            "registry_path": str(path),
+            "backup_path": str(backup_path) if backup_path.exists() else None,
+            "cache_entries_cleared": int(removed),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write tool registry: {e}")
+
+
+@app.post(
+    "/api/prompt-registry/reload-cache",
+    tags=["5. Debug"],
+    summary="Reload prompt registry cache",
+)
+async def reload_prompt_registry_cache(request: Request):
+    """Clear prompt registry cache so latest YAML is used on next prompt resolution."""
+    enforce_origin_host(request)
+    path = _prompt_registry_path()
+    removed = clear_prompt_registry_cache(str(path))
+    return {
+        "ok": True,
+        "registry_path": str(path),
+        "cache_entries_cleared": int(removed),
+        "message": "Prompt registry cache cleared. New prompts will be used on the next request.",
+    }
+
+
+@app.post(
+    "/api/tool-registry/reload-cache",
+    tags=["5. Debug"],
+    summary="Reload tool registry cache",
+)
+async def reload_tool_registry_cache(request: Request):
+    """Clear tool registry cache so latest YAML is used on next tool synthesis."""
+    enforce_origin_host(request)
+    path = _tool_registry_path()
+    removed = clear_tool_registry_cache(str(path))
+    return {
+        "ok": True,
+        "registry_path": str(path),
+        "cache_entries_cleared": int(removed),
+        "message": "Tool registry cache cleared. New tool artifact policy will be used on the next request.",
+    }
+
+
+@app.get(
+    "/tool-registry",
+    tags=["1. UI Pages"],
+    summary="8. Tool Registry editor (HTML)",
+    response_class=HTMLResponse,
+)
+async def tool_registry_page():
+    """Serve the tool-registry HTML page for editing tool artifact metadata."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "tool-registry.html"))
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():
@@ -1689,6 +2038,7 @@ class BatchURLItem(BaseModel):
     skip_sections: List[str] = Field(
         default_factory=lambda: ["References", "External links", "See also", "Further reading"]
     )
+    active_domain: Optional[str] = None
     user_agent: Optional[str] = None
     api_url: Optional[str] = None  # For MediaWiki API URL override
 
@@ -1699,6 +2049,7 @@ class BatchRequest(BaseModel):
     estimate: bool = True  # Default to True for safety
     force_delete: bool = False
     filename: Optional[str] = None
+    active_domain: Optional[str] = None
 
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
@@ -1742,6 +2093,7 @@ async def process_item(item, request, settings):
                             'file': file_b64,
                             'estimate': request.estimate,
                             'force_delete': request.force_delete,
+                            'active_domain': item.active_domain or request.active_domain,
                             'url': item.url,
                             'filename': os.path.basename(file_path)
                         }
@@ -1779,6 +2131,7 @@ async def process_item(item, request, settings):
                 url=item.url,
                 max_chunks=request.max_chunks,
                 force_delete=request.force_delete,
+                active_domain=item.active_domain or request.active_domain,
                 estimate=request.estimate
             )
             handler = index_pdf
@@ -1788,6 +2141,7 @@ async def process_item(item, request, settings):
                 url=item.url,
                 max_chunks=request.max_chunks,
                 force_delete=request.force_delete,
+                active_domain=item.active_domain or request.active_domain,
                 estimate=request.estimate
             )
             handler = index_mediawiki_url
@@ -1798,6 +2152,7 @@ async def process_item(item, request, settings):
                 doc_type='html',
                 max_chunks=request.max_chunks,
                 force_delete=request.force_delete,
+                active_domain=item.active_domain or request.active_domain,
                 estimate=request.estimate,
                 skip_sections=item.skip_sections,
                 user_agent=item.user_agent or settings.default_user_agent
@@ -1959,13 +2314,7 @@ async def update_payload_field(update_request: PayloadUpdateRequest, request: Re
     """
     enforce_origin_host(request)
 
-    global qdrant_db
-    if qdrant_db is None:
-        qdrant_db = QdrantDB(
-            host=settings.qdrant_host,
-            port=settings.qdrant_port,
-            collection_name=settings.collection_name
-        )
+    qdrant_db = _build_domain_qdrant(update_request.active_domain)
     try:
         updated = qdrant_db.update_payload_by_url(update_request)
         return {

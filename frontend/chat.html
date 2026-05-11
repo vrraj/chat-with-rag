@@ -123,6 +123,7 @@
                 <select id="prompt_domain">
                   <option value="">(global_defaults)</option>
                   <option value="mountains" selected>mountains</option>
+                  <option value="finance">finance</option>
                 </select>
               </div>
               <div class="form-field field-row" style="position: relative;">
@@ -199,6 +200,18 @@
         </form>
       </aside>
 
+      <button
+        id="sidebar_toggle"
+        type="button"
+        class="sidebar-toggle"
+        aria-label="Collapse parameters panel"
+        aria-controls="sidebar"
+        aria-expanded="true"
+        title="Hide parameters"
+      >
+        ◀
+      </button>
+
       <main id="main" aria-label="Chat Area">
         <!-- Turn rollups -->
         <section id="metrics_bar" class="metrics-compact" aria-label="Metrics">
@@ -206,13 +219,13 @@
           <div class="metrics-subsection-title">Per Turn Metrics  :</div>
           <div class="metric"><span class="metric-label">Input Tokens</span><span id="turn_input_tokens" class="metric-value" data-sum="turn_metrics.embedding.input_tokens, turn_metrics.rerank.input_tokens, turn_metrics.summary.input_tokens, turn_metrics.rewrite.input_tokens, turn_metrics.inference.prompt_tokens">0</span></div>
           <div class="metric"><span class="metric-label">Output Tokens</span><span id="turn_output_tokens" class="metric-value" data-sum="turn_metrics.rerank.output_tokens, turn_metrics.summary.output_tokens, turn_metrics.rewrite.output_tokens, turn_metrics.inference.completion_tokens">0</span></div>
-          <div class="metric emphasis"><span class="metric-label">Cost</span><span id="turn_total_cost" class="metric-value" data-metric="turn_metrics.totals.cost.turn_total">0</span></div>
+          <div class="metric emphasis"><span class="metric-label">Cost</span><span id="turn_total_cost" class="metric-value" data-metric="turn_metrics.totals.costs.turn_total">0</span></div>
 
           <div style="flex-basis:100%;height:0"></div>
           <!-- Query Embedding -->
           <div class="metric group-label">Query Embedding</div>
           <div class="metric"><span class="metric-label">Tokens</span><span id="embed_tokens" class="metric-value" data-metric="turn_metrics.embedding.input_tokens">0</span></div>
-          <div class="metric"><span class="metric-label">Cost</span><span id="embed_cost" class="metric-value" data-metric="turn_metrics.embedding.cost">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="embed_cost" class="metric-value" data-metric="turn_metrics.embedding.costs">0</span></div>
 
           <div class="metric sep"></div>
 
@@ -220,7 +233,7 @@
           <div class="metric group-label">Query Rewrite</div>
           <div class="metric"><span class="metric-label">Input Tokens</span><span id="rewrite_tokens_in" class="metric-value" data-metric="turn_metrics.rewrite.input_tokens">0</span></div>
           <div class="metric"><span class="metric-label">Output Tokens</span><span id="rewrite_tokens_out" class="metric-value" data-metric="turn_metrics.rewrite.output_tokens">0</span></div>
-          <div class="metric"><span class="metric-label">Cost</span><span id="rewrite_cost" class="metric-value" data-metric="turn_metrics.rewrite.cost">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="rewrite_cost" class="metric-value" data-metric="turn_metrics.rewrite.costs">0</span></div>
 
           <div class="metric sep"></div>
 
@@ -228,7 +241,7 @@
           <div class="metric group-label">Summarizer</div>
           <div class="metric"><span class="metric-label">Input Tokens</span><span id="summary_tokens_in" class="metric-value" data-metric="turn_metrics.summary.input_tokens">0</span></div>
           <div class="metric"><span class="metric-label">Output Tokens</span><span id="summary_tokens_out" class="metric-value" data-metric="turn_metrics.summary.output_tokens">0</span></div>
-          <div class="metric"><span class="metric-label">Cost</span><span id="summary_cost" class="metric-value" data-metric="turn_metrics.summary.cost">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="summary_cost" class="metric-value" data-metric="turn_metrics.summary.costs">0</span></div>
 
           <div class="metric sep"></div>
 
@@ -236,7 +249,7 @@
           <div class="metric group-label">Rerank</div>
           <div class="metric"><span class="metric-label">Input Tokens</span><span id="rerank_tokens_in" class="metric-value" data-metric="turn_metrics.rerank.input_tokens">0</span></div>
           <div class="metric"><span class="metric-label">Output Tokens</span><span id="rerank_tokens_out" class="metric-value" data-metric="turn_metrics.rerank.output_tokens">0</span></div>
-          <div class="metric"><span class="metric-label">Cost</span><span id="rerank_cost" class="metric-value" data-metric="turn_metrics.rerank.cost">0</span></div>
+          <div class="metric"><span class="metric-label">Cost</span><span id="rerank_cost" class="metric-value" data-metric="turn_metrics.rerank.costs">0</span></div>
 
           <div class="metric sep"></div>
 
@@ -269,10 +282,25 @@
           <!-- Part 2: Total Conversation Metrics -->
           <div style="flex-basis:100%;height:0"></div>
           <div class="metrics-subsection-title">Total Conversation Metrics :</div>
-          <div class="metric"><span class="metric-label"> Cost</span><span id="conversation_total_cost" class="metric-value" data-metric="conversation_totals.cost.conversation_total">0</span></div>
+          <div class="metric"><span class="metric-label"> Cost</span><span id="conversation_total_cost" class="metric-value" data-metric="conversation_totals.costs.conversation_total">0</span></div>
           <div class="metric"><span class="metric-label">Input Tokens</span><span id="conversation_input_tokens" class="metric-value" data-sum="conversation_totals.tokens.embedding, conversation_totals.tokens.llm_input">0</span></div>
           <div class="metric"><span class="metric-label">Output Tokens</span><span id="conversation_output_tokens" class="metric-value" data-metric="conversation_totals.tokens.llm_output">0</span></div>
         </section>
+
+        <div class="metrics-toggle-row">
+          <button
+            id="metrics_toggle"
+            type="button"
+            class="metrics-toggle"
+            aria-controls="metrics_bar"
+            aria-expanded="true"
+            aria-label="Collapse metrics"
+            title="Hide metrics"
+          >
+            <span class="metrics-toggle-label">Metrics</span>
+            <span id="metrics_toggle_arrow" aria-hidden="true">▲</span>
+          </button>
+        </div>
 
         <!-- Scrollable chat history -->
         <section id="chat_history" role="log" aria-live="polite" aria-label="Chat History"></section>
@@ -359,6 +387,51 @@
           console.debug('Failed to toggle collapsible group', e);
         }
       }
+
+      (function setupSidebarToggle() {
+        const app = document.getElementById('app');
+        const sidebar = document.getElementById('sidebar');
+        const toggleBtn = document.getElementById('sidebar_toggle');
+        if (!app || !sidebar || !toggleBtn) return;
+
+        const setCollapsedState = (collapsed) => {
+          app.classList.toggle('sidebar-collapsed', collapsed);
+          toggleBtn.textContent = collapsed ? '▶' : '◀';
+          toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          toggleBtn.setAttribute('aria-label', collapsed ? 'Expand parameters panel' : 'Collapse parameters panel');
+          toggleBtn.title = collapsed ? 'Show parameters' : 'Hide parameters';
+        };
+
+        toggleBtn.addEventListener('click', () => {
+          const collapsed = !app.classList.contains('sidebar-collapsed');
+          setCollapsedState(collapsed);
+        });
+
+        const isMobile = window.matchMedia('(max-width: 768px)').matches;
+        setCollapsedState(isMobile);
+      })();
+
+      (function setupMetricsToggle() {
+        const metricsBar = document.getElementById('metrics_bar');
+        const toggleBtn = document.getElementById('metrics_toggle');
+        const arrow = document.getElementById('metrics_toggle_arrow');
+        if (!metricsBar || !toggleBtn || !arrow) return;
+
+        const setCollapsedState = (collapsed) => {
+          metricsBar.classList.toggle('is-collapsed', collapsed);
+          arrow.textContent = collapsed ? '▼' : '▲';
+          toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          toggleBtn.setAttribute('aria-label', collapsed ? 'Expand metrics' : 'Collapse metrics');
+          toggleBtn.title = collapsed ? 'Show metrics' : 'Hide metrics';
+        };
+
+        toggleBtn.addEventListener('click', () => {
+          const collapsed = !metricsBar.classList.contains('is-collapsed');
+          setCollapsedState(collapsed);
+        });
+
+        setCollapsedState(false);
+      })();
     </script>
   <footer class="text-center text-xs text-gray-500 mt-8">
     <p>

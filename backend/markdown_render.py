@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import html
+import logging
 import re
 from typing import Optional
 
 import bleach
 from bs4 import BeautifulSoup, NavigableString
 from markdown_it import MarkdownIt
+
+
+logger = logging.getLogger(__name__)
 
 
 _ALLOWED_TAGS = [
@@ -30,6 +35,13 @@ _ALLOWED_TAGS = [
     "th",
     "td",
     "div",
+    "svg",
+    "polyline",
+    "line",
+    "rect",
+    "path",
+    "text",
+    "g",
 ]
 
 _ALLOWED_ATTRS = {
@@ -38,6 +50,20 @@ _ALLOWED_ATTRS = {
     "td": ["colspan", "rowspan"],
     "div": ["class"],
     "details": ["class"],
+    "svg": [
+        "width",
+        "height",
+        "viewBox",
+        "role",
+        "aria-hidden",
+        "xmlns",
+    ],
+    "polyline": ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "points"],
+    "line": ["x1", "y1", "x2", "y2", "stroke", "stroke-width", "stroke-linecap"],
+    "rect": ["x", "y", "width", "height", "fill", "rx", "ry", "stroke", "stroke-width"],
+    "path": ["d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"],
+    "text": ["x", "y", "text-anchor", "fill", "font-size", "font-weight"],
+    "g": ["transform", "fill", "stroke", "stroke-width"],
 }
 
 
@@ -51,6 +77,30 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
             src = re.sub(r"<thought>[\s\S]*?</thought>", "", src, flags=re.IGNORECASE).strip()
     except Exception:
         thought_blocks = []
+
+    # SVG-only raw HTML pass-through:
+    # - stash <svg> blocks before markdown conversion,
+    # - escape all other raw tags,
+    # - restore only SVG blocks before bleach sanitization.
+    svg_blocks: list[str] = []
+    svg_token_prefix = "RAWSVGBLOCKTOKEN"
+
+    def _svg_token(i: int) -> str:
+        return f"{svg_token_prefix}{i}END"
+
+    try:
+        def _stash_svg(m: re.Match[str]) -> str:
+            svg_blocks.append(m.group(0))
+            return _svg_token(len(svg_blocks) - 1)
+
+        src = re.sub(r"<svg\b[\s\S]*?</svg>", _stash_svg, src, flags=re.IGNORECASE)
+
+        # Escape any remaining raw HTML-like tags so only stashed SVG can be injected.
+        src = re.sub(r"</?[A-Za-z][^>]*>", lambda m: html.escape(m.group(0)), src)
+        if svg_blocks:
+            logger.info("[MD-SVG] stashed_svg_blocks=%d", len(svg_blocks))
+    except Exception:
+        svg_blocks = []
 
     raw_html = ""
     try:
@@ -70,6 +120,32 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
         md = MarkdownIt("commonmark", {"breaks": True, "html": False})
         raw_html = md.render(src)
 
+    if svg_blocks:
+        try:
+            restored = 0
+            for i, block in enumerate(svg_blocks):
+                token = _svg_token(i)
+                if token in raw_html:
+                    restored += 1
+                raw_html = raw_html.replace(token, block)
+                # Backward-compat fallback for previously used token format that markdown
+                # could convert to strong text (e.g., __RAW_SVG_BLOCK_0__).
+                raw_html = raw_html.replace(f"<strong>RAW_SVG_BLOCK_{i}</strong>", block)
+                raw_html = raw_html.replace(f"RAW_SVG_BLOCK_{i}", block)
+
+            # Any leftover token means markdown transformed or dropped placeholder text.
+            if svg_token_prefix in raw_html:
+                logger.warning("[MD-SVG] leftover_svg_tokens_detected_after_restore")
+
+            if restored != len(svg_blocks):
+                logger.warning(
+                    "[MD-SVG] restored_token_count_mismatch restored=%d expected=%d",
+                    restored,
+                    len(svg_blocks),
+                )
+        except Exception:
+            pass
+
     clean_html = bleach.clean(
         raw_html,
         tags=_ALLOWED_TAGS,
@@ -77,6 +153,25 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
         protocols=["http", "https", "mailto"],
         strip=True,
     )
+
+    if svg_blocks:
+        try:
+            # Basic structural sanity check for truncated SVG after sanitize.
+            open_count = len(re.findall(r"<svg\b", clean_html, flags=re.IGNORECASE))
+            close_count = len(re.findall(r"</svg>", clean_html, flags=re.IGNORECASE))
+            logger.info(
+                "[MD-SVG] post_sanitize_svg_counts open=%d close=%d",
+                open_count,
+                close_count,
+            )
+            if open_count != close_count:
+                logger.warning(
+                    "[MD-SVG] possible_svg_cutoff_detected open=%d close=%d",
+                    open_count,
+                    close_count,
+                )
+        except Exception:
+            pass
 
     # Post-process for UX parity with existing CSS: wrap tables and harden links.
     try:
@@ -144,6 +239,11 @@ def render_markdown_to_html(markdown_text: Optional[str]) -> str:
         # Handle both paragraphs and list items; list items must remain valid HTML.
         for node in list(soup.find_all(["p", "li"])):
             try:
+                # Never rewrite nodes that contain SVG; source-normalization rewrites
+                # can otherwise remove mixed-content blocks that include charts.
+                if node.find("svg") is not None:
+                    continue
+
                 txt = node.get_text("\n").strip()
                 if "Sources:" not in txt:
                     continue

@@ -22,14 +22,24 @@ def _strip_fragment(u: str) -> str:
     return urlunsplit((p.scheme, p.netloc, p.path, p.query, ""))
 
 class EmbeddingsManager:
-    def __init__(self):
-        self.qdrant: QdrantStorage = QdrantStorage()
+    def __init__(self, active_domain: Optional[str] = None):
+        available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+        configured_default_domain = str(getattr(settings, "active_domain", "") or "").strip() or "default"
+        requested_domain = str(active_domain or configured_default_domain).strip()
+        self.active_domain = requested_domain if requested_domain in available_domains else configured_default_domain
+        cfg = available_domains.get(self.active_domain) or available_domains.get(configured_default_domain) or {}
+        self.collection_name = str(cfg.get("collection_name") or settings.collection_name)
+        self.embedding_model_key = str(cfg.get("embedding_model_key") or settings.embedding_model_key)
+
+        self.qdrant: QdrantStorage = QdrantStorage(collection_name=self.collection_name)
         self.collection_manager = CollectionManager(self.qdrant.client)
+        self.collection_manager.collection_name = self.collection_name
         # Initialize QdrantDB without the callback first
         self.qdrant_db = QdrantDB(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
-            collection_name=settings.collection_name,
+            collection_name=self.collection_name,
+            embedding_model_key=self.embedding_model_key,
         )
         # Now set the callback after the method is defined
         self.qdrant_db.generate_embeddings = self.generate_embeddings
@@ -82,11 +92,11 @@ class EmbeddingsManager:
                 try:
                     spec = resolve_embedding_spec(settings)
                     provider = spec.get("provider", "openai")
-                    model = spec.get("model")
+                    model = self.embedding_model_key
                     dims = spec.get("dimensions")
                 except Exception:
                     provider = "openai"
-                    model = "text-embedding-3-small"
+                    model = self.embedding_model_key or "text-embedding-3-small"
                     dims = 1536
 
                 # Always use embed() for embeddings. Support both single-text
@@ -256,7 +266,7 @@ class EmbeddingsManager:
         # Resolve embedding spec once per document so we can record the model name in payloads
         try:
             _emb_spec_doc = resolve_embedding_spec(settings)
-            _emb_model_name_doc = _emb_spec_doc.get("model")
+            _emb_model_name_doc = self.embedding_model_key or _emb_spec_doc.get("model")
             _emb_provider_doc = _emb_spec_doc.get("provider", "openai")
         except Exception:
             _emb_model_name_doc = "text-embedding-3-small"
@@ -464,7 +474,7 @@ class EmbeddingsManager:
             logger.debug("Indexing document: %s", document.get('url', 'unknown'))
             # Ensure collection exists before indexing
             try:
-                self.qdrant.client.get_collection(settings.collection_name)
+                self.qdrant.client.get_collection(self.collection_name)
             except Exception:
                 logger.debug("Collection not found, creating it now...")
                 self.qdrant.create_collection()
@@ -587,7 +597,7 @@ class EmbeddingsManager:
         #logger.debug("Indexing %d pre-chunked entries", len(chunks))
 
         try:
-            self.qdrant.client.get_collection(settings.collection_name)
+            self.qdrant.client.get_collection(self.collection_name)
         except Exception:
             logger.debug("Collection not found, creating it now...")
             self.qdrant.create_collection()
@@ -610,7 +620,7 @@ class EmbeddingsManager:
         # Resolve embedding spec once per batch to record the model name in payloads
         try:
             _emb_spec_chunks = resolve_embedding_spec(settings)
-            _emb_model_name_chunks = _emb_spec_chunks.get("model")
+            _emb_model_name_chunks = self.embedding_model_key or _emb_spec_chunks.get("model")
             _emb_provider_chunks = _emb_spec_chunks.get("provider", "openai")
         except Exception:
             _emb_model_name_chunks = "text-embedding-3-small"

@@ -19,17 +19,54 @@ body {
   font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
 }
 
-#app { display: flex; height: 100vh; }
+#app { display: flex; height: 100vh; position: relative; }
 
-/* Sidebar: ~15% width, scrollable if needed */
+/* Sidebar: ~21% width, scrollable if needed */
 #sidebar {
-  flex: 0 0 15%;
+  flex: 0 0 21%;
   min-width: 220px;
   max-width: 320px;
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 16px 14px;
   overflow: auto;
+  transition: width 0.24s ease, min-width 0.24s ease, max-width 0.24s ease, padding 0.24s ease, border-color 0.24s ease;
+}
+
+.sidebar-toggle {
+  align-self: center;
+  margin: 0 8px;
+  width: 24px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.sidebar-toggle:hover {
+  background: #eef2ff;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#app.sidebar-collapsed #sidebar {
+  flex-basis: 0;
+  min-width: 0;
+  max-width: 0;
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right-color: transparent;
+  overflow: hidden;
 }
 .section-title { margin: 0 0 12px; font-weight: 600; font-size: 14px; color: var(--muted); }
 
@@ -301,6 +338,41 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
 /* Main column */
 #main { flex: 1; display: flex; flex-direction: column; height: 100vh; gap: 12px; padding: 12px; }
 
+.metrics-toggle-row {
+  display: flex;
+  justify-content: center;
+}
+
+.metrics-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.metrics-toggle:hover {
+  background: #eef2ff;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.metrics-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.metrics-toggle-label {
+  font-weight: 600;
+}
+
 /* Metrics bar: read-only placeholders */
 #metrics_bar {
   display: flex;
@@ -311,6 +383,17 @@ input[type="number"]:focus { outline: none; border-color: var(--accent); }
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
+  max-height: 320px;
+  overflow: hidden;
+  transition: max-height 0.24s ease, padding-top 0.24s ease, padding-bottom 0.24s ease, border-color 0.24s ease, opacity 0.2s ease;
+}
+
+#metrics_bar.is-collapsed {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-color: transparent;
+  opacity: 0;
 }
 
 /* Compact metrics spacing */

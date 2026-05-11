@@ -11,12 +11,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 class QdrantStorage:
-    def __init__(self):
+    def __init__(self, collection_name: Optional[str] = None):
         self.client = QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port
         )
-        self.collection_name = settings.collection_name
+        self.collection_name = str(collection_name or settings.collection_name)
 
     def create_collection(self):
         """

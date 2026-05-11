@@ -757,6 +757,7 @@
       summarizer_max_input_tokens: getNum('summarizer_max_input_tokens'),
       summarizer_max_output_tokens: getNum('summarizer_max_output_tokens'),
       prompt_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
+      active_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
       temperature: getNum('temperature'),
       max_output_tokens: getNum('max_output_tokens'),
       top_p: getNum('top_p'),
@@ -767,6 +768,15 @@
       rewrite_summary_turns: getNum('rewrite_summary_turns'),
       use_tools,
     };
+
+    try {
+      const selectedDomain = String(base.active_domain || '').trim();
+      if (selectedDomain) {
+        localStorage.setItem('active_domain', selectedDomain);
+      }
+    } catch (e) {
+      console.debug('Failed to persist active_domain', e);
+    }
 
     // Feature flag (Option A): request backend-rendered HTML (additive).
     base.render_html = true;
@@ -783,6 +793,7 @@
     // Attach model keys per stage. These map to backend model registry.
     try {
       base.model_keys = {
+        embedding: 'openai:embed_small',
         inference: stageModelConfig.inference.model_key,
         rewrite: stageModelConfig.rewrite.model_key,
         summary: stageModelConfig.summary.model_key,

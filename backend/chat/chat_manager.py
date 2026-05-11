@@ -36,7 +36,10 @@ import re
 import uuid
 import tiktoken
 import time
+from pathlib import Path
 from collections import defaultdict
+import yaml
+import bleach
 # NOTE: SSE stage emission is centralized in backend/stream_emit.py so chat_manager stays agnostic of registry details.
 # Stream emission helpers (centralized in backend/stream_emit.py)
 from backend.stream_emit import emit_stage, close_stream
@@ -55,6 +58,7 @@ from backend.chat.prompt_registry import (
     resolve_rewrite_prompt,
     resolve_rerank_prompt,
     resolve_summary_prompt,
+    resolve_tools_synth_prompt,
     render_full_payload,
 )
 
@@ -62,6 +66,8 @@ from backend.markdown_render import render_markdown_to_html
 
 _SUMMARY_CACHE: Dict[str, str] = {}
 _SUMMARY_CACHE_LAST_SEEN: Dict[str, float] = {}
+
+_TOOL_REGISTRY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 _CHUNK_MANAGERS_BY_NS: Dict[str, ChunkedHistoryManager] = {}
 _CHUNK_MANAGERS_LAST_SEEN: Dict[str, float] = {}
@@ -1059,9 +1065,10 @@ def _compute_stage_cost(
 
     if pricing is not None:
         try:
-            in_rate = float(getattr(pricing, "input_per_mm", 0.0) or 0.0)
-            out_rate = float(getattr(pricing, "output_per_mm", 0.0) or 0.0)
-            cached_rate = float(getattr(pricing, "cached_input_per_mm", 0.0) or 0.0)
+            # pricing is returned as a dict, use dict access instead of getattr
+            in_rate = float(pricing.get("input_per_mm", 0.0) or 0.0)
+            out_rate = float(pricing.get("output_per_mm", 0.0) or 0.0)
+            cached_rate = float(pricing.get("cached_input_per_mm", 0.0) or 0.0)
         except Exception:
             in_rate = out_rate = cached_rate = 0.0
 
@@ -1075,10 +1082,10 @@ def _compute_stage_cost(
         cost_completion = (completion_tokens / COST_BASIS) * out_rate
         total = cost_prompt + cost_cached + cost_completion
         return {
-            "cost_prompt": round(cost_prompt, 8),
-            "cost_cached": round(cost_cached, 8),
-            "cost_completion": round(cost_completion, 8),
-            "cost_total": round(total, 8),
+            "cost_prompt": round(cost_prompt, 10),
+            "cost_cached": round(cost_cached, 10),
+            "cost_completion": round(cost_completion, 10),
+            "cost_total": round(total, 10),
         }
 
     # If model registry cannot be resolved, return zero costs rather than
@@ -1127,10 +1134,10 @@ class Metrics:
             _emb_model_name = "text-embedding-3-small"
         # Exact shape expected by the UI
         self.turn: Dict[str, Any] = {
-            "embedding": {"model": _emb_model_name, "input_tokens": 0, "cost": 0.0},
-            "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "cost": 0.0},
-            "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
-            "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
+            "embedding": {"model": _emb_model_name, "input_tokens": 0, "costs": 0.0},
+            "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "costs": 0.0},
+            "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "costs": 0.0},
+            "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "costs": 0.0},
             # Inference pass #1 (initial answer / tool-planning)
             "inference": {
                 "model": settings_obj.inference_model,
@@ -1155,7 +1162,7 @@ class Metrics:
                 "cost_output": 0.0,
                 "cost_total": 0.0,
             },
-            "totals": {"tokens": {"turn_total": 0}, "cost": {"turn_total": 0.0}},
+            "totals": {"tokens": {"turn_total": 0}, "costs": {"turn_total": 0.0}},
         }
         # Module-level accumulator reference (shared per process)
         self.convo: Dict[str, Any] = convo_totals_ref
@@ -1211,12 +1218,11 @@ class Metrics:
     def record_stage(
         self,
         stage: str,
-        *,
-        model: str,
-        usage: Any | None = None,
         pt: int | None = None,
         ct: int | None = None,
         cached: int | None = None,
+        model: str | None = None,
+        usage: Any | None = None,
         model_key: str | None = None,
         extra: Dict[str, Any] | None = None,
     ) -> None:
@@ -1243,23 +1249,23 @@ class Metrics:
             # input-only; we treat provided pt as input_tokens
             self.turn[stage]["input_tokens"] = pt
             c = self._cost("embedding", model, pt, 0, 0, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_prompt"]
+            self.turn[stage]["costs"] = c["cost_prompt"]
         elif stage == "rerank":
             # Use canonical input_tokens; cached is a subset and tracked separately via cost math.
             self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rerank", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_total"]
+            self.turn[stage]["costs"] = c["cost_total"]
         elif stage == "summary":
             self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("summary", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_total"]
+            self.turn[stage]["costs"] = c["cost_total"]
         elif stage == "rewrite":
             self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rewrite", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_total"]
+            self.turn[stage]["costs"] = c["cost_total"]
         elif stage in ("inference", "inference_tools_synth"):
             # Accumulate tokens and costs across multiple inference calls in a single turn.
             prev_in = int(self.turn[stage].get("input_tokens") or 0)
@@ -1320,26 +1326,23 @@ class Metrics:
         self.turn["totals"]["tokens"]["turn_total"] = total_tokens
 
         total_cost = (
-            float(self.turn["embedding"].get("cost") or 0.0)
-            + float(self.turn["rerank"].get("cost") or 0.0)
-            + float(self.turn["summary"].get("cost") or 0.0)
-            + float(self.turn["rewrite"].get("cost") or 0.0)
+            float(self.turn["embedding"].get("costs") or 0.0)
+            + float(self.turn["rerank"].get("costs") or 0.0)
+            + float(self.turn["summary"].get("costs") or 0.0)
+            + float(self.turn["rewrite"].get("costs") or 0.0)
             + float(self.turn["inference"].get("cost_total") or 0.0)
             + float(self.turn["inference_tools_synth"].get("cost_total") or 0.0)
         )
-        self.turn["totals"]["cost"]["turn_total"] = round(total_cost, 8)
+        self.turn["totals"]["costs"]["turn_total"] = round(total_cost, 10)
 
-        # Accumulate into shared conversation totals (robust to 'cost' vs 'costs')
+        # Accumulate into shared conversation totals
         try:
             self.convo["tokens"]["embedding"] += emb
             # NOTE: cached tokens are already included in stage input/prompt token counts; track them separately but don't double-count.
             self.convo["tokens"]["llm_input"] += (rin + sin + rwin + ip)
             self.convo["tokens"]["llm_output"] += (rout + sout + rwout + ic)
             self.convo["tokens"]["conversation_total"] += total_tokens
-            if "cost" in self.convo:
-                self.convo["cost"]["conversation_total"] = round(float(self.convo["cost"].get("conversation_total", 0.0)) + total_cost, 8)
-            elif "costs" in self.convo:
-                self.convo["costs"]["conversation_total"] = round(float(self.convo["costs"].get("conversation_total", 0.0)) + total_cost, 8)
+            self.convo["costs"]["conversation_total"] = round(float(self.convo["costs"].get("conversation_total", 0.0)) + total_cost, 10)
             logger.debug("[TOTALS] Metrics Finalize Turn turn_total=%d convo_total_now=%d" % (self.turn["totals"]["tokens"]["turn_total"], self.convo["tokens"]["conversation_total"]))
         except Exception:
             # Never let metrics break the answer path
@@ -1350,13 +1353,10 @@ class Metrics:
         """Return the current turn metrics and a frontend-aligned conversation totals snapshot."""
         convo_cost = 0.0
         if isinstance(self.convo, dict):
-            if "cost" in self.convo:
-                convo_cost = float(self.convo["cost"].get("conversation_total", 0.0))
-            elif "costs" in self.convo:
-                convo_cost = float(self.convo["costs"].get("conversation_total", 0.0))
+            convo_cost = float(self.convo["costs"].get("conversation_total", 0.0))
         convo_snapshot = {
             "tokens": self.convo.get("tokens", {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0}),
-            "cost": {"conversation_total": convo_cost},
+            "costs": {"conversation_total": convo_cost},
         }
         return self.turn, convo_snapshot
 
@@ -2171,6 +2171,369 @@ def parse_tool_args(raw: Any) -> Dict[str, Any]:
             return {}
     return {}
 
+
+def _tool_registry_path(settings_obj: Any) -> Path:
+    raw_path = str(getattr(settings_obj, "tool_registry_path", "") or "").strip() or "prompts/tool_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / candidate
+
+
+def clear_tool_registry_cache(path: str | None = None) -> int:
+    """Clear cached tool registry entries and return number removed."""
+    if path:
+        key = str(path)
+        return 1 if _TOOL_REGISTRY_CACHE.pop(key, None) is not None else 0
+    removed = len(_TOOL_REGISTRY_CACHE)
+    _TOOL_REGISTRY_CACHE.clear()
+    return removed
+
+
+def _load_tool_registry(settings_obj: Any) -> Dict[str, Dict[str, Any]]:
+    path = _tool_registry_path(settings_obj)
+    cache_key = str(path)
+    try:
+        mtime = float(path.stat().st_mtime) if path.exists() else -1.0
+    except Exception:
+        mtime = -1.0
+
+    cached = _TOOL_REGISTRY_CACHE.get(cache_key)
+    if isinstance(cached, dict):
+        try:
+            if float(cached.get("mtime", -2.0)) == mtime and isinstance(cached.get("value"), dict):
+                return dict(cached.get("value") or {})
+        except Exception:
+            pass
+
+    try:
+        if not path.exists():
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+    tools = data.get("tools") if isinstance(data, dict) else []
+    if not isinstance(tools, list):
+        return {}
+
+    by_name: Dict[str, Dict[str, Any]] = {}
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        runtime = item.get("runtime") if isinstance(item.get("runtime"), dict) else {}
+        endpoint = runtime.get("endpoint") if isinstance(runtime.get("endpoint"), dict) else {}
+        endpoint_type = str(endpoint.get("type") or "").strip()
+        endpoint_url = str(endpoint.get("url") or "").strip()
+        if not endpoint_type or not endpoint_url:
+            raise ValueError(
+                f"Tool '{name}' in tool registry must define runtime.endpoint.type and runtime.endpoint.url"
+            )
+        by_name[name] = item
+
+    artifact_injection = data.get("artifact_injection") if isinstance(data, dict) else {}
+    if not isinstance(artifact_injection, dict):
+        artifact_injection = {}
+
+    loaded = {
+        "tools_by_name": by_name,
+        "artifact_injection": artifact_injection,
+    }
+    _TOOL_REGISTRY_CACHE[cache_key] = {"mtime": mtime, "value": loaded}
+    return loaded
+
+
+def _extract_artifacts_from_tool_outputs(
+    tool_outputs_list: List[Dict[str, Any]],
+    tool_registry: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    artifacts: List[Dict[str, str]] = []
+    default_max_artifact_chars = 120000
+    placeholder_re = re.compile(r"^\{\{ARTIFACT:[A-Za-z0-9_.:-]{1,64}\}\}$")
+    artifact_injection = tool_registry.get("artifact_injection") if isinstance(tool_registry, dict) else {}
+    if not isinstance(artifact_injection, dict):
+        artifact_injection = {}
+    if not bool(artifact_injection.get("enabled", True)):
+        return artifacts
+
+    security_cfg = artifact_injection.get("security") if isinstance(artifact_injection, dict) else {}
+    if not isinstance(security_cfg, dict):
+        security_cfg = {}
+
+    try:
+        max_artifact_chars = int(security_cfg.get("max_artifact_chars", default_max_artifact_chars) or default_max_artifact_chars)
+    except Exception:
+        max_artifact_chars = default_max_artifact_chars
+    if max_artifact_chars <= 0:
+        max_artifact_chars = default_max_artifact_chars
+
+    allowed_artifact_types = {
+        str(v).strip().lower()
+        for v in (security_cfg.get("allowed_artifact_types") or ["svg"])
+        if isinstance(v, str) and str(v).strip()
+    }
+    if not allowed_artifact_types:
+        allowed_artifact_types = {"svg"}
+
+    allowed_injection_modes = {
+        str(v).strip().lower()
+        for v in (security_cfg.get("allowed_injection_modes") or ["verbatim"])
+        if isinstance(v, str) and str(v).strip()
+    }
+    if not allowed_injection_modes:
+        allowed_injection_modes = {"verbatim"}
+
+    enforce_placeholder_format = bool(security_cfg.get("enforce_placeholder_format", True))
+
+    raw_allowed = artifact_injection.get("allowed_tools")
+    allowed_artifact_tools = {
+        str(n).strip()
+        for n in (raw_allowed or [])
+        if isinstance(n, str) and str(n).strip()
+    }
+
+    tools_by_name = tool_registry.get("tools_by_name") if isinstance(tool_registry, dict) else {}
+    if not isinstance(tools_by_name, dict):
+        tools_by_name = {}
+
+    for t in (tool_outputs_list or []):
+        tool_name = str(t.get("name") or "").strip()
+        if not tool_name:
+            continue
+        if allowed_artifact_tools and tool_name not in allowed_artifact_tools:
+            continue
+        cfg = tools_by_name.get(tool_name) or {}
+        artifact_cfg = cfg.get("artifact") if isinstance(cfg, dict) else None
+        if not isinstance(artifact_cfg, dict):
+            continue
+        if not bool(artifact_cfg.get("produces_artifact")):
+            continue
+
+        artifact_key = str(artifact_cfg.get("artifact_key") or "").strip()
+        placeholder = str(artifact_cfg.get("placeholder") or "").strip()
+        artifact_type = str(artifact_cfg.get("artifact_type") or "").strip().lower()
+        injection_mode = str(artifact_cfg.get("injection_mode") or "").strip().lower()
+        if not artifact_key:
+            continue
+        if artifact_type not in allowed_artifact_types:
+            logger.warning("[ARTIFACT] tool=%s skipped: unsupported artifact_type=%s", tool_name, artifact_type)
+            continue
+        if injection_mode not in allowed_injection_modes:
+            logger.warning("[ARTIFACT] tool=%s skipped: unsupported injection_mode=%s", tool_name, injection_mode)
+            continue
+        if enforce_placeholder_format and placeholder and not placeholder_re.match(placeholder):
+            logger.warning("[ARTIFACT] tool=%s skipped: invalid placeholder format", tool_name)
+            continue
+
+        payload = ""
+        out = str(t.get("output") or "")
+        try:
+            parsed = json.loads(out)
+            if isinstance(parsed, dict):
+                v = parsed.get(artifact_key)
+                if isinstance(v, str) and v.strip():
+                    payload = v.strip()
+        except Exception:
+            payload = ""
+
+        if not payload and artifact_type == "svg":
+            try:
+                m = re.search(r"<svg\\b[\\s\\S]*?</svg>", out, flags=re.IGNORECASE)
+                if m and m.group(0).strip():
+                    payload = m.group(0).strip()
+            except Exception:
+                payload = ""
+
+        if payload and len(payload) > max_artifact_chars:
+            logger.warning(
+                "[ARTIFACT] tool=%s skipped: payload too large chars=%d max=%d",
+                tool_name,
+                len(payload),
+                max_artifact_chars,
+            )
+            payload = ""
+
+        if payload and artifact_type == "svg":
+            # Runtime hardening: reject known-unsafe patterns and sanitize SVG before injection.
+            lower_payload = payload.lower()
+            if (
+                "<script" in lower_payload
+                or "javascript:" in lower_payload
+                or "<foreignobject" in lower_payload
+                or re.search(r"\son[a-z]+\s*=", lower_payload) is not None
+            ):
+                logger.warning("[ARTIFACT] tool=%s skipped: unsafe svg pattern detected", tool_name)
+                payload = ""
+            else:
+                try:
+                    sanitized = bleach.clean(
+                        payload,
+                        tags=["svg", "polyline", "line", "rect", "path", "text", "g"],
+                        attributes={
+                            "svg": ["width", "height", "viewBox", "role", "aria-hidden", "xmlns"],
+                            "polyline": ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "points"],
+                            "line": ["x1", "y1", "x2", "y2", "stroke", "stroke-width", "stroke-linecap"],
+                            "rect": ["x", "y", "width", "height", "fill", "rx", "ry", "stroke", "stroke-width"],
+                            "path": ["d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"],
+                            "text": ["x", "y", "text-anchor", "fill", "font-size", "font-weight"],
+                            "g": ["transform", "fill", "stroke", "stroke-width"],
+                        },
+                        protocols=["http", "https"],
+                        strip=True,
+                    ).strip()
+                    if "<svg" not in sanitized.lower() or "</svg>" not in sanitized.lower():
+                        logger.warning("[ARTIFACT] tool=%s skipped: sanitized svg invalid", tool_name)
+                        payload = ""
+                    else:
+                        payload = sanitized
+                except Exception:
+                    logger.warning("[ARTIFACT] tool=%s skipped: svg sanitization failed", tool_name)
+                    payload = ""
+
+        if payload:
+            artifacts.append(
+                {
+                    "tool": tool_name,
+                    "payload": payload,
+                    "placeholder": placeholder,
+                    "injection_mode": injection_mode,
+                    "artifact_type": artifact_type,
+                }
+            )
+    return artifacts
+
+
+def _inject_registered_artifacts(text: str, artifacts: List[Dict[str, str]]) -> str:
+    combined = str(text or "")
+    for a in artifacts:
+        tool_name = str(a.get("tool") or "unknown")
+        payload = str(a.get("payload") or "").strip()
+        placeholder = str(a.get("placeholder") or "").strip()
+        injection_mode = str(a.get("injection_mode") or "").strip().lower()
+        artifact_type = str(a.get("artifact_type") or "").strip().lower()
+        if not payload:
+            logger.debug("[ARTIFACT] tool=%s skipped: empty payload", tool_name)
+            continue
+
+        if placeholder and placeholder in combined:
+            combined = combined.replace(placeholder, payload)
+            logger.debug("[ARTIFACT] tool=%s placeholder_hit=true placeholder=%s", tool_name, placeholder)
+            continue
+        if placeholder:
+            logger.debug("[ARTIFACT] tool=%s placeholder_hit=false placeholder=%s", tool_name, placeholder)
+            try:
+                token_match = re.match(r"^\{\{(ARTIFACT:[A-Za-z0-9_.:-]{1,64})\}\}$", placeholder)
+                token = token_match.group(1) if token_match else ""
+                if token:
+                    loose_pattern = re.compile(r"\{+\s*" + re.escape(token) + r"\s*\}+")
+                    combined, loose_count = loose_pattern.subn(payload, combined)
+                    logger.debug(
+                        "[ARTIFACT] tool=%s placeholder_loose_match_replacements=%d token=%s",
+                        tool_name,
+                        int(loose_count),
+                        token,
+                    )
+                    if loose_count > 0:
+                        continue
+            except Exception:
+                logger.debug("[ARTIFACT] tool=%s placeholder_loose_match_failed", tool_name, exc_info=True)
+
+        # If model output contains a truncated SVG fragment, remove the broken tail before
+        # injecting canonical SVG. This prevents malformed nested markup in finalHtml.
+        if artifact_type == "svg":
+            has_svg_open = "<svg" in combined.lower()
+            has_svg_close = "</svg>" in combined.lower()
+            if has_svg_open and not has_svg_close:
+                try:
+                    prefix = combined.split("<svg", 1)[0].rstrip()
+                    combined = prefix
+                    logger.debug("[ARTIFACT] tool=%s removed_truncated_svg_prefix=true", tool_name)
+                except Exception:
+                    pass
+
+        if injection_mode == "verbatim" and payload not in combined:
+            if combined.strip():
+                combined = f"{combined.strip()}\n\n{payload}"
+            else:
+                combined = payload
+            logger.debug("[ARTIFACT] tool=%s appended_verbatim=true", tool_name)
+        elif injection_mode == "verbatim":
+            logger.debug("[ARTIFACT] tool=%s appended_verbatim=false reason=already_present", tool_name)
+    return combined
+
+
+def _redact_tool_outputs_for_synth(tool_outputs_list: List[Dict[str, Any]], tool_registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return tool outputs safe for tools_synth prompt by removing artifact payload fields.
+
+    The second LLM synthesis pass should not receive large binary-like artifacts (e.g., SVG).
+    We keep compact metadata so the model can still reference tool results in prose.
+    """
+    redacted: List[Dict[str, Any]] = []
+    tools_by_name = tool_registry.get("tools_by_name") if isinstance(tool_registry, dict) else {}
+    if not isinstance(tools_by_name, dict):
+        tools_by_name = {}
+
+    for t in (tool_outputs_list or []):
+        item = dict(t or {})
+        tool_name = str(item.get("name") or "").strip()
+        output_text = str(item.get("output") or "")
+
+        cfg = tools_by_name.get(tool_name) if tool_name else None
+        artifact_cfg = cfg.get("artifact") if isinstance(cfg, dict) else None
+        produces_artifact = bool(isinstance(artifact_cfg, dict) and artifact_cfg.get("produces_artifact"))
+        artifact_key = str((artifact_cfg or {}).get("artifact_key") or "").strip()
+        placeholder = str((artifact_cfg or {}).get("placeholder") or "").strip()
+
+        if not produces_artifact or not artifact_key:
+            redacted.append(item)
+            continue
+
+        compact = ""
+        try:
+            parsed = json.loads(output_text)
+            if isinstance(parsed, dict):
+                if artifact_key in parsed:
+                    parsed.pop(artifact_key, None)
+                if placeholder:
+                    parsed["artifact_placeholder"] = placeholder
+                parsed["artifact_payload_omitted"] = True
+                compact = json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            compact = ""
+
+        if not compact:
+            compact = f"Artifact payload omitted for synthesis. placeholder={placeholder or '(none)'}"
+
+        item["output"] = compact
+        redacted.append(item)
+
+    return redacted
+
+
+def _strip_svg_from_messages(messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+    """Best-effort removal of raw SVG blocks from model input messages.
+
+    This is a last-mile safety guard to ensure tools_synth never receives raw
+    artifact payloads, even if an upstream path accidentally includes them.
+    """
+    stripped_count = 0
+    out: List[Dict[str, Any]] = []
+    for m in (messages or []):
+        item = dict(m or {})
+        content = item.get("content")
+        if isinstance(content, str):
+            new_content, n = re.subn(r"<svg\b[\s\S]*?</svg>", "[SVG_ARTIFACT_OMITTED]", content, flags=re.IGNORECASE)
+            if n > 0:
+                stripped_count += int(n)
+            item["content"] = new_content
+        out.append(item)
+    return out, stripped_count
+
 #
 # --- History slicing helper moved to utils.py ---
 
@@ -2271,8 +2634,26 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     # --- Model registry keys (cost-only) ---
     # Optional stable model aliases from params, used ONLY for accurate cost lookup.
+    # Support both flat format (embedding_model_key) and nested format (model_keys.embedding)
+    # Fallback to settings model keys if not provided in params
     _mk = lambda k: (str(params.get(k)).strip() or None) if params.get(k) is not None else None
     _stage_model_keys = {s: _mk(f"{s}_model_key") for s in ("embedding", "rewrite", "summary", "rerank", "inference", "tools_synth")}
+    # Also check nested model_keys format from frontend
+    model_keys_nested = params.get("model_keys") or {}
+    for stage in ("embedding", "rewrite", "summary", "rerank", "inference", "tools_synth"):
+        if model_keys_nested.get(stage) and not _stage_model_keys.get(stage):
+            _stage_model_keys[stage] = str(model_keys_nested.get(stage)).strip() or None
+    # Fallback to settings model keys if still None
+    if not _stage_model_keys.get("embedding"):
+        _stage_model_keys["embedding"] = str(getattr(settings_obj, "embedding_model_key", "openai:embed_small"))
+    if not _stage_model_keys.get("inference"):
+        _stage_model_keys["inference"] = str(getattr(settings_obj, "inference_model_key", "openai:gpt-4o-mini"))
+    if not _stage_model_keys.get("rewrite"):
+        _stage_model_keys["rewrite"] = str(getattr(settings_obj, "rewrite_model_key", "openai:gpt-4o-mini"))
+    if not _stage_model_keys.get("rerank"):
+        _stage_model_keys["rerank"] = str(getattr(settings_obj, "rerank_model_key", "openai:gpt-4o-mini"))
+    if not _stage_model_keys.get("summary"):
+        _stage_model_keys["summary"] = str(getattr(settings_obj, "summarizer_model_key", "openai:gpt-4o-mini"))
     _stage_model_keys["tools_synth"] = _stage_model_keys.get("tools_synth") or _stage_model_keys.get("inference")
 
     # Per-UI control for whether to append Sources: blocks and structured sources.
@@ -2449,7 +2830,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                         "llm_output": 0,
                                         "conversation_total": 0,
                                     },
-                                    "cost": {"conversation_total": 0.0},
+                                    "costs": {"conversation_total": 0.0},
                                 }
                             return {
                                 "answer": quota_msg,
@@ -2543,7 +2924,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                     "llm_output": 0,
                                     "conversation_total": 0,
                                 },
-                                "cost": {"conversation_total": 0.0},
+                                "costs": {"conversation_total": 0.0},
                             }
                         return {
                             "answer": quota_msg,
@@ -2718,7 +3099,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             turn_metrics, convo_snapshot = m.snapshot()
         except Exception:
             turn_metrics = m.turn
-            convo_snapshot = {"tokens": {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0}, "cost": {"conversation_total": 0.0}}
+            convo_snapshot = {"tokens": {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0}, "costs": {"conversation_total": 0.0}}
         return {
             "answer": answer,
             "sources": [],
@@ -2799,7 +3180,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         "llm_output": 0,
                         "conversation_total": 0,
                     },
-                    "cost": {"conversation_total": 0.0},
+                    "costs": {"conversation_total": 0.0},
                 }
             return {
                 "answer": quota_msg,
@@ -3046,7 +3427,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             "llm_output": 0,
                             "conversation_total": 0,
                         },
-                        "cost": {"conversation_total": 0.0},
+                        "costs": {"conversation_total": 0.0},
                     }
                 return {
                     "answer": quota_msg,
@@ -3267,8 +3648,22 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             if not _is_web_search_requested(message):
                 tools = [t for t in tools if (t.get("name") or t.get("function", {}).get("name")) != "web_search"]
             _kwargs_inf["tools"] = tools
+            try:
+                offered_tool_names = [
+                    str(t.get("name") or t.get("function", {}).get("name") or "")
+                    for t in (tools or [])
+                ]
+                logger.info(
+                    "[TOOLS] (%s) tools_offered_to_inference count=%d names=%s",
+                    log_origin,
+                    len([n for n in offered_tool_names if n]),
+                    [n for n in offered_tool_names if n],
+                )
+            except Exception:
+                pass
         except Exception:
             _kwargs_inf["tools"] = []
+            logger.info("[TOOLS] (%s) tools_offered_to_inference count=0 (list_tools failed)", log_origin)
 
     logger.info("[INFERENCE] %s: Attempting Responses with Inference model: %s", log_origin, _inf_model)
     
@@ -3344,7 +3739,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             "llm_output": 0,
                             "conversation_total": 0,
                         },
-                        "cost": {"conversation_total": 0.0},
+                        "costs": {"conversation_total": 0.0},
                     }
                 return {
                     "answer": quota_msg,
@@ -3386,10 +3781,25 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     if enable_tools and isinstance(_kwargs_inf.get("input"), list):
         # NOTE: Single-pass tool execution.
         try:
+            tool_registry = _load_tool_registry(settings_obj)
+            tools_by_name = tool_registry.get("tools_by_name") if isinstance(tool_registry, dict) else {}
+            if not isinstance(tools_by_name, dict):
+                tools_by_name = {}
+
             # Extract tool calls from the first inference response
             tool_calls = extract_tool_calls(resp_inf)
+            try:
+                logger.debug(
+                    "[TOOLS] (%s) extracted_tool_calls count=%d names=%s",
+                    log_origin,
+                    len(tool_calls or []),
+                    [str((c or {}).get("name") or "") for c in (tool_calls or [])],
+                )
+            except Exception:
+                pass
             
             if not tool_calls:
+                logger.debug("[TOOLS] (%s) no_tool_calls_from_inference", log_origin)
                 raise StopIteration  # handled by outer try/except; leaves answer_override=None
 
             # Only show "Tool Calls" stage when actually executing tools
@@ -3425,6 +3835,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if show_processing_steps:
                     emit_stage(req_id, f"Calling Tool: {name}")
                 executor = get_executor_fn(name)
+                logger.debug(
+                    "[TOOLS] (%s) tool_dispatch name=%s call_id=%s executor_found=%s",
+                    log_origin,
+                    name,
+                    call_id,
+                    bool(executor),
+                )
 
                 if not executor:
                     result_text: Any = f"Tool '{name}' is not available."
@@ -3445,8 +3862,37 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                 for it in (reranked or [])
                             ]
 
-                        result_text = executor(args, chat_context, existing_context=exec_combined_context)
+                        tool_registry_entry = tools_by_name.get(name) if isinstance(tools_by_name, dict) else None
+                        runtime_cfg = (
+                            tool_registry_entry.get("runtime")
+                            if isinstance(tool_registry_entry, dict) and isinstance(tool_registry_entry.get("runtime"), dict)
+                            else {}
+                        )
+                        endpoint_cfg = runtime_cfg.get("endpoint") if isinstance(runtime_cfg.get("endpoint"), dict) else {}
+                        logger.debug(
+                            "[TOOLS] (%s) tool_execute_start name=%s args=%s endpoint_type=%s endpoint_url=%s",
+                            log_origin,
+                            name,
+                            args,
+                            str(endpoint_cfg.get("type") or ""),
+                            str(endpoint_cfg.get("url") or ""),
+                        )
+                        result_text = executor(
+                            args,
+                            chat_context,
+                            existing_context=exec_combined_context,
+                            tool_runtime=runtime_cfg,
+                            tool_registry_entry=tool_registry_entry,
+                        )
+                        logger.debug(
+                            "[TOOLS] (%s) tool_execute_done name=%s output_type=%s output_len=%d",
+                            log_origin,
+                            name,
+                            type(result_text).__name__,
+                            len(str(result_text or "")),
+                        )
                     except Exception as ex:
+                        logger.debug("[TOOLS] (%s) tool_execute_error name=%s err=%s", log_origin, name, ex, exc_info=True)
                         result_text = f"Tool '{name}' failed: {ex}"
 
                 # Normalize empty tool outputs so the user can see a clear outcome.
@@ -3461,7 +3907,15 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 if name:
                     used_tools.append(name)
 
-                tool_outputs_list.append({"tool_call_id": call_id or "", "name": name, "output": str(result_text)})
+                try:
+                    if isinstance(result_text, (dict, list)):
+                        normalized_tool_output = json.dumps(result_text, ensure_ascii=False)
+                    else:
+                        normalized_tool_output = str(result_text)
+                except Exception:
+                    normalized_tool_output = str(result_text)
+
+                tool_outputs_list.append({"tool_call_id": call_id or "", "name": name, "output": normalized_tool_output})
                 
                 # Preserve first non-empty tool message for final fallback rendering
                 try:
@@ -3472,41 +3926,46 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     pass
 
             if not tool_outputs_list:
+                logger.debug("[TOOLS] (%s) no_tool_outputs_after_execution", log_origin)
                 raise StopIteration
+
+            artifacts_from_registry = _extract_artifacts_from_tool_outputs(tool_outputs_list, tool_registry)
+            redacted_tool_outputs_for_synth = _redact_tool_outputs_for_synth(tool_outputs_list, tool_registry)
 
             tools_text = "\n\n".join(
                 [
                     f"[SOURCE: TOOL - {t.get('name') or 'unknown'}]\n{str(t.get('output', ''))}"
-                    for t in tool_outputs_list
+                    for t in redacted_tool_outputs_for_synth
                 ]
             ).strip()
             if not tools_text:
                 tools_text = "Tool(s) executed but returned no results."
-
-            tools_synth_system_prompt = (
-                "You are a question-answering assistant for a retrieval-augmented system.\n"
-                "STRICT RULES:\n"
-                "1. Base your answer ONLY on information in the provided SOURCES (e.g., [SOURCE: KNOWLEDGE_BASE], [SOURCE: TOOL - ...]).\n"
-                "2. Do NOT use any outside knowledge, general world knowledge, training data, or assumptions beyond those SOURCES.\n"
-                "3. If the SOURCES still do not contain enough information to answer the question, reply with: I couldn't find any information to answer this question. NO_SUPPORTED_SOURCES\n"
-                "4. If any Context chunk has a citation like [1], [2], etc., retain it in your response when you use that Context.\n"
-                "5. Do not fabricate sources or facts.\n"
-                "6. Integrate Tool results only when relevant, and do not invent citations for tool facts.\n"
-                "7. When you use KNOWLEDGE_BASE source text, cite it using [1], [2], etc. Do not invent citations for tool facts.\n"
-                "8. Be concise and answer the user’s question directly.\n"
-                "9. Do not add any extra text beyond what is in the Context or Tool results."
+            logger.debug(
+                "[ARTIFACT] extracted_count=%d tools=%s",
+                len(artifacts_from_registry),
+                [a.get("tool") for a in artifacts_from_registry],
             )
+
+            ts_prompt_domain = (prompt_domain or "").strip()
+            ts_registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+            ts_prompt_spec = resolve_tools_synth_prompt(
+                registry_path=ts_registry_path,
+                domain=ts_prompt_domain,
+            )
+            tools_synth_system_prompt = (ts_prompt_spec.system_instruction or "").strip()
 
             synth_messages = _build_tools_synth_messages(
                 system_prompt=tools_synth_system_prompt,
                 summary_text=summary_text,
                 recent_block_str=recent_block_str,
                 context_text=context_text,
-                tool_outputs_list=tool_outputs_list,
+                tool_outputs_list=redacted_tool_outputs_for_synth,
                 used_tools=used_tools,
                 tools_text=tools_text,
                 message=message,
             )
+            synth_messages, stripped_svg_blocks = _strip_svg_from_messages(synth_messages)
+            logger.debug("[ARTIFACT] tools_synth_svg_blocks_stripped=%d", stripped_svg_blocks)
 
             ts_spec = (stage_specs or {}).get("tools_synth") or {}
             _ts_provider = str(ts_spec.get("provider") or "openai")
@@ -3535,6 +3994,66 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     **_kwargs_synth,
                 )
                 combined = _extract_text_from_responses(resp_synth).strip()
+                combined = _inject_registered_artifacts(combined, artifacts_from_registry)
+
+                # Prefer canonical SVG from tool output when synthesis text is truncated.
+                def _extract_svg_from_tool_outputs(_tool_outputs: List[Dict[str, Any]]) -> str:
+                    for _t in (_tool_outputs or []):
+                        _out = str(_t.get("output") or "")
+                        try:
+                            _parsed = json.loads(_out)
+                            if isinstance(_parsed, dict):
+                                _svg_val = _parsed.get("svg")
+                                if isinstance(_svg_val, str) and _svg_val.strip():
+                                    return _svg_val.strip()
+                        except Exception:
+                            pass
+
+                        try:
+                            _m = re.search(r"<svg\\b[\\s\\S]*?</svg>", _out, flags=re.IGNORECASE)
+                            if _m and _m.group(0).strip():
+                                return _m.group(0).strip()
+                        except Exception:
+                            pass
+                    return ""
+
+                _svg_from_tool = _extract_svg_from_tool_outputs(tool_outputs_list)
+                _has_artifact_token = bool(re.search(r"\{+\s*ARTIFACT:[A-Za-z0-9_.:-]{1,64}\s*\}+", combined or ""))
+                if _svg_from_tool and _has_artifact_token:
+                    try:
+                        combined, _n_repl = re.subn(
+                            r"\{+\s*ARTIFACT:[A-Za-z0-9_.:-]{1,64}\s*\}+",
+                            _svg_from_tool,
+                            combined,
+                        )
+                        logger.info(
+                            "[ARTIFACT] (%s) unresolved_artifact_token_replacements=%d",
+                            log_origin,
+                            int(_n_repl),
+                        )
+                    except Exception:
+                        logger.debug("[ARTIFACT] (%s) unresolved_artifact_token_replace_failed", log_origin, exc_info=True)
+                _chart_requested = bool(re.search(r"\b(chart|sparkline|trend|line\s*chart|bar\s*chart|time[-\s]?series|visual)\b", str(message or ""), flags=re.IGNORECASE))
+                if _svg_from_tool and _chart_requested:
+                    _has_svg = "<svg" in combined.lower()
+                    _has_svg_close = "</svg>" in combined.lower()
+
+                    # If synthesis missed/trimmed SVG, keep narrative prefix and inject full tool SVG.
+                    if not _has_svg or not _has_svg_close:
+                        _prefix = ""
+                        if _has_svg:
+                            try:
+                                _prefix = combined.split("<svg", 1)[0].strip()
+                            except Exception:
+                                _prefix = ""
+                        else:
+                            _prefix = combined.strip()
+
+                        if _prefix:
+                            combined = f"{_prefix}\n\n{_svg_from_tool}"
+                        else:
+                            combined = _svg_from_tool
+
                 logger.debug(f"[TOOLS] {log_origin} tools synthesis combined before override : %s", combined)
 
                 if combined and ("NO_SUPPORTED_SOURCES" not in combined):
@@ -3600,7 +4119,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                 "llm_output": 0,
                                 "conversation_total": 0,
                             },
-                            "cost": {"conversation_total": 0.0},
+                            "costs": {"conversation_total": 0.0},
                         }
                     return {
                         "answer": quota_msg,
@@ -3745,7 +4264,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         turn_metrics = m.turn
         convo_snapshot = {
             "tokens": {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0},
-            "cost": {"conversation_total": 0.0},
+            "costs": {"conversation_total": 0.0},
         }
 
     legacy_metrics = {"vectors_retrieved": n}
@@ -3810,12 +4329,39 @@ def handle_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Fresh Qdrant client for stateless path
+    # Resolve effective retrieval domain for this request.
+    # Priority: params.active_domain -> params.prompt_domain -> settings.active_domain
+    available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+    configured_default_domain = str(getattr(settings, "active_domain", "") or "").strip() or "default"
+    requested_domain = str(
+        (params or {}).get("active_domain")
+        or (params or {}).get("prompt_domain")
+        or configured_default_domain
+    ).strip()
+    effective_domain = requested_domain if requested_domain in available_domains else configured_default_domain
+    domain_cfg = available_domains.get(effective_domain) or available_domains.get(configured_default_domain) or {}
+    domain_collection = str(domain_cfg.get("collection_name") or settings.collection_name)
+    domain_embedding_model_key = str(domain_cfg.get("embedding_model_key") or settings.embedding_model_key)
+
+    # Fresh Qdrant client for stateless path using per-request domain routing
     db = QdrantDB(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
-        collection_name=settings.collection_name,
+        collection_name=domain_collection,
+        embedding_model_key=domain_embedding_model_key,
     )
+
+    try:
+        logger.info(
+            "[REQ %s] domain routing requested=%s effective=%s collection=%s embedding_model_key=%s",
+            req_id,
+            requested_domain,
+            effective_domain,
+            domain_collection,
+            domain_embedding_model_key,
+        )
+    except Exception:
+        pass
 
     # Determine tools flag (preserve prior behavior)
     enable_tools = False
