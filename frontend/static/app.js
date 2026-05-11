@@ -24,6 +24,17 @@ const DEFAULT_CONFIG = {
 
 // Current config (starts with defaults, updated from API)
 let appConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+let defaultActiveDomain = '';
+
+function getActiveDomain() {
+    try {
+        const fromStorage = String(localStorage.getItem('active_domain') || '').trim();
+        if (fromStorage) return fromStorage;
+    } catch (error) {
+        console.debug('Failed to read active_domain from localStorage', error);
+    }
+    return String(defaultActiveDomain || '').trim();
+}
 
 // Form element references
 let pdfUrlInput, pdfFileInput, pdfMaxChunksInput, pdfSkipSectionsInput, pdfEstimateToggle, pdfForceDelete, pdfIndexBtn, pdfProgress;
@@ -106,6 +117,7 @@ async function fetchConfig() {
                 pdf: { ...DEFAULT_CONFIG.pdf, ...data.pdf },
                 mediawiki: { ...DEFAULT_CONFIG.mediawiki, ...data.mediawiki }
             };
+            defaultActiveDomain = String(data.active_domain || '').trim();
             console.log('Loaded config from API:', appConfig);
             return true;
         }
@@ -129,6 +141,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const openListDocsBtn = document.getElementById('openListDocsBtn');
     const openChatBtn = document.getElementById('openChatBtn');
     const openDeleteIndexBtn = document.getElementById('openDeleteIndexBtn');
+    const openPromptRegistryBtn = document.getElementById('openPromptRegistryBtn');
+    const openToolRegistryBtn = document.getElementById('openToolRegistryBtn');
     const openProcessBatchBtn = document.getElementById('openProcessBatchBtn');
     
     try {
@@ -183,6 +197,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 url: url || undefined,
                 file: fileBase64,
                 filename: file ? file.name : undefined,
+                active_domain: getActiveDomain() || undefined,
                 max_chunks: maxChunks,
                 force_delete: forceDelete,
                 estimate: estimate,
@@ -308,6 +323,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (mwProgress) mwProgress.textContent = 'Reading document...';
             const requestBody = {
                 url,
+                active_domain: getActiveDomain() || undefined,
                 max_chunks: maxChunks,
                 skip_sections: skipSections,
                 force_delete: forceDelete,
@@ -415,6 +431,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     openSearchBtn && openSearchBtn.addEventListener('click', () => window.open('/search', '_blank'));
     openDebugBtn && openDebugBtn.addEventListener('click', () => window.open('/debug_index', '_blank'));
     openDeleteIndexBtn && openDeleteIndexBtn.addEventListener('click', () => window.open('/delete_index', '_blank'));
+    openPromptRegistryBtn && openPromptRegistryBtn.addEventListener('click', () => window.open('/prompt-registry', '_blank'));
+    openToolRegistryBtn && openToolRegistryBtn.addEventListener('click', () => window.open('/tool-registry', '_blank'));
     openListDocsBtn && openListDocsBtn.addEventListener('click', () => window.open('/list-docs.html', '_blank'));
     openChatBtn && openChatBtn.addEventListener('click', () => window.open('/chat.html', '_blank'));
     
@@ -453,6 +471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 body: JSON.stringify({
                     urls: [url],
                     doc_type: "HTML",
+                    active_domain: getActiveDomain() || undefined,
                     max_chunks: maxChunks,
                     force_delete: forceDelete,
                     estimate: estimate,

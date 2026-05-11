@@ -9,68 +9,73 @@
     <link href="/static/index-page.css" rel="stylesheet">
 </head>
 <body class="bg-gray-100">
-    <div class="container mx-auto px-4 py-8">
-        <h1 class="text-3xl font-semibold mb-4">Chat with your data (RAG)</h1>
-
-        <!-- Quick Links (moved to top) -->
-        <div class="bg-white rounded-lg shadow-md p-6 mb-8">
-            <div class="flex flex-wrap md:flex-nowrap gap-2 md:gap-4 items-center justify-center md:justify-center pb-2">
-                <div class="flex flex-wrap items-center gap-2 md:gap-4 justify-center md:justify-start w-full md:w-auto">
-                    <button 
-                        id="openChatBtn" 
-                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-purple-600 hover:bg-purple-700 whitespace-nowrap"
-                        title="Interactive Q&A using retrieved documents assisted with tool calling">
-                        Chat with your Data
-                    </button>
-                    <a
-                        href="/chat-embed-example.html"
-                        target="_blank" rel="noopener noreferrer"
-                        class="px-3 py-2 text-sm md:text-base rounded-md text-purple-700 bg-purple-100 hover:bg-purple-200 whitespace-nowrap"
-                        title="View the embeddable chat popup demo in a new tab">
-                        Embeddable Chat
-                    </a>
-                    <div class="h-10 w-px bg-gray-700 hidden md:block"></div>
-                </div>
-                <div class="flex flex-wrap items-center gap-2 md:gap-4">
-                    <button 
-                        id="openListDocsBtn" 
-                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-yellow-500 hover:bg-yellow-600 whitespace-nowrap"
-                        title="See indexed / embedded documents with chunk counts. The RAG chat is related to documents retrieved from this database">
-                        List Documents
-                    </button>
-                    <button 
-                        id="openSearchBtn" 
-                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-green-600 hover:bg-green-700 whitespace-nowrap"
-                        title="Search documents using semantic similarity">
-                        Search Documents
-                    </button>
-                    <button 
-                        id="openDebugBtn" 
-                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-yellow-600 hover:bg-yellow-700 whitespace-nowrap"
-                        title="View raw document payloads and metadata. Inspect document structure and content">
-                        View Metadata
-                    </button>
-                    <div class="h-10 w-px bg-gray-700 hidden md:block"></div>
-                    <button
-                        id="openDeleteIndexBtn"
-                        class="px-3 py-2 text-sm md:text-base rounded-md text-white bg-red-700 hover:bg-red-800 whitespace-nowrap"
-                        title="Preview and delete indexed chunks for a given document URL (matches base_url_lower)">
-                        Delete Documents
-                    </button>
-                </div>
-            </div>
+    <div class="flex min-h-screen">
+        <!-- Left Sidebar - Menu Links -->
+        <div class="w-64 bg-white shadow-md p-4 flex-shrink-0">
+            <h1 class="text-xl font-semibold mb-6 text-gray-800">Chat with RAG</h1>
+            <nav class="flex flex-col gap-3">
+                <button 
+                    id="openChatBtn" 
+                    class="px-4 py-3 text-sm rounded-md text-white bg-purple-600 hover:bg-purple-700 whitespace-nowrap text-left"
+                    title="Interactive Q&A using retrieved documents assisted with tool calling">
+                    Chat with your Data
+                </button>
+                <a
+                    href="/chat-embed-example.html"
+                    target="_blank" rel="noopener noreferrer"
+                    class="px-4 py-3 text-sm rounded-md text-purple-700 bg-purple-100 hover:bg-purple-200 whitespace-nowrap text-left"
+                    title="View the embeddable chat popup demo in a new tab">
+                    Embeddable Chat
+                </a>
+               
+                <hr class="my-3 border-gray-300">
+                <button 
+                    id="openListDocsBtn" 
+                    class="px-4 py-3 text-sm rounded-md text-white bg-yellow-500 hover:bg-yellow-600 whitespace-nowrap text-left"
+                    title="See indexed / embedded documents with chunk counts. The RAG chat is related to documents retrieved from this database">
+                    List Documents
+                </button>
+                <button 
+                    id="openSearchBtn" 
+                    class="px-4 py-3 text-sm rounded-md text-white bg-green-600 hover:bg-green-700 whitespace-nowrap text-left"
+                    title="Search documents using semantic similarity">
+                    Search Documents
+                </button>
+                <button 
+                    id="openDebugBtn" 
+                    class="px-4 py-3 text-sm rounded-md text-white bg-yellow-600 hover:bg-yellow-700 whitespace-nowrap text-left"
+                    title="View raw document payloads and metadata. Inspect document structure and content">
+                    View Metadata
+                </button>
+                <button
+                    id="openDeleteIndexBtn"
+                    class="px-4 py-3 text-sm rounded-md text-white bg-red-700 hover:bg-red-800 whitespace-nowrap text-left"
+                    title="Preview and delete indexed chunks for a given document URL (matches base_url_lower)">
+                    Delete Documents
+                </button>
+                <hr class="my-3 border-gray-300">
+                <button
+                    id="openPromptRegistryBtn"
+                    class="px-4 py-3 text-sm rounded-md text-white bg-blue-600 hover:bg-blue-700 whitespace-nowrap text-left"
+                    title="Edit prompt registry by domain and stage">
+                    Prompt Registry
+                </button>
+                <button
+                    id="openToolRegistryBtn"
+                    class="px-4 py-3 text-sm rounded-md text-white bg-blue-600 hover:bg-blue-700 whitespace-nowrap text-left"
+                    title="Edit tool artifact metadata for final injection behavior">
+                    Tool Registry
+                </button>
+            </nav>
         </div>
 
-        <!-- Ingestion Grid: Batch, PDF, MediaWiki, HTML -->
-         <div style="display: flex; align-items: center; text-align: center; margin-bottom: 20px;">
-  <div style="flex: 1; height: 2px; background-color: lightgray;"></div>
-  <h1 class="text-2xl" style="padding-left: 12px; padding-right:12px;">Content - Extract and Generate Embeddings</h1>
-  <div style="flex: 1; height: 2px; background-color: lightgray;"></div>
-</div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+        <!-- Right Main Content -->
+        <div class="flex-1 p-4">
+            <h1 class="text-2xl font-semibold mb-6">Content - Extract and Generate Embeddings</h1>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
 
             <!-- Batch Upload Pane -->
-            <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
+            <div class="bg-white rounded-lg shadow-md p-4 min-h-[330px] flex flex-col">
                 <div>
                     <h2 class="text-2xl mb-4">Process Batch Upload</h2>
                     <p class="text-sm text-gray-700 mb-4">
@@ -89,7 +94,7 @@
             </div>
 
             <!-- PDF Input Section (URL or Upload) -->
-            <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
+            <div class="bg-white rounded-lg shadow-md p-4 min-h-[330px] flex flex-col">
                 <div>
                     <h2 class="text-2xl mb-4">Index PDF (url or file upload)</h2>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -129,7 +134,7 @@
             </div>
 
             <!-- MediaWiki Index Section -->
-            <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
+            <div class="bg-white rounded-lg shadow-md p-4 min-h-[330px] flex flex-col">
                 <div>
                     <h2 class="text-2xl mb-4">Index MediaWiki Content (e.g. Wikipedia)</h2>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -174,7 +179,7 @@
             </div>
 
             <!-- HTML Index Section (single URL) -->
-            <div class="bg-white rounded-lg shadow-md p-6 min-h-[330px] flex flex-col">
+            <div class="bg-white rounded-lg shadow-md p-4 min-h-[330px] flex flex-col">
                 <div>
                     <h2 class="text-2xl mb-4">Index HTML Content</h2>
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -210,20 +215,18 @@
                 </div>
             </div>
 
+            </div>
+
+            <footer class="text-center text-xs text-gray-500 mt-8">
+              <p>
+                Optional seed data derived from 
+                <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
+                licensed under 
+                <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
+              </p>
+            </footer>
         </div>
-
-        
     </div>
-
-
-    <footer class="text-center text-xs text-gray-500 mt-8">
-      <p>
-        Optional seed data derived from 
-        <a href="https://www.wikipedia.org/" target="_blank" class="underline">Wikipedia</a>,
-        licensed under 
-        <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" class="underline">CC BY-SA 4.0</a>.
-      </p>
-    </footer>
     <script src="/static/app.js"></script>
 </body>
 </html>

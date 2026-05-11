@@ -34,3 +34,4 @@ Markdown==3.6
 markdown-it-py==3.0.0
 mdit-py-plugins==0.4.0
 bleach==6.1.0
+timeseries-sparklines>=0.1.1

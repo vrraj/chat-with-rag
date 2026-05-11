@@ -77,6 +77,7 @@ def run(
     chat_context: List[Dict[str, str]] | None = None,
     *,
     existing_context: List[Dict[str, Any]] | None = None,
+    **_: Any,
 ) -> str:
     """Execute the web search tool.
 

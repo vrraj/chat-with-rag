@@ -1,0 +1,72 @@
+version: 1
+artifact_injection:
+  enabled: true
+  allowed_tools:
+    - get_stock_price_history
+  security:
+    max_artifact_chars: 120000
+    allowed_artifact_types:
+      - svg
+    allowed_injection_modes:
+      - verbatim
+    enforce_placeholder_format: true
+tools:
+  - name: get_weather
+    enabled: true
+    runtime:
+      endpoint:
+        type: rest
+        url: https://api.open-meteo.com/v1/forecast
+      dependencies:
+        geocoding:
+          type: rest
+          url: https://geocoding-api.open-meteo.com/v1/search
+    artifact:
+      produces_artifact: false
+      artifact_type: ""
+      artifact_key: ""
+      injection_mode: ""
+      placeholder: ""
+
+  - name: web_search
+    enabled: true
+    runtime:
+      endpoint:
+        type: internal
+        url: internal://backend.chat.web_search.WebSearchClient
+    artifact:
+      produces_artifact: false
+      artifact_type: ""
+      artifact_key: ""
+      injection_mode: ""
+      placeholder: ""
+
+  - name: get_nearby_airports
+    enabled: true
+    runtime:
+      endpoint:
+        type: local
+        url: local://data/ourairports
+      dependencies:
+        geocoding:
+          type: rest
+          url: https://nominatim.openstreetmap.org/search
+    artifact:
+      produces_artifact: false
+      artifact_type: ""
+      artifact_key: ""
+      injection_mode: ""
+      placeholder: ""
+
+  - name: get_stock_price_history
+    enabled: true
+    runtime:
+      endpoint:
+        type: rest
+        url: http://localhost:9000/api/price-history/stocks
+    artifact:
+      produces_artifact: true
+      artifact_type: svg
+      artifact_key: svg
+      injection_mode: verbatim
+      placeholder: "{{ARTIFACT:stock_chart_svg}}"

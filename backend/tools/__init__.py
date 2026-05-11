@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List
 from . import get_weather as _get_weather
 from . import web_search as _web_search
 from . import get_nearby_airports as _get_nearby_airports
+from . import get_stock_price_history as _get_stock_price_history
 
 
 def _flatten_tool_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -44,6 +45,7 @@ def list_tools() -> List[Dict[str, Any]]:
         _flatten_tool_spec(_get_weather.tool_definition()),
         _flatten_tool_spec(_web_search.tool_definition()),
         _flatten_tool_spec(_get_nearby_airports.tool_definition()),
+        _flatten_tool_spec(_get_stock_price_history.tool_definition()),
     ]
 
 
@@ -53,6 +55,7 @@ def get_executor(name: str) -> Callable[..., Any] | None:
         _get_weather.TOOL_NAME: _get_weather.run,
         _web_search.TOOL_NAME: _web_search.run,
         _get_nearby_airports.TOOL_NAME: _get_nearby_airports.run,
+        _get_stock_price_history.TOOL_NAME: _get_stock_price_history.run,
     }
     return mapping.get(name)
 

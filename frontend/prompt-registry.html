@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prompt Registry Editor</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <div class="max-w-7xl mx-auto px-4 py-6">
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 class="text-2xl font-semibold text-gray-900">Prompt Registry Editor</h1>
+          <p id="registryMeta" class="text-sm text-gray-600 mt-1">Loading prompt registry...</p>
+        </div>
+        <div class="flex gap-2">
+          <button id="reloadBtn" class="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300">Reload</button>
+          <button id="reloadCacheBtn" class="px-3 py-2 rounded bg-purple-100 text-purple-800 hover:bg-purple-200">Reload Cache</button>
+          <button id="saveBtn" class="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <label for="domainSelect" class="block text-sm font-medium text-gray-700 mb-1">Domain</label>
+          <select id="domainSelect" class="w-full rounded border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"></select>
+        </div>
+        <div>
+          <label for="stageSelect" class="block text-sm font-medium text-gray-700 mb-1">Stage</label>
+          <select id="stageSelect" class="w-full rounded border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"></select>
+        </div>
+        <div>
+          <label for="sectionSelect" class="block text-sm font-medium text-gray-700 mb-1">Section</label>
+          <select id="sectionSelect" class="w-full rounded border-gray-300 focus:border-indigo-500 focus:ring-indigo-500">
+            <option value="system_instruction">system_instruction</option>
+            <option value="full_payload_template">full_payload template</option>
+          </select>
+        </div>
+      </div>
+      <p class="text-xs text-gray-500 mt-3">Global prompt is always shown as baseline. Edit domain override in the right pane.</p>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+      <div class="bg-white rounded-lg shadow p-4">
+        <h2 class="text-lg font-semibold text-gray-900 mb-2">Global Baseline (Read-only)</h2>
+        <textarea id="globalEditor" readonly class="w-full h-96 rounded border-gray-300 bg-gray-50 text-sm font-mono p-3"></textarea>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-lg font-semibold text-gray-900">Domain Override (Editable)</h2>
+          <button id="resetOverrideBtn" class="px-2 py-1 text-xs rounded bg-yellow-100 text-yellow-800 hover:bg-yellow-200">Reset Override</button>
+        </div>
+        <textarea id="domainEditor" class="w-full h-96 rounded border-gray-300 text-sm font-mono p-3" placeholder="Inherited from global. Add override here."></textarea>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+      <h2 class="text-lg font-semibold text-gray-900 mb-2">Effective Prompt Preview</h2>
+      <textarea id="effectiveEditor" readonly class="w-full h-56 rounded border-gray-300 bg-gray-50 text-sm font-mono p-3"></textarea>
+    </div>
+
+    <div id="status" class="text-sm"></div>
+  </div>
+
+  <script src="/static/prompt-registry.js"></script>
+</body>
+</html>

@@ -5,14 +5,13 @@ from qdrant_client.models import Distance, VectorParams
 from backend.core.schemas import PayloadUpdateRequest
 import logging
 from backend.core.config import settings
-from backend.embeddings.specs import resolve_embedding_spec
-from backend.llm.llm_client import embed
+from backend.llm.llm_client import embed, get_model_info
 import math
 
 logger = logging.getLogger(__name__)
 
 class QdrantDB:
-    def __init__(self, host: str, port: int, collection_name: str):
+    def __init__(self, host: str, port: int, collection_name: str, embedding_model_key: Optional[str] = None):
         """
         Initialize QdrantDB connection
         
@@ -23,6 +22,7 @@ class QdrantDB:
         """
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
+        self.embedding_model_key = str(embedding_model_key or settings.embedding_model_key)
         self.last_embedding_usage: Dict[str, int] = {"input_tokens": 0, "total_tokens": 0}
         
         # Ensure target exists. Use get_collection so aliases resolve correctly.
@@ -32,9 +32,17 @@ class QdrantDB:
         except Exception:
             logger.warning("Collection or alias %s not found. Creating collection %s…", collection_name, collection_name)
             try:
+                vector_size = int(settings.vector_size)
+                try:
+                    model_info = get_model_info(model_key=self.embedding_model_key)
+                    dims = (getattr(model_info, "capabilities", {}) or {}).get("dimensions") if model_info is not None else None
+                    if isinstance(dims, int) and dims > 0:
+                        vector_size = int(dims)
+                except Exception:
+                    pass
                 self.client.create_collection(
                     collection_name=collection_name,
-                    vectors_config=VectorParams(size=int(settings.vector_size), distance=Distance.COSINE),
+                    vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
                 )
             except Exception as e:
                 logger.exception("Failed to create collection %s", collection_name)
@@ -134,23 +142,20 @@ class QdrantDB:
         Uses embedding_model_key to resolve model via model registry.
         """
         try:
-            spec = resolve_embedding_spec(settings)
-            provider = spec.get("provider", "openai")
-            model = spec.get("model")
-
-            # Route via embed() for all embedding providers
-            try:
-                from backend.core.config import settings as _settings  # type: ignore
-                model_key = getattr(_settings, "embedding_model_key", model)
-            except Exception:
-                model_key = model
+            model_key = self.embedding_model_key
+            provider = str(model_key).split(":", 1)[0].lower()
 
             kwargs: Dict[str, Any] = {
                 "provider": provider,
                 "model": model_key,
                 "input": text,
             }
-            dims = spec.get("dimensions")
+            dims = None
+            try:
+                model_info = get_model_info(model_key=model_key)
+                dims = (getattr(model_info, "capabilities", {}) or {}).get("dimensions") if model_info is not None else None
+            except Exception:
+                dims = None
             if provider == "gemini" and isinstance(dims, int) and dims > 0:
                 kwargs["dimensions"] = dims
                 # Apply config-driven task type for user queries
