@@ -265,6 +265,49 @@ async def debug_index_page():
 
 
 @app.get(
+    "/api/domains",
+    tags=["1. UI Pages"],
+    summary="Get available domains",
+    responses={200: {"content": {"application/json": {"example": "{\"domains\": [\"default\", \"mountains\", \"finance\"]}"}}}},
+)
+async def get_available_domains():
+    """Return a list of available domains from the retrieval config and legacy config."""
+    from backend.retrieval.config import _read_yaml
+    from pathlib import Path
+    
+    domains_set = set()
+    
+    # Add domains from legacy DOMAIN_EMBEDDING_CONFIG
+    try:
+        legacy_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+        if isinstance(legacy_domains, dict):
+            domains_set.update(legacy_domains.keys())
+    except Exception:
+        pass
+    
+    # Add domains from retrieval config YAML
+    try:
+        config_path = str(getattr(settings, "retrieval_config_path", "prompts/retrieval_registry.yaml") or "").strip()
+        if config_path:
+            cfg = _read_yaml(config_path)
+            if isinstance(cfg, dict):
+                retrieval_cfg = cfg.get("retrieval") if isinstance(cfg.get("retrieval"), dict) else {}
+                domains_cfg = retrieval_cfg.get("domains") if isinstance(retrieval_cfg.get("domains"), dict) else {}
+                if isinstance(domains_cfg, dict):
+                    domains_set.update(domains_cfg.keys())
+    except Exception:
+        pass
+    
+    # Ensure "default" is always available
+    domains_set.add("default")
+    
+    # Sort domains for consistent display
+    domains = sorted(list(domains_set))
+    
+    return {"domains": domains}
+
+
+@app.get(
     "/list-docs-data",
     tags=["1. UI Pages"],
     summary="4. List Documents Data (JSON)",

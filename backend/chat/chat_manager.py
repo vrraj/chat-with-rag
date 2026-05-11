@@ -61,7 +61,9 @@ from backend.chat.prompt_registry import (
     resolve_tools_synth_prompt,
     render_full_payload,
 )
-
+from backend.retrieval.config import resolve_retrieval_specs
+from backend.retrieval.schemas import EmbeddingSpec
+from backend.retrieval.providers.fastembed_embedding_provider import FastEmbedEmbeddingProvider
 from backend.markdown_render import render_markdown_to_html
 
 _SUMMARY_CACHE: Dict[str, str] = {}
@@ -71,6 +73,7 @@ _TOOL_REGISTRY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 _CHUNK_MANAGERS_BY_NS: Dict[str, ChunkedHistoryManager] = {}
 _CHUNK_MANAGERS_LAST_SEEN: Dict[str, float] = {}
+_FASTEMBED_EMBEDDING_PROVIDER = FastEmbedEmbeddingProvider()
 
 
 def _evict_idle_chunk_managers(now: float | None = None, max_idle_seconds: int | None = None) -> Dict[str, int]:
@@ -241,15 +244,37 @@ def resolve_stage_specs(
     # Tools synthesis model uses the same model as inference
     tools_synth_model = effective_inference_model
 
-    # Embedding spec: settings.embedding_model is a provider key (openai/gemini).
-    # Resolve it into a provider-specific embedding model name for stage_specs consistency.
+    # Resolve retrieval runtime specs (defaults + optional domain override).
+    # Domain precedence: params.active_domain -> params.prompt_domain -> settings.active_domain.
+    _active_domain = str(
+        p.get("active_domain")
+        or p.get("prompt_domain")
+        or getattr(settings_obj, "active_domain", "")
+        or ""
+    ).strip()
+    _retrieval_specs = resolve_retrieval_specs(
+        domain=_active_domain,
+        config_path=str(getattr(settings_obj, "retrieval_config_path", "") or "").strip() or None,
+    )
+
+    # Embedding spec fallback: resolve from model registry.
     try:
         _emb = resolve_embedding_spec(settings_obj)  # {provider, model, dimensions}
     except Exception:
         _emb = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1536}
 
-    emb_provider = str((_emb or {}).get("provider") or "openai").strip() or "openai"
-    emb_model = str((_emb or {}).get("model") or "").strip()
+    _emb_cfg = (_retrieval_specs or {}).get("embedding") or {}
+    emb_runtime = str(_emb_cfg.get("runtime") or "hosted").strip() or "hosted"
+    emb_provider = str(_emb_cfg.get("provider") or (_emb or {}).get("provider") or "openai").strip() or "openai"
+    emb_model = str(_emb_cfg.get("model") or (_emb or {}).get("model") or "").strip()
+    emb_dimensions = _emb_cfg.get("dimensions", (_emb or {}).get("dimensions"))
+    emb_normalize = bool(_emb_cfg.get("normalize", True))
+    try:
+        emb_batch_size = int(_emb_cfg.get("batch_size", 32))
+    except Exception:
+        emb_batch_size = 32
+    emb_device = _emb_cfg.get("device")
+    emb_extra = _emb_cfg.get("extra") if isinstance(_emb_cfg.get("extra"), dict) else {}
 
     # Existing flat temps/limits (read as-is)
     rewrite_temp = float(getattr(settings_obj, "rewrite_temperature", 0.2))
@@ -273,6 +298,19 @@ def resolve_stage_specs(
 
     rerank_temp = float(getattr(settings_obj, "re_ranker_temperature", 0.0))
     rerank_max_out = int(getattr(settings_obj, "re_ranker_max_output_tokens", 64))
+
+    _rr_cfg = (_retrieval_specs or {}).get("rerank") or {}
+    rerank_runtime = str(_rr_cfg.get("runtime") or "llm").strip() or "llm"
+    rerank_enabled_cfg = bool(_rr_cfg.get("enabled", True))
+    rerank_provider_cfg = str(_rr_cfg.get("provider") or "").strip()
+    rerank_model_cfg = str(_rr_cfg.get("model") or "").strip()
+    rerank_top_n_cfg = _rr_cfg.get("top_n")
+    rerank_device_cfg = _rr_cfg.get("device")
+    try:
+        rerank_batch_size_cfg = int(_rr_cfg.get("batch_size", 16))
+    except Exception:
+        rerank_batch_size_cfg = 16
+    rerank_extra_cfg = _rr_cfg.get("extra") if isinstance(_rr_cfg.get("extra"), dict) else {}
 
     inference_temp = float(getattr(settings_obj, "inference_temperature", 0.2))
     inference_top_p = float(getattr(settings_obj, "inference_top_p", 1.0))
@@ -324,7 +362,14 @@ def resolve_stage_specs(
         "embedding": {
             "provider": emb_provider,
             "model": emb_model,
-            "kwargs": {},
+            "runtime": emb_runtime,
+            "kwargs": {
+                "dimensions": emb_dimensions,
+                "normalize": emb_normalize,
+                "batch_size": emb_batch_size,
+                "device": emb_device,
+                **emb_extra,
+            },
         },
         "rewrite": {
             "provider": (rewrite_provider_override or "openai"),
@@ -345,11 +390,17 @@ def resolve_stage_specs(
             },
         },
         "rerank": {
-            "provider": (rerank_provider_override or "openai"),
-            "model": (rerank_model_key_override or rerank_model_override or rerank_model),
+            "runtime": rerank_runtime,
+            "provider": (rerank_provider_override or rerank_provider_cfg or "openai"),
+            "model": (rerank_model_key_override or rerank_model_override or rerank_model_cfg or rerank_model),
             "kwargs": {
+                "enabled": rerank_enabled_cfg,
                 "temperature": rerank_temp,
                 "max_output_tokens": rerank_max_out,
+                "top_n": rerank_top_n_cfg,
+                "batch_size": rerank_batch_size_cfg,
+                "device": rerank_device_cfg,
+                **rerank_extra_cfg,
             },
         },
         "inference": {
@@ -3126,15 +3177,60 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     except Exception:
         pass
     # --- Retrieve
+    _es = (stage_specs or {}).get("embedding") or {}
+    _emb_runtime = str(_es.get("runtime") or "hosted").strip().lower() or "hosted"
+    _emb_provider_stage = str(_es.get("provider") or "openai").strip() or "openai"
+    _emb_model_stage = str(_es.get("model") or "").strip()
+    _emb_kwargs_stage = dict(_es.get("kwargs") or {})
+    _emb_extra_stage = {
+        k: v
+        for k, v in _emb_kwargs_stage.items()
+        if k not in {"dimensions", "normalize", "batch_size", "device"}
+    }
+    _embed_model_for_metrics = _emb_model_stage
+
     try:
-        results = db.search_similar(
-            query=effective_query,
-            limit=int(top_k),
-            score_threshold=float(score_threshold),
-            with_vectors=False,
-            with_payload=True,
-            exact=True,
-        )
+        if _emb_runtime == "fastembed":
+            try:
+                _dims = _emb_kwargs_stage.get("dimensions")
+                _dims_i = int(_dims) if _dims is not None else None
+            except Exception:
+                _dims_i = None
+            try:
+                _batch_size = int(_emb_kwargs_stage.get("batch_size", 32))
+            except Exception:
+                _batch_size = 32
+            _device = _emb_kwargs_stage.get("device")
+
+            _emb_spec = EmbeddingSpec(
+                task="embedding",
+                runtime="fastembed",
+                provider=_emb_provider_stage,
+                model=_emb_model_stage,
+                dimensions=_dims_i,
+                normalize=bool(_emb_kwargs_stage.get("normalize", True)),
+                batch_size=max(1, _batch_size),
+                device=(str(_device).strip() if _device is not None else None),
+                extra=_emb_extra_stage,
+            )
+            _emb_res = _FASTEMBED_EMBEDDING_PROVIDER.embed([effective_query], _emb_spec)
+            _qv = (_emb_res.vectors or [[]])[0]
+            results = db.search_similar_by_embedding(
+                query_embedding=_qv,
+                limit=int(top_k),
+                score_threshold=float(score_threshold),
+                with_payload=True,
+                exact=True,
+            )
+        else:
+            results = db.search_similar(
+                query=effective_query,
+                limit=int(top_k),
+                score_threshold=float(score_threshold),
+                with_vectors=False,
+                with_payload=True,
+                exact=True,
+            )
     except LLMError as e:
         # Surface embedding/provider rate limits that occur during retrieval.
         kind = getattr(e, "kind", "") or ""
@@ -3199,23 +3295,31 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     logger.debug("[RETRIEVE] (%s) Qdrant returned %d", log_origin, n)
 
     # Embedding stage metrics
-    try:
-        raw_last = getattr(db, "last_embedding_usage", None)
-        logger.debug("[EMB] (%s) db.last_embedding_usage=%r", log_origin, raw_last)
-        last = raw_last or {}
-        embed_tokens = int((last.get("input_tokens") or last.get("total_tokens") or 0))
-        logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
-    except Exception:
+    embed_tokens = 0
+    if _emb_runtime == "fastembed":
+        # Local FastEmbed path does not currently expose token accounting in db.last_embedding_usage.
         embed_tokens = 0
-    # Use the concrete embedding model name resolved from settings so that
-    # pricing in model_registry can be applied correctly for cost metrics.
-    try:
-        _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
-        _emb_model_for_cost = str(
-            (_emb_spec_cost.get("model") or "text-embedding-3-small")
-        )
-    except Exception:
-        _emb_model_for_cost = "text-embedding-3-small"
+    else:
+        try:
+            raw_last = getattr(db, "last_embedding_usage", None)
+            logger.debug("[EMB] (%s) db.last_embedding_usage=%r", log_origin, raw_last)
+            last = raw_last or {}
+            embed_tokens = int((last.get("input_tokens") or last.get("total_tokens") or 0))
+            logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
+        except Exception:
+            embed_tokens = 0
+
+    # Use stage-selected embedding model when provided; otherwise fall back to resolved hosted spec.
+    if _embed_model_for_metrics:
+        _emb_model_for_cost = _embed_model_for_metrics
+    else:
+        try:
+            _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
+            _emb_model_for_cost = str(
+                (_emb_spec_cost.get("model") or "text-embedding-3-small")
+            )
+        except Exception:
+            _emb_model_for_cost = "text-embedding-3-small"
 
     m.record_stage(
         "embedding",
@@ -3252,12 +3356,18 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # 5. If any condition is met, skip reranking; otherwise, perform reranking
     #
     # Note: All thresholds are configurable via settings with sensible defaults.
+    _rs_cfg = (stage_specs or {}).get("rerank") or {}
+    _rs_kwargs = dict(_rs_cfg.get("kwargs") or {})
     kept = min(int(getattr(settings_obj, "re_ranker_input_rows", 5)), n)
     reranked = results
+    rerank_enabled = bool(_rs_kwargs.get("enabled", True))
     need_rerank = False
     skip_reason = ""
 
-    if n <= 1:
+    if not rerank_enabled:
+        need_rerank = False
+        skip_reason = "disabled by retrieval config"
+    elif n <= 1:
         need_rerank = False
         skip_reason = "<=1 candidate"
     elif n < int(getattr(settings_obj, "re_ranker_input_rows", 5)):
@@ -3348,32 +3458,41 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 _rs.get("model")
                 or getattr(settings_obj, "re_ranker_model", settings_obj.inference_model)
             )
+            _runtime = str(_rs.get("runtime") or "llm").strip() or "llm"
             _kwargs = dict(_rs.get("kwargs") or {})
 
             logger.debug(
-                "[RERANK] (%s) provider=%s model=%s kwargs=%r",
+                "[RERANK] (%s) runtime=%s provider=%s model=%s kwargs=%r",
                 log_origin,
+                _runtime,
                 _provider,
                 _model,
                 _kwargs,
             )
 
-            # DEBUG: Log rerank stage details
-            logger.info(f"[DEBUG] RERANK stage: provider={_provider}, model={_model}")
+            usage_rr: Dict[str, Any] = {}
+            if _runtime == "llm":
+                logger.info(f"[DEBUG] RERANK stage: provider={_provider}, model={_model}")
+                _kwargs_llm = {
+                    k: v
+                    for k, v in _kwargs.items()
+                    if k not in {"enabled", "top_n", "batch_size", "device"}
+                }
+                resp_rerank = _responses_create(
+                    provider=_provider,
+                    model=_model,
+                    input=prompt_text.strip(),
+                    **_kwargs_llm,
+                )
+                content = _extract_text_from_responses(resp_rerank).strip()
+                _dbg(f"[RERANK] {log_origin} raw:", content)
+                order = _parse_json_array_in_text(content, pool_n)
+                reranked = [pool[i] for i in order] or pool
+                reranked = reranked[:kept]
+                usage_rr = _extract_usage_from_responses(resp_rerank, provider=_provider) or {}
+            else:
+                raise ValueError(f"Unsupported rerank runtime: {_runtime}")
 
-            resp_rerank = _responses_create(
-                provider=_provider,
-                model=_model,
-                input=prompt_text.strip(),
-                **_kwargs,
-            )
-            content = _extract_text_from_responses(resp_rerank).strip()
-            _dbg(f"[RERANK] {log_origin} raw:", content)
-            order = _parse_json_array_in_text(content, pool_n)
-            reranked = [pool[i] for i in order] or pool
-            reranked = reranked[:kept]
-
-            usage_rr = _extract_usage_from_responses(resp_rerank, provider=_provider) or {}
             # Record rerank metrics against the actual model used (from stage_specs).
             m.record_stage(
                 "rerank",

@@ -1,0 +1,24 @@
+retrieval:
+  defaults:
+    embedding:
+      task: embedding
+      runtime: fastembed
+      provider: local
+      model: BAAI/bge-m3
+      dimensions: 1024
+      normalize: true
+      batch_size: 32
+      device: cpu
+      extra: {}
+    rerank:
+      task: rerank
+      enabled: true
+      runtime: llm
+      provider: openai
+      model: openai:gpt-4o-mini
+      top_n: 5
+      batch_size: 16
+      device: null
+      extra: {}
+
+  domains: {}

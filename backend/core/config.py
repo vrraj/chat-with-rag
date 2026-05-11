@@ -240,6 +240,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Required: path to the prompt registry YAML for inference stage-1 prompt construction.
     inference_prompt_registry_path: str = "prompts/prompt_registry.yaml"
+    # Path to retrieval runtime registry YAML (embedding/rerank defaults + domain overrides).
+    retrieval_config_path: str = "prompts/retrieval_registry.yaml"
     # Optional per-request override: params["prompt_domain"]. When unset, fall back to this default.
     prompt_domain_default: str = ""
 
