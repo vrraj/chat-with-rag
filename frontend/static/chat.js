@@ -793,6 +793,7 @@
     // Attach model keys per stage. These map to backend model registry.
     try {
       base.model_keys = {
+        embedding: 'openai:embed_small',
         inference: stageModelConfig.inference.model_key,
         rewrite: stageModelConfig.rewrite.model_key,
         summary: stageModelConfig.summary.model_key,

@@ -1065,9 +1065,10 @@ def _compute_stage_cost(
 
     if pricing is not None:
         try:
-            in_rate = float(getattr(pricing, "input_per_mm", 0.0) or 0.0)
-            out_rate = float(getattr(pricing, "output_per_mm", 0.0) or 0.0)
-            cached_rate = float(getattr(pricing, "cached_input_per_mm", 0.0) or 0.0)
+            # pricing is returned as a dict, use dict access instead of getattr
+            in_rate = float(pricing.get("input_per_mm", 0.0) or 0.0)
+            out_rate = float(pricing.get("output_per_mm", 0.0) or 0.0)
+            cached_rate = float(pricing.get("cached_input_per_mm", 0.0) or 0.0)
         except Exception:
             in_rate = out_rate = cached_rate = 0.0
 
@@ -1081,10 +1082,10 @@ def _compute_stage_cost(
         cost_completion = (completion_tokens / COST_BASIS) * out_rate
         total = cost_prompt + cost_cached + cost_completion
         return {
-            "cost_prompt": round(cost_prompt, 8),
-            "cost_cached": round(cost_cached, 8),
-            "cost_completion": round(cost_completion, 8),
-            "cost_total": round(total, 8),
+            "cost_prompt": round(cost_prompt, 10),
+            "cost_cached": round(cost_cached, 10),
+            "cost_completion": round(cost_completion, 10),
+            "cost_total": round(total, 10),
         }
 
     # If model registry cannot be resolved, return zero costs rather than
@@ -1133,10 +1134,10 @@ class Metrics:
             _emb_model_name = "text-embedding-3-small"
         # Exact shape expected by the UI
         self.turn: Dict[str, Any] = {
-            "embedding": {"model": _emb_model_name, "input_tokens": 0, "cost": 0.0},
-            "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "cost": 0.0},
-            "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
-            "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
+            "embedding": {"model": _emb_model_name, "input_tokens": 0, "costs": 0.0},
+            "rerank": {"model": settings_obj.re_ranker_model, "input_tokens": 0, "output_tokens": 0, "candidates_reranked": 0, "costs": 0.0},
+            "summary": {"model": settings_obj.summarizer_model, "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "costs": 0.0},
+            "rewrite": {"model": getattr(settings_obj, "rewrite_model", settings_obj.inference_model), "applied": False, "reason": "", "input_tokens": 0, "output_tokens": 0, "costs": 0.0},
             # Inference pass #1 (initial answer / tool-planning)
             "inference": {
                 "model": settings_obj.inference_model,
@@ -1161,7 +1162,7 @@ class Metrics:
                 "cost_output": 0.0,
                 "cost_total": 0.0,
             },
-            "totals": {"tokens": {"turn_total": 0}, "cost": {"turn_total": 0.0}},
+            "totals": {"tokens": {"turn_total": 0}, "costs": {"turn_total": 0.0}},
         }
         # Module-level accumulator reference (shared per process)
         self.convo: Dict[str, Any] = convo_totals_ref
@@ -1217,12 +1218,11 @@ class Metrics:
     def record_stage(
         self,
         stage: str,
-        *,
-        model: str,
-        usage: Any | None = None,
         pt: int | None = None,
         ct: int | None = None,
         cached: int | None = None,
+        model: str | None = None,
+        usage: Any | None = None,
         model_key: str | None = None,
         extra: Dict[str, Any] | None = None,
     ) -> None:
@@ -1249,23 +1249,23 @@ class Metrics:
             # input-only; we treat provided pt as input_tokens
             self.turn[stage]["input_tokens"] = pt
             c = self._cost("embedding", model, pt, 0, 0, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_prompt"]
+            self.turn[stage]["costs"] = c["cost_prompt"]
         elif stage == "rerank":
             # Use canonical input_tokens; cached is a subset and tracked separately via cost math.
             self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rerank", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_total"]
+            self.turn[stage]["costs"] = c["cost_total"]
         elif stage == "summary":
             self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("summary", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_total"]
+            self.turn[stage]["costs"] = c["cost_total"]
         elif stage == "rewrite":
             self.turn[stage]["input_tokens"] = pt
             self.turn[stage]["output_tokens"] = ct
             c = self._cost("rewrite", model, pt, ct, cached, model_key=model_key)
-            self.turn[stage]["cost"] = c["cost_total"]
+            self.turn[stage]["costs"] = c["cost_total"]
         elif stage in ("inference", "inference_tools_synth"):
             # Accumulate tokens and costs across multiple inference calls in a single turn.
             prev_in = int(self.turn[stage].get("input_tokens") or 0)
@@ -1326,26 +1326,23 @@ class Metrics:
         self.turn["totals"]["tokens"]["turn_total"] = total_tokens
 
         total_cost = (
-            float(self.turn["embedding"].get("cost") or 0.0)
-            + float(self.turn["rerank"].get("cost") or 0.0)
-            + float(self.turn["summary"].get("cost") or 0.0)
-            + float(self.turn["rewrite"].get("cost") or 0.0)
+            float(self.turn["embedding"].get("costs") or 0.0)
+            + float(self.turn["rerank"].get("costs") or 0.0)
+            + float(self.turn["summary"].get("costs") or 0.0)
+            + float(self.turn["rewrite"].get("costs") or 0.0)
             + float(self.turn["inference"].get("cost_total") or 0.0)
             + float(self.turn["inference_tools_synth"].get("cost_total") or 0.0)
         )
-        self.turn["totals"]["cost"]["turn_total"] = round(total_cost, 8)
+        self.turn["totals"]["costs"]["turn_total"] = round(total_cost, 10)
 
-        # Accumulate into shared conversation totals (robust to 'cost' vs 'costs')
+        # Accumulate into shared conversation totals
         try:
             self.convo["tokens"]["embedding"] += emb
             # NOTE: cached tokens are already included in stage input/prompt token counts; track them separately but don't double-count.
             self.convo["tokens"]["llm_input"] += (rin + sin + rwin + ip)
             self.convo["tokens"]["llm_output"] += (rout + sout + rwout + ic)
             self.convo["tokens"]["conversation_total"] += total_tokens
-            if "cost" in self.convo:
-                self.convo["cost"]["conversation_total"] = round(float(self.convo["cost"].get("conversation_total", 0.0)) + total_cost, 8)
-            elif "costs" in self.convo:
-                self.convo["costs"]["conversation_total"] = round(float(self.convo["costs"].get("conversation_total", 0.0)) + total_cost, 8)
+            self.convo["costs"]["conversation_total"] = round(float(self.convo["costs"].get("conversation_total", 0.0)) + total_cost, 10)
             logger.debug("[TOTALS] Metrics Finalize Turn turn_total=%d convo_total_now=%d" % (self.turn["totals"]["tokens"]["turn_total"], self.convo["tokens"]["conversation_total"]))
         except Exception:
             # Never let metrics break the answer path
@@ -1356,13 +1353,10 @@ class Metrics:
         """Return the current turn metrics and a frontend-aligned conversation totals snapshot."""
         convo_cost = 0.0
         if isinstance(self.convo, dict):
-            if "cost" in self.convo:
-                convo_cost = float(self.convo["cost"].get("conversation_total", 0.0))
-            elif "costs" in self.convo:
-                convo_cost = float(self.convo["costs"].get("conversation_total", 0.0))
+            convo_cost = float(self.convo["costs"].get("conversation_total", 0.0))
         convo_snapshot = {
             "tokens": self.convo.get("tokens", {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0}),
-            "cost": {"conversation_total": convo_cost},
+            "costs": {"conversation_total": convo_cost},
         }
         return self.turn, convo_snapshot
 
@@ -2616,8 +2610,26 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     # --- Model registry keys (cost-only) ---
     # Optional stable model aliases from params, used ONLY for accurate cost lookup.
+    # Support both flat format (embedding_model_key) and nested format (model_keys.embedding)
+    # Fallback to settings model keys if not provided in params
     _mk = lambda k: (str(params.get(k)).strip() or None) if params.get(k) is not None else None
     _stage_model_keys = {s: _mk(f"{s}_model_key") for s in ("embedding", "rewrite", "summary", "rerank", "inference", "tools_synth")}
+    # Also check nested model_keys format from frontend
+    model_keys_nested = params.get("model_keys") or {}
+    for stage in ("embedding", "rewrite", "summary", "rerank", "inference", "tools_synth"):
+        if model_keys_nested.get(stage) and not _stage_model_keys.get(stage):
+            _stage_model_keys[stage] = str(model_keys_nested.get(stage)).strip() or None
+    # Fallback to settings model keys if still None
+    if not _stage_model_keys.get("embedding"):
+        _stage_model_keys["embedding"] = str(getattr(settings_obj, "embedding_model_key", "openai:embed_small"))
+    if not _stage_model_keys.get("inference"):
+        _stage_model_keys["inference"] = str(getattr(settings_obj, "inference_model_key", "openai:gpt-4o-mini"))
+    if not _stage_model_keys.get("rewrite"):
+        _stage_model_keys["rewrite"] = str(getattr(settings_obj, "rewrite_model_key", "openai:gpt-4o-mini"))
+    if not _stage_model_keys.get("rerank"):
+        _stage_model_keys["rerank"] = str(getattr(settings_obj, "rerank_model_key", "openai:gpt-4o-mini"))
+    if not _stage_model_keys.get("summary"):
+        _stage_model_keys["summary"] = str(getattr(settings_obj, "summarizer_model_key", "openai:gpt-4o-mini"))
     _stage_model_keys["tools_synth"] = _stage_model_keys.get("tools_synth") or _stage_model_keys.get("inference")
 
     # Per-UI control for whether to append Sources: blocks and structured sources.
@@ -2794,7 +2806,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                         "llm_output": 0,
                                         "conversation_total": 0,
                                     },
-                                    "cost": {"conversation_total": 0.0},
+                                    "costs": {"conversation_total": 0.0},
                                 }
                             return {
                                 "answer": quota_msg,
@@ -2888,7 +2900,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                     "llm_output": 0,
                                     "conversation_total": 0,
                                 },
-                                "cost": {"conversation_total": 0.0},
+                                "costs": {"conversation_total": 0.0},
                             }
                         return {
                             "answer": quota_msg,
@@ -3063,7 +3075,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             turn_metrics, convo_snapshot = m.snapshot()
         except Exception:
             turn_metrics = m.turn
-            convo_snapshot = {"tokens": {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0}, "cost": {"conversation_total": 0.0}}
+            convo_snapshot = {"tokens": {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0}, "costs": {"conversation_total": 0.0}}
         return {
             "answer": answer,
             "sources": [],
@@ -3144,7 +3156,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                         "llm_output": 0,
                         "conversation_total": 0,
                     },
-                    "cost": {"conversation_total": 0.0},
+                    "costs": {"conversation_total": 0.0},
                 }
             return {
                 "answer": quota_msg,
@@ -3391,7 +3403,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             "llm_output": 0,
                             "conversation_total": 0,
                         },
-                        "cost": {"conversation_total": 0.0},
+                        "costs": {"conversation_total": 0.0},
                     }
                 return {
                     "answer": quota_msg,
@@ -3689,7 +3701,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                             "llm_output": 0,
                             "conversation_total": 0,
                         },
-                        "cost": {"conversation_total": 0.0},
+                        "costs": {"conversation_total": 0.0},
                     }
                 return {
                     "answer": quota_msg,
@@ -4003,7 +4015,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                                 "llm_output": 0,
                                 "conversation_total": 0,
                             },
-                            "cost": {"conversation_total": 0.0},
+                            "costs": {"conversation_total": 0.0},
                         }
                     return {
                         "answer": quota_msg,
@@ -4148,7 +4160,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         turn_metrics = m.turn
         convo_snapshot = {
             "tokens": {"embedding": 0, "llm_input": 0, "llm_output": 0, "conversation_total": 0},
-            "cost": {"conversation_total": 0.0},
+            "costs": {"conversation_total": 0.0},
         }
 
     legacy_metrics = {"vectors_retrieved": n}
