@@ -15,6 +15,7 @@ from fastembed import TextEmbedding, SparseTextEmbedding
 COLLECTION_NAME = "test_hybrid_collection"
 DENSE_MODEL = "BAAI/bge-base-en-v1.5"
 SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
+CACHE_DIR = os.path.expanduser("~/models/fastembed_cache")
 TEST_TEXT = "Finance policy updates and risk outlook for Q4 2024"
 TEST_QUERY = "financial risk management"
 
@@ -45,13 +46,13 @@ def create_hybrid_collection(client: QdrantClient, collection_name: str):
 def generate_hybrid_embeddings(text: str):
     """Generate both dense and sparse embeddings using FastEmbed."""
     print(f"Generating dense embeddings with {DENSE_MODEL}...")
-    dense_model = TextEmbedding(model_name=DENSE_MODEL)
+    dense_model = TextEmbedding(model_name=DENSE_MODEL, cache_dir=CACHE_DIR)
     dense_embeddings = list(dense_model.embed([text]))
     dense_vector = list(dense_embeddings[0])
     print(f"Dense embedding shape: {len(dense_vector)}")
     
     print(f"Generating sparse embeddings with {SPARSE_MODEL}...")
-    sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL)
+    sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL, cache_dir=CACHE_DIR)
     sparse_embeddings = list(sparse_model.embed([text]))
     sparse_embedding = sparse_embeddings[0]
     
@@ -94,11 +95,11 @@ def hybrid_search(client: QdrantClient, collection_name: str, query: str):
     print(f"\nPerforming hybrid search for: '{query}'")
     
     # Generate query embeddings
-    dense_model = TextEmbedding(model_name=DENSE_MODEL)
-    sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL)
+    dense_model = TextEmbedding(model_name=DENSE_MODEL, cache_dir=CACHE_DIR)
+    sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL, cache_dir=CACHE_DIR)
     
     dense_query = list(dense_model.embed([query]))[0]
-    sparse_query = sparse_model.embed([query])[0]
+    sparse_query = list(sparse_model.embed([query]))[0]
     
     # Convert sparse query to dict
     sparse_query_dict = {
