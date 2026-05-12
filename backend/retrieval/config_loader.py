@@ -1,0 +1,88 @@
+"""Load and validate local model configuration from YAML."""
+import os
+import yaml
+from pathlib import Path
+from typing import Dict, Any, Optional
+from backend.core.config import settings
+
+def get_retrieval_config_path() -> Path:
+    """Get the path to the retrieval models YAML configuration file."""
+    # Default path relative to project root
+    default_path = Path(__file__).parent.parent.parent / "prompts" / "retrieval_models.yaml"
+    
+    # Check for environment variable override
+    config_path = os.getenv("RETRIEVAL_MODELS_CONFIG")
+    if config_path:
+        return Path(config_path)
+    
+    return default_path
+
+def load_retrieval_config() -> Dict[str, Any]:
+    """Load the retrieval models configuration from YAML.
+    
+    Returns:
+        Dictionary containing model configurations for dense, sparse, late_interaction, and reranker.
+    
+    Raises:
+        FileNotFoundError: If the configuration file doesn't exist.
+        yaml.YAMLError: If the YAML file is invalid.
+    """
+    config_path = get_retrieval_config_path()
+    
+    if not config_path.exists():
+        raise FileNotFoundError(f"Retrieval models configuration not found: {config_path}")
+    
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    
+    return config
+
+def get_model_config(model_type: str) -> Dict[str, Any]:
+    """Get configuration for a specific model type.
+    
+    Args:
+        model_type: One of "dense", "sparse", "late_interaction", or "reranker"
+    
+    Returns:
+        Dictionary containing model configuration (name, dimensions, etc.)
+    
+    Raises:
+        ValueError: If model_type is invalid or not found in config.
+    """
+    config = load_retrieval_config()
+    models = config.get("models", {})
+    
+    if model_type not in models:
+        raise ValueError(f"Model type '{model_type}' not found in configuration. Available types: {list(models.keys())}")
+    
+    model_config = models[model_type]
+    
+    # Check if model is enabled (for optional models like late_interaction and reranker)
+    if "enabled" in model_config and not model_config["enabled"]:
+        raise ValueError(f"Model type '{model_type}' is disabled in configuration.")
+    
+    return model_config
+
+def is_local_domain(domain: str) -> bool:
+    """Check if a domain uses local (non-hosted) models.
+    
+    Args:
+        domain: Domain name to check
+    
+    Returns:
+        True if domain uses local models, False if hosted
+    """
+    domain_config = settings.DOMAIN_EMBEDDING_CONFIG.get(domain, {})
+    return domain_config.get("model_type") == "local"
+
+def get_domain_vector_type(domain: str) -> Optional[str]:
+    """Get the vector type for a domain.
+    
+    Args:
+        domain: Domain name to check
+    
+    Returns:
+        None (unnamed), "dense", or "hybrid"
+    """
+    domain_config = settings.DOMAIN_EMBEDDING_CONFIG.get(domain, {})
+    return domain_config.get("vector_type")

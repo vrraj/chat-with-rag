@@ -13,6 +13,7 @@ class EmbeddingSpec:
     batch_size: int = 32
     device: str | None = None
     extra: Dict[str, Any] = field(default_factory=dict)
+    vector_type: str = "dense"  # "dense" or "sparse"
 
 
 @dataclass

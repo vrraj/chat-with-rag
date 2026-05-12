@@ -164,24 +164,34 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3A) Domain-based embedding configuration
     # -------------------------------------------------------------------------
-    # Domain → (collection_name, embedding_model_key) mapping
-    # Each domain has its own collection and embedding model
+    # Domain → (collection_name, embedding_model_key, model_type, vector_type) mapping
+    # Each domain has its own collection, embedding model, and vector storage type
+    # model_type: "hosted" (llm-adapter) or "local" (FastEmbed via YAML config)
+    # vector_type: None (unnamed), "dense" (named dense), or "hybrid" (dense + sparse)
     DOMAIN_EMBEDDING_CONFIG: ClassVar[Dict[str, Dict[str, str]]] = {
         "default": {
             "collection_name": "document_index",
-            "embedding_model_key": "openai:embed_small"
+            "embedding_model_key": "openai:embed_small",
+            "model_type": "hosted",
+            "vector_type": None,
         },
         "mountains": {
             "collection_name": "document_index",
-            "embedding_model_key": "openai:embed_small"
+            "embedding_model_key": "openai:embed_small",
+            "model_type": "hosted",
+            "vector_type": None,
         },
         "oceans": {
             "collection_name": "document_index_gemini",
-            "embedding_model_key": "gemini:native-embed"
+            "embedding_model_key": "gemini:native-embed",
+            "model_type": "hosted",
+            "vector_type": None,
         },
         "finance": {
             "collection_name": "document_index_finance",
-            "embedding_model_key": "openai:embed_small"
+            "embedding_model_key": "BAAI/bge-base-en-v1.5",
+            "model_type": "local",
+            "vector_type": "hybrid",
         }
     }
     
@@ -429,12 +439,29 @@ class Settings(BaseSettings):
 
     @property
     def vector_size(self) -> int:
-        """Vector size from embedding_model_key registry capabilities"""
+        """Vector size from embedding_model_key registry capabilities or YAML config for local models."""
         from backend.llm.llm_client import get_model_info
+        from backend.retrieval.config_loader import is_local_domain, get_model_config
         
+        # Check if current domain uses local models
+        if is_local_domain(self.active_domain):
+            try:
+                dense_config = get_model_config("dense")
+                dimensions = dense_config.get("dimensions")
+                if isinstance(dimensions, int) and dimensions > 0:
+                    return int(dimensions)
+            except Exception:
+                pass
+        
+        # Fallback to llm-adapter registry for hosted models
         model_info = get_model_info(model_key=self.embedding_model_key)
         dimensions = model_info.capabilities.get("dimensions")
         return int(dimensions)
+
+    @property
+    def vector_type(self) -> Optional[str]:
+        """Vector type from active domain configuration (None, 'dense', or 'hybrid')"""
+        return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain].get("vector_type")
 
 def get_assistant_role(settings_obj: Any, params: Dict[str, Any] | None = None) -> str:
     """

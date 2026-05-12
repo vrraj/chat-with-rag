@@ -40,10 +40,40 @@ class QdrantDB:
                         vector_size = int(dims)
                 except Exception:
                     pass
-                self.client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-                )
+                
+                # Check vector type from domain config
+                vector_type = settings.vector_type
+                
+                if vector_type == "hybrid":
+                    # Create collection with named dense + sparse vectors
+                    self.client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config={
+                            "dense": VectorParams(size=vector_size, distance=Distance.COSINE, on_disk=True)
+                        },
+                        sparse_vectors_config={
+                            "sparse": models.SparseVectorParams(
+                                index=models.SparseIndexParams(on_disk=True)
+                            )
+                        }
+                    )
+                    logger.info("Created hybrid collection %s with named vectors: dense (%d) + sparse", collection_name, vector_size)
+                elif vector_type == "dense":
+                    # Create collection with named dense vector only
+                    self.client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config={
+                            "dense": VectorParams(size=vector_size, distance=Distance.COSINE, on_disk=True)
+                        }
+                    )
+                    logger.info("Created collection %s with named dense vector (%d)", collection_name, vector_size)
+                else:
+                    # Create collection with unnamed vector (existing behavior)
+                    self.client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+                    )
+                    logger.info("Created collection %s with unnamed vector (%d)", collection_name, vector_size)
             except Exception as e:
                 logger.exception("Failed to create collection %s", collection_name)
                 raise
