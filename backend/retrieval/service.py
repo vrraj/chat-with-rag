@@ -24,10 +24,9 @@ class RetrievalService:
         embedding_result = self.embedding_router.embed([query], embedding_spec)
         query_vector = embedding_result.vectors[0]
 
-        candidates = self.qdrant_db.search(
-            query_vector=query_vector,
-            namespace=namespace,
-            top_k=top_k,
+        candidates = self.qdrant_db.search_similar_by_embedding(
+            query_embedding=query_vector,
+            limit=top_k,
         )
 
         reranked = candidates

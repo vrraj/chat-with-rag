@@ -366,7 +366,7 @@ class QdrantDB:
         exact: Optional[bool] = None,
     ) -> List[Dict]:
         """
-        Search for similar content using a precomputed embedding - internal method wher eyou already have the embeddings and just need to requery.
+        Search for similar content using a precomputed embedding - internal method where you already have the embeddings and just need to requery.
         Note: 'exact' is applied via SearchParams; Qdrant client's 'search' does not accept 'exact' as a top-level parameter.
         """
         try:
@@ -390,16 +390,36 @@ class QdrantDB:
             qdrant_filter = self._build_filter(query_filter)
             q_search_params = models.SearchParams(exact=exact)
 
+            # Check if collection uses named vectors
+            try:
+                collection_info = self.client.get_collection(self.collection_name)
+                vectors_config = collection_info.config.params.vectors
+                has_named_vectors = isinstance(vectors_config, dict) and "dense" in vectors_config
+            except Exception:
+                has_named_vectors = False
+
             # Execute search with the prepared parameters
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                limit=limit,
-                query_filter=qdrant_filter,
-                score_threshold=score_threshold,
-                with_payload=with_payload,
-                search_params=q_search_params
-            )
+            if has_named_vectors:
+                results = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_embedding,
+                    query_filter=qdrant_filter,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_payload=with_payload,
+                    search_params=q_search_params,
+                    using="dense"  # Use named dense vector
+                )
+            else:
+                results = self.client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query_embedding,
+                    limit=limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=score_threshold,
+                    with_payload=with_payload,
+                    search_params=q_search_params
+                )
             logger.debug("Found %d results for similarity search", len(results))
 
             return [
