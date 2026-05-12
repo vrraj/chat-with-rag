@@ -1,11 +1,15 @@
+# Unified retrieval configuration
+# Combines runtime configuration (hosted vs local) with local model specifications
+
 retrieval:
+  # Runtime defaults (which provider/runtime to use)
   defaults:
     embedding:
       task: embedding
       runtime: fastembed
       provider: local
-      model: BAAI/bge-m3
-      dimensions: 1024
+      model: BAAI/bge-base-en-v1.5
+      dimensions: 768
       normalize: true
       batch_size: 32
       device: cpu
@@ -21,14 +25,15 @@ retrieval:
       device: null
       extra: {}
 
+  # Domain-specific runtime overrides
   domains:
     finance:
       embedding:
         task: embedding
         runtime: fastembed
         provider: local
-        model: BAAI/bge-m3
-        dimensions: 1024
+        model: BAAI/bge-base-en-v1.5
+        dimensions: 768
         normalize: true
         batch_size: 32
         device: cpu
@@ -43,3 +48,33 @@ retrieval:
         batch_size: 16
         device: null
         extra: {}
+
+# Local model specifications (for FastEmbed)
+# Used when provider is "local" in runtime config above
+local_models:
+  # TIER 1: DENSE (Semantic Vibes)
+  dense:
+    name: "BAAI/bge-base-en-v1.5"
+    dimensions: 768
+    distance: "Cosine"
+    cache_dir: "~/models/fastembed_cache"
+
+  # TIER 1: SPARSE (Lexical/Keyword matching)
+  sparse:
+    name: "prithivida/Splade_PP_en_v1"
+    # Dimensions for sparse are dynamic (vocab size ~30522)
+    cache_dir: "~/models/fastembed_cache"
+  
+  # TIER 2: LATE INTERACTION (Token-level precision for symbols/code)
+  late_interaction:
+    enabled: false
+    name: "colbert-ir/colbertv2.0"
+    dimensions: 128  # ColBERT uses 128-dim embeddings PER token
+    max_length: 512
+    cache_dir: "~/models/fastembed_cache"
+
+  # TIER 3: RERANKER (Cross-Encoder for re-ranking)
+  reranker:
+    enabled: true
+    name: "BAAI/bge-reranker-base"
+    cache_dir: "~/models/fastembed_cache"

@@ -1,4 +1,4 @@
-"""Load and validate local model configuration from YAML."""
+"""Load and validate retrieval configuration from unified YAML."""
 import os
 import yaml
 from pathlib import Path
@@ -6,22 +6,22 @@ from typing import Dict, Any, Optional
 from backend.core.config import settings
 
 def get_retrieval_config_path() -> Path:
-    """Get the path to the retrieval models YAML configuration file."""
+    """Get the path to the unified retrieval configuration file."""
     # Default path relative to project root
-    default_path = Path(__file__).parent.parent.parent / "prompts" / "retrieval_models.yaml"
+    default_path = Path(__file__).parent.parent.parent / "prompts" / "retrieval_registry.yaml"
     
     # Check for environment variable override
-    config_path = os.getenv("RETRIEVAL_MODELS_CONFIG")
+    config_path = os.getenv("RETRIEVAL_CONFIG_PATH")
     if config_path:
         return Path(config_path)
     
     return default_path
 
 def load_retrieval_config() -> Dict[str, Any]:
-    """Load the retrieval models configuration from YAML.
+    """Load the unified retrieval configuration from YAML.
     
     Returns:
-        Dictionary containing model configurations for dense, sparse, late_interaction, and reranker.
+        Dictionary containing both runtime config and local model specs.
     
     Raises:
         FileNotFoundError: If the configuration file doesn't exist.
@@ -30,7 +30,7 @@ def load_retrieval_config() -> Dict[str, Any]:
     config_path = get_retrieval_config_path()
     
     if not config_path.exists():
-        raise FileNotFoundError(f"Retrieval models configuration not found: {config_path}")
+        raise FileNotFoundError(f"Retrieval configuration not found: {config_path}")
     
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -38,7 +38,7 @@ def load_retrieval_config() -> Dict[str, Any]:
     return config
 
 def get_model_config(model_type: str) -> Dict[str, Any]:
-    """Get configuration for a specific model type.
+    """Get configuration for a specific local model type.
     
     Args:
         model_type: One of "dense", "sparse", "late_interaction", or "reranker"
@@ -50,12 +50,12 @@ def get_model_config(model_type: str) -> Dict[str, Any]:
         ValueError: If model_type is invalid or not found in config.
     """
     config = load_retrieval_config()
-    models = config.get("models", {})
+    local_models = config.get("local_models", {})
     
-    if model_type not in models:
-        raise ValueError(f"Model type '{model_type}' not found in configuration. Available types: {list(models.keys())}")
+    if model_type not in local_models:
+        raise ValueError(f"Model type '{model_type}' not found in local_models. Available types: {list(local_models.keys())}")
     
-    model_config = models[model_type]
+    model_config = local_models[model_type]
     
     # Check if model is enabled (for optional models like late_interaction and reranker)
     if "enabled" in model_config and not model_config["enabled"]:
