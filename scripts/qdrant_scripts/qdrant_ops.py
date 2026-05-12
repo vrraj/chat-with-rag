@@ -479,6 +479,28 @@ def cmd_delete(args) -> int:
     return 1
 
 
+def cmd_list_collections(args) -> int:
+    """List all collections in the Qdrant instance."""
+    client = build_client(args.host, args.port)
+    
+    try:
+        collections_info = client.get_collections()
+        collections = collections_info.collections
+        
+        if not collections:
+            print("No collections found.")
+            return 0
+        
+        print("Collections:")
+        for col in collections:
+            print(f"- {col.name}")
+        print(f"\nTotal: {len(collections)} collection(s)")
+        return 0
+    except Exception as e:
+        print(f"Error listing collections: {e}")
+        return 1
+
+
 def count_chunks_by_base_url(args) -> int:
     """Count and display the number of chunks for a specific base URL."""
     client = build_client(args.host, args.port)
@@ -565,6 +587,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base URL to count chunks for (will be converted to lowercase)",
     )
     count_parser.set_defaults(func=count_chunks_by_base_url)
+    
+    # List collections command
+    list_collections_parser = subparsers.add_parser("list-collections", help="List all collections in Qdrant")
+    list_collections_parser.set_defaults(func=cmd_list_collections)
     
     # Export command
     export_parser = subparsers.add_parser("export", help="Export collection to JSONL file")

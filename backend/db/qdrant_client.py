@@ -182,12 +182,31 @@ class QdrantStorage:
         Returns:
             List of search results with scores and payloads
         """
-        return self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_vector,
-            limit=limit,
-            query_filter=query_filter
-        )
+        # Check if collection uses named vectors
+        try:
+            collection_info = self.client.get_collection(self.collection_name)
+            vectors_config = collection_info.config.params.vectors
+            has_named_vectors = isinstance(vectors_config, dict) and "dense" in vectors_config
+        except Exception:
+            has_named_vectors = False
+
+        # Perform search (Qdrant v1.18+ uses query_points instead of search)
+        if has_named_vectors:
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=limit,
+                query_filter=query_filter,
+                using="dense"  # Use named dense vector
+            )
+        else:
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=limit,
+                query_filter=query_filter
+            )
+        return response.points
 
     def delete_by_id(self, ids: List[str]):
         """

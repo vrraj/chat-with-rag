@@ -258,17 +258,39 @@ class QdrantDB:
             # Prepare search parameters
             search_params = models.SearchParams(exact=exact) if exact is not None else None
 
-            # Perform the search
-            search_results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                query_filter=qdrant_filter,
-                limit=limit,
-                score_threshold=score_threshold,
-                with_vectors=with_vectors,
-                with_payload=with_payload,
-                search_params=search_params
-            )
+            # Check if collection uses named vectors
+            try:
+                collection_info = self.client.get_collection(self.collection_name)
+                vectors_config = collection_info.config.params.vectors
+                has_named_vectors = isinstance(vectors_config, dict) and "dense" in vectors_config
+            except Exception:
+                has_named_vectors = False
+
+            # Perform the search (Qdrant v1.18+ uses query_points instead of search)
+            if has_named_vectors:
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_embedding,
+                    query_filter=qdrant_filter,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_vectors=with_vectors,
+                    with_payload=with_payload,
+                    search_params=search_params,
+                    using="dense"  # Use named dense vector
+                )
+            else:
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_embedding,
+                    query_filter=qdrant_filter,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_vectors=with_vectors,
+                    with_payload=with_payload,
+                    search_params=search_params
+                )
+            search_results = response.points
 
             logger.debug("Qdrant search returned %d results", len(search_results))
 
