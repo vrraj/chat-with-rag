@@ -2369,6 +2369,51 @@ async def get_model_config():
         inference_context_rows=get_model_setting("inference_context_rows"),
     )
 
+
+class DomainConfig(BaseModel):
+    collection_name: str
+    embedding_model_key: str
+    model_type: str
+    vector_type: Optional[str]
+    search_mode: str
+    rerank_model_key: Optional[str] = None
+
+
+@app.get("/api/config/domain/{domain}", response_model=DomainConfig, tags=["5. Debug"])
+async def get_domain_config(domain: str):
+    """
+    Get domain-specific configuration including collection, embedding model, and rerank model.
+    """
+    try:
+        domain_config = settings.DOMAIN_EMBEDDING_CONFIG.get(domain)
+        if not domain_config:
+            raise HTTPException(status_code=404, detail=f"Domain '{domain}' not found")
+        
+        # Get rerank model from local_models_registry.yaml for the domain
+        rerank_model_key = None
+        try:
+            from backend.retrieval.config_loader import get_model_config
+            retrieval_specs = get_model_config("rerank")
+            if retrieval_specs:
+                rerank_model_key = retrieval_specs.get("model_key")
+        except Exception as e:
+            logger.debug(f"Failed to get rerank model config: {e}")
+        
+        return DomainConfig(
+            collection_name=domain_config.get("collection_name", ""),
+            embedding_model_key=domain_config.get("embedding_model_key", ""),
+            model_type=domain_config.get("model_type", "hosted"),
+            vector_type=domain_config.get("vector_type"),
+            search_mode=domain_config.get("search_mode", "dense"),
+            rerank_model_key=rerank_model_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting domain config for '{domain}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get(
     "/api/config/api-defaults",
     tags=["5. Debug"],

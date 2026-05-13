@@ -111,6 +111,75 @@
     updateLabel('rerank', 'model_reranker');
   }
 
+  // Update active collection display based on domain selection
+  async function updateActiveCollectionDisplay() {
+    const activeDomainSelect = qs('#active_domain');
+    const activeCollectionSpan = qs('#active_collection');
+    if (!activeDomainSelect || !activeCollectionSpan) return;
+
+    const domain = activeDomainSelect.value || '';
+    if (!domain) {
+      activeCollectionSpan.textContent = 'Loading...';
+      return;
+    }
+
+    try {
+      const resp = await fetch(`/api/config/domain/${domain}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        activeCollectionSpan.textContent = data.collection_name || 'Unknown';
+      } else {
+        activeCollectionSpan.textContent = 'Unknown';
+      }
+    } catch (e) {
+      console.debug('Failed to fetch collection info', e);
+      activeCollectionSpan.textContent = 'Unknown';
+    }
+  }
+
+  // Update models display based on domain selection
+  async function updateModelsBasedOnDomain() {
+    const activeDomainSelect = qs('#active_domain');
+    if (!activeDomainSelect) return;
+
+    const domain = activeDomainSelect.value || '';
+    if (!domain) return;
+
+    try {
+      const resp = await fetch(`/api/config/domain/${domain}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        
+        // Update embedding model from domain config
+        const embeddingEl = qs('#model_embedding');
+        if (embeddingEl && data.embedding_model_key) {
+          const info = getModelInfo(data.embedding_model_key);
+          embeddingEl.textContent = info.display || data.embedding_model_key || 'Not Found';
+        }
+
+        // Update reranker model based on domain config and cross encoder checkbox
+        const rerankEl = qs('#model_reranker');
+        const enableCrossEncoder = qs('#enable_cross_encoder_rerank');
+        if (rerankEl) {
+          if (enableCrossEncoder && enableCrossEncoder.checked && data.rerank_model_key) {
+            const info = getModelInfo(data.rerank_model_key);
+            rerankEl.textContent = info.display || data.rerank_model_key || 'Not Found';
+          } else {
+            rerankEl.textContent = 'Disabled';
+          }
+        }
+
+        // Update search_mode default based on domain config
+        const searchModeSelect = qs('#search_mode');
+        if (searchModeSelect && data.search_mode) {
+          searchModeSelect.value = data.search_mode;
+        }
+      }
+    } catch (e) {
+      console.debug('Failed to update models based on domain', e);
+    }
+  }
+
   // Fetch live model registry from backend and hydrate MODEL_REGISTRY / MODELS_BY_STAGE
   async function fetchModelRegistry() {
     try {
@@ -756,8 +825,13 @@
       score_threshold: getNum('score_threshold'),
       summarizer_max_input_tokens: getNum('summarizer_max_input_tokens'),
       summarizer_max_output_tokens: getNum('summarizer_max_output_tokens'),
-      prompt_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
-      active_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
+      prompt_domain: (qs('#active_domain') ? String(qs('#active_domain').value || '') : ''),
+      active_domain: (qs('#active_domain') ? String(qs('#active_domain').value || '') : ''),
+      search_mode: (qs('#search_mode') ? String(qs('#search_mode').value || 'dense') : 'dense'),
+      use_colbert: (qs('#use_colbert') ? !!qs('#use_colbert').checked : false),
+      colbert_top_n: getNum('colbert_top_n') || 8,
+      enable_cross_encoder_rerank: (qs('#enable_cross_encoder_rerank') ? !!qs('#enable_cross_encoder_rerank').checked : true),
+      cross_encoder_top_n: getNum('cross_encoder_top_n') || 5,
       temperature: getNum('temperature'),
       max_output_tokens: getNum('max_output_tokens'),
       top_p: getNum('top_p'),
@@ -1369,6 +1443,31 @@
     }
     // After backend config/labels are loaded, wire and init the models modal.
     try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
+
+    // Initialize active domain selection and update display
+    try {
+      await updateActiveCollectionDisplay();
+      await updateModelsBasedOnDomain();
+    } catch (e) {
+      console.debug('Failed to initialize domain display', e);
+    }
+
+    // Add event listener for domain change
+    const activeDomainSelect = qs('#active_domain');
+    if (activeDomainSelect) {
+      activeDomainSelect.addEventListener('change', async () => {
+        await updateActiveCollectionDisplay();
+        await updateModelsBasedOnDomain();
+      });
+    }
+
+    // Add event listener for cross encoder checkbox to update reranker model display
+    const enableCrossEncoder = qs('#enable_cross_encoder_rerank');
+    if (enableCrossEncoder) {
+      enableCrossEncoder.addEventListener('change', async () => {
+        await updateModelsBasedOnDomain();
+      });
+    }
   });
 
   // Ensure a conversation_id exists on load
