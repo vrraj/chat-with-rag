@@ -189,7 +189,7 @@ class Settings(BaseSettings):
         },
         "finance": {
             "collection_name": "document_index_finance",
-            "embedding_model_key": "BAAI/bge-base-en-v1.5",
+            "embedding_model_key": "local:dense_default",
             "model_type": "local",
             "vector_type": "hybrid",
         }
@@ -251,7 +251,7 @@ class Settings(BaseSettings):
     # Required: path to the prompt registry YAML for inference stage-1 prompt construction.
     inference_prompt_registry_path: str = "prompts/prompt_registry.yaml"
     # Path to retrieval runtime registry YAML (embedding/rerank defaults + domain overrides).
-    retrieval_config_path: str = "prompts/retrieval_registry.yaml"
+    retrieval_config_path: str = "prompts/local_models_registry.yaml"
     # Optional per-request override: params["prompt_domain"]. When unset, fall back to this default.
     prompt_domain_default: str = ""
 

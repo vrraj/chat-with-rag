@@ -8,7 +8,7 @@ from backend.core.config import settings
 def get_retrieval_config_path() -> Path:
     """Get the path to the unified retrieval configuration file."""
     # Default path relative to project root
-    default_path = Path(__file__).parent.parent.parent / "prompts" / "retrieval_registry.yaml"
+    default_path = Path(__file__).parent.parent.parent / "prompts" / "local_models_registry.yaml"
     
     # Check for environment variable override
     config_path = os.getenv("RETRIEVAL_CONFIG_PATH")
@@ -66,6 +66,38 @@ def get_model_config(model_type: str) -> Dict[str, Any]:
         raise ValueError(f"Model type '{model_type}' is disabled in configuration.")
     
     return model_config
+
+
+def get_model_config_by_key(model_key: str) -> Dict[str, Any]:
+    """Resolve local model configuration by stable model_key.
+
+    Args:
+        model_key: Stable local key (e.g., "local:dense_default")
+
+    Returns:
+        Dictionary containing model configuration for the matching key.
+
+    Raises:
+        ValueError: If no matching local model key is found.
+    """
+    config = load_retrieval_config()
+    local_models = config.get("local_models", {})
+    if not isinstance(local_models, dict):
+        raise ValueError("Invalid local_models configuration")
+
+    mk = str(model_key or "").strip()
+    for _, model_config in local_models.items():
+        if not isinstance(model_config, dict):
+            continue
+        if str(model_config.get("model_key") or "").strip() == mk:
+            resolved = dict(model_config)
+            if "cache_dir" in resolved:
+                resolved["cache_dir"] = os.path.expandvars(os.path.expanduser(str(resolved["cache_dir"])))
+            if "enabled" in resolved and not resolved["enabled"]:
+                raise ValueError(f"Model key '{mk}' is disabled in configuration.")
+            return resolved
+
+    raise ValueError(f"Model key '{mk}' not found in local_models")
 
 def is_local_domain(domain: str) -> bool:
     """Check if a domain uses local (non-hosted) models.

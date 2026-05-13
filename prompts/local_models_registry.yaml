@@ -54,6 +54,7 @@ retrieval:
 local_models:
   # TIER 1: DENSE (Semantic Vibes)
   dense:
+    model_key: "local:dense_default"
     name: "BAAI/bge-base-en-v1.5"
     dimensions: 768
     distance: "Cosine"
@@ -61,6 +62,7 @@ local_models:
 
   # TIER 1: SPARSE (Lexical/Keyword matching)
   sparse:
+    model_key: "local:sparse_default"
     name: "prithivida/Splade_PP_en_v1"
     # Dimensions for sparse are dynamic (vocab size ~30522)
     cache_dir: "/Users/raj/models/fastembed_cache"
@@ -68,6 +70,7 @@ local_models:
   # TIER 2: LATE INTERACTION (Token-level precision for symbols/code)
   late_interaction:
     enabled: false
+    model_key: "local:late_interaction_default"
     name: "colbert-ir/colbertv2.0"
     dimensions: 128  # ColBERT uses 128-dim embeddings PER token
     max_length: 512
@@ -76,5 +79,6 @@ local_models:
   # TIER 3: RERANKER (Cross-Encoder for re-ranking)
   reranker:
     enabled: true
+    model_key: "local:reranker_default"
     name: "BAAI/bge-reranker-base"
     cache_dir: "/Users/raj/models/fastembed_cache"

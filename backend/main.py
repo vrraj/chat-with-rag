@@ -106,11 +106,15 @@ def _resolve_domain_config(active_domain: Optional[str]) -> Dict[str, str]:
     cfg = available_domains.get(effective_domain) or available_domains.get(configured_default_domain) or {}
     collection_name = str(cfg.get("collection_name") or settings.collection_name)
     embedding_model_key = str(cfg.get("embedding_model_key") or settings.embedding_model_key)
+    model_type = str(cfg.get("model_type") or "hosted")
+    vector_type = cfg.get("vector_type")
     return {
         "requested_domain": requested_domain,
         "effective_domain": effective_domain,
         "collection_name": collection_name,
         "embedding_model_key": embedding_model_key,
+        "model_type": model_type,
+        "vector_type": vector_type,
     }
 
 
@@ -125,41 +129,66 @@ def _build_domain_qdrant(active_domain: Optional[str]) -> QdrantDB:
 
 
 def _get_embedding_spec_for_domain(active_domain: Optional[str]) -> Dict[str, Any]:
-    """Get embedding spec from retrieval config for the given domain."""
+    """Resolve embedding spec with domain config as source of truth for model selection."""
     from backend.retrieval.config import resolve_retrieval_specs
+    from backend.llm.llm_client import get_model_info
+    from backend.retrieval.config_loader import get_model_config, get_model_config_by_key
     
     domain_cfg = _resolve_domain_config(active_domain)
     retrieval_specs = resolve_retrieval_specs(
         domain=domain_cfg["effective_domain"],
-        config_path=str(getattr(settings, "retrieval_config_path", "prompts/retrieval_registry.yaml") or "").strip() or None,
+        config_path=str(getattr(settings, "retrieval_config_path", "prompts/local_models_registry.yaml") or "").strip() or None,
     )
-    
+
     emb_cfg = (retrieval_specs or {}).get("embedding") or {}
-    
-    # Fall back to legacy config if retrieval config is empty
-    if not emb_cfg:
-        from backend.embeddings.specs import resolve_embedding_spec
-        legacy_spec = resolve_embedding_spec(settings) or {}
+
+    model_type = str(domain_cfg.get("model_type") or "hosted").lower()
+    model_key = domain_cfg["embedding_model_key"]
+    normalize = emb_cfg.get("normalize", True)
+    batch_size = emb_cfg.get("batch_size", 32)
+    device = emb_cfg.get("device")
+    extra = emb_cfg.get("extra") if isinstance(emb_cfg.get("extra"), dict) else {}
+
+    if model_type == "local":
+        local_dense_cfg = get_model_config("dense") or {}
+        resolved_local_cfg = local_dense_cfg
+        local_model_name = model_key
+        if str(model_key).startswith("local:"):
+            try:
+                resolved_local_cfg = get_model_config_by_key(model_key)
+                local_model_name = str(resolved_local_cfg.get("name") or model_key)
+            except Exception:
+                local_model_name = model_key
+        dimensions = emb_cfg.get("dimensions") or resolved_local_cfg.get("dimensions") or local_dense_cfg.get("dimensions")
         return {
-            "runtime": "hosted",
-            "provider": legacy_spec.get("provider", "openai"),
-            "model": domain_cfg["embedding_model_key"],
-            "dimensions": legacy_spec.get("dimensions"),
-            "normalize": True,
-            "batch_size": 32,
-            "device": None,
-            "extra": {},
+            "runtime": emb_cfg.get("runtime", "fastembed"),
+            "provider": "local",
+            "model": local_model_name,
+            "dimensions": dimensions,
+            "normalize": normalize,
+            "batch_size": batch_size,
+            "device": device,
+            "extra": extra,
         }
-    
+
+    provider = str(model_key).split(":", 1)[0] if ":" in str(model_key) else "openai"
+    dimensions = emb_cfg.get("dimensions")
+    if dimensions is None:
+        try:
+            model_info = get_model_info(model_key=model_key)
+            dimensions = (getattr(model_info, "capabilities", {}) or {}).get("dimensions")
+        except Exception:
+            dimensions = None
+
     return {
-        "runtime": emb_cfg.get("runtime", "hosted"),
-        "provider": emb_cfg.get("provider", "openai"),
-        "model": emb_cfg.get("model", domain_cfg["embedding_model_key"]),
-        "dimensions": emb_cfg.get("dimensions"),
-        "normalize": emb_cfg.get("normalize", True),
-        "batch_size": emb_cfg.get("batch_size", 32),
-        "device": emb_cfg.get("device"),
-        "extra": emb_cfg.get("extra") if isinstance(emb_cfg.get("extra"), dict) else {},
+        "runtime": "hosted",
+        "provider": provider,
+        "model": model_key,
+        "dimensions": dimensions,
+        "normalize": normalize,
+        "batch_size": batch_size,
+        "device": device,
+        "extra": extra,
     }
 
 
@@ -497,7 +526,7 @@ async def get_available_domains():
     
     # Add domains from retrieval config YAML
     try:
-        config_path = str(getattr(settings, "retrieval_config_path", "prompts/retrieval_registry.yaml") or "").strip()
+        config_path = str(getattr(settings, "retrieval_config_path", "prompts/local_models_registry.yaml") or "").strip()
         if config_path:
             cfg = _read_yaml(config_path)
             if isinstance(cfg, dict):

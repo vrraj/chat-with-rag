@@ -47,7 +47,7 @@ def clear_retrieval_config_cache() -> None:
 
 
 def resolve_retrieval_specs(*, domain: str | None, config_path: str | None = None) -> Dict[str, Dict[str, Any]]:
-    path = str(config_path or getattr(settings, "retrieval_config_path", "prompts/retrieval_registry.yaml") or "").strip()
+    path = str(config_path or getattr(settings, "retrieval_config_path", "prompts/local_models_registry.yaml") or "").strip()
     cfg = _read_yaml(path)
 
     retrieval_cfg = cfg.get("retrieval") if isinstance(cfg, dict) else {}
