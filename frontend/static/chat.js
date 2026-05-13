@@ -1408,6 +1408,18 @@
               el.value = String(cfg[cfgKey]);
             }
           });
+
+          // Keep chat domain selector aligned with backend runtime active_domain.
+          try {
+            const domainEl = document.getElementById('active_domain');
+            const backendDomain = String(cfg.active_domain || '').trim();
+            if (domainEl && backendDomain) {
+              domainEl.value = backendDomain;
+              try { localStorage.setItem('active_domain', backendDomain); } catch (_) {}
+            }
+          } catch (e) {
+            console.debug('Failed to sync active_domain from backend config', e);
+          }
         }
       } catch (err) {
         // silently ignore if /api/config isn't available or fails

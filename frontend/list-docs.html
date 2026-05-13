@@ -117,29 +117,19 @@
       }
     }
 
-    const initialDomain = getActiveDomain();
-    if (activeDomainSelect) {
-      activeDomainSelect.value = initialDomain || '';
-      activeDomainSelect.addEventListener('change', () => {
-        setActiveDomain(activeDomainSelect.value);
-      });
-    }
-
-    // Dynamically populate domain dropdown
-    async function populateDomainDropdown() {
+    async function initDomainContext() {
+      if (!activeDomainSelect) return;
       try {
-        const resp = await fetch('/api/domains');
-        if (!resp.ok) throw new Error('Failed to fetch domains');
-        const data = await resp.json();
-        const domains = data.domains || [];
-        
-        // Clear existing options except the first (default)
+        const resp = await fetch('/api/ui/runtime-context');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const ctx = await resp.json();
+        const domains = Array.isArray(ctx.domains) ? ctx.domains : [];
+
         while (activeDomainSelect.options.length > 1) {
           activeDomainSelect.remove(1);
         }
-        
-        // Add dynamic options
-        domains.forEach(domain => {
+
+        domains.forEach((domain) => {
           if (domain && domain !== 'default') {
             const option = document.createElement('option');
             option.value = domain;
@@ -147,21 +137,24 @@
             activeDomainSelect.appendChild(option);
           }
         });
+
+        const backendDomain = String(ctx.active_domain || '').trim();
+        const localDomain = getActiveDomain();
+        const selected = backendDomain || localDomain || '';
+        activeDomainSelect.value = selected;
+        setActiveDomain(selected);
       } catch (error) {
-        console.warn('Failed to load domains from API, using fallback options:', error);
-        // Fallback to hardcoded options
-        const fallbackDomains = ['mountains', 'oceans', 'finance'];
-        fallbackDomains.forEach(domain => {
-          const option = document.createElement('option');
-          option.value = domain;
-          option.textContent = domain;
-          activeDomainSelect.appendChild(option);
-        });
+        const initialDomain = getActiveDomain();
+        activeDomainSelect.value = initialDomain || '';
+        console.warn('Failed to initialize runtime domain context:', error);
       }
+
+      activeDomainSelect.addEventListener('change', () => {
+        setActiveDomain(activeDomainSelect.value);
+      });
     }
 
-    // Populate dropdown on page load
-    populateDomainDropdown();
+    initDomainContext();
 
     function pickPrimaryArray(data) {
       if (!data) return [];

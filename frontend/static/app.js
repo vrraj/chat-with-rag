@@ -83,10 +83,11 @@ async function populateDomainDropdown() {
     if (!activeDomainSelect) return;
 
     try {
-        const resp = await fetch('/api/domains');
-        if (!resp.ok) throw new Error('Failed to fetch domains');
+        const resp = await fetch('/api/ui/runtime-context');
+        if (!resp.ok) throw new Error('Failed to fetch runtime context');
         const data = await resp.json();
-        const domains = data.domains || [];
+        const domains = Array.isArray(data.domains) ? data.domains : [];
+        const backendDomain = String(data.active_domain || '').trim();
 
         // Clear existing options except the first (default)
         while (activeDomainSelect.options.length > 1) {
@@ -103,13 +104,18 @@ async function populateDomainDropdown() {
             }
         });
 
-        // Set initial value from localStorage
-        const currentDomain = getActiveDomain();
+        // Set initial value from backend runtime domain, then local fallback.
+        const currentDomain = backendDomain || getActiveDomain();
         if (currentDomain) {
             activeDomainSelect.value = currentDomain;
+            try {
+                localStorage.setItem('active_domain', currentDomain);
+            } catch (error) {
+                console.debug('Failed to persist active_domain', error);
+            }
         }
     } catch (error) {
-        console.warn('Failed to load domains from API, using fallback options:', error);
+        console.warn('Failed to load runtime domain context, using fallback options:', error);
         // Fallback to hardcoded options
         const fallbackDomains = ['mountains', 'finance'];
         fallbackDomains.forEach(domain => {

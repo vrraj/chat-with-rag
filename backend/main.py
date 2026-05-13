@@ -563,6 +563,26 @@ async def get_available_domains():
 
 
 @app.get(
+    "/api/ui/runtime-context",
+    tags=["1. UI Pages"],
+    summary="Get shared UI runtime context",
+)
+async def get_ui_runtime_context():
+    """Return runtime context shared by frontend screens.
+
+    Includes active_domain and available domains so pages can initialize
+    consistently from a single source of truth.
+    """
+    domains_data = await get_available_domains()
+    domains = domains_data.get("domains") if isinstance(domains_data, dict) else []
+    active_domain = str(getattr(settings, "active_domain", "") or "").strip()
+    return {
+        "active_domain": active_domain,
+        "domains": domains if isinstance(domains, list) else [],
+    }
+
+
+@app.get(
     "/list-docs-data",
     tags=["1. UI Pages"],
     summary="4. List Documents Data (JSON)",
@@ -1998,6 +2018,12 @@ class DomainEmbeddingConfigUpdateRequest(BaseModel):
     registry: Dict[str, Any]
 
 
+class ActiveDomainUpdateRequest(BaseModel):
+    """Request model for setting active domain at runtime."""
+
+    active_domain: str
+
+
 def _prompt_registry_path() -> Path:
     """Resolve configured prompt registry path to absolute path."""
     raw_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip() or "prompts/prompt_registry.yaml"
@@ -2433,6 +2459,35 @@ async def update_domain_embedding_config(payload: DomainEmbeddingConfigUpdateReq
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write domain embedding config: {e}")
+
+
+@app.put(
+    "/api/domain-embedding-config/active-domain",
+    tags=["5. Debug"],
+    summary="Set active domain",
+)
+async def set_active_domain(payload: ActiveDomainUpdateRequest, request: Request):
+    """Set settings.active_domain at runtime after validation."""
+    enforce_origin_host(request)
+
+    requested = str(payload.active_domain or "").strip()
+    if not requested:
+        raise HTTPException(status_code=400, detail="active_domain is required")
+
+    available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+    if requested not in available_domains:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Domain '{requested}' not found. Available: {sorted(list(available_domains.keys()))}",
+        )
+
+    settings.active_domain = requested
+    return {
+        "ok": True,
+        "active_domain": settings.active_domain,
+        "domains": sorted(list(available_domains.keys())),
+        "message": "Active domain updated for runtime requests.",
+    }
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():

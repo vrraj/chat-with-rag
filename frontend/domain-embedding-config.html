@@ -26,6 +26,11 @@
         Edit the JSON object under <code>domains</code>. Validation is enforced on save for
         <code>model_type</code>, <code>vector_type</code>, and <code>search_mode</code>.
       </p>
+      <div class="mt-3 flex items-center gap-2 flex-wrap">
+        <label for="activeDomainSelect" class="text-sm font-medium text-gray-700">Active Domain</label>
+        <select id="activeDomainSelect" class="rounded border-gray-300 text-sm"></select>
+        <button id="applyActiveDomainBtn" class="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">Apply</button>
+      </div>
       <p id="activeDomainMeta" class="text-xs text-gray-500 mt-2"></p>
     </div>
 
