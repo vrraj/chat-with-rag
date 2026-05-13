@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 import uuid
 import logging
 import time
+import os
 from backend.core.config import settings
 from backend.db.qdrant_client import QdrantStorage
 from backend.extractor.splitters import TextSplitter
@@ -101,6 +102,9 @@ class EmbeddingsManager:
         dense_config = get_model_config("dense")
         
         # Create embedding spec for dense
+        cache_dir = os.path.expandvars(os.path.expanduser(
+            os.getenv("FASTEMBED_CACHE_PATH", dense_config.get("cache_dir", "~/models/fastembed_cache"))
+        ))
         spec = EmbeddingSpec(
             task="retrieval",
             runtime="fastembed",
@@ -109,7 +113,7 @@ class EmbeddingsManager:
             dimensions=dense_config.get("dimensions"),
             batch_size=32,
             device=dense_config.get("device"),
-            extra={"cache_dir": dense_config.get("cache_dir", "~/models/fastembed_cache")},
+            extra={"cache_dir": cache_dir},
             vector_type="dense"
         )
         
@@ -137,6 +141,9 @@ class EmbeddingsManager:
         sparse_config = get_model_config("sparse")
         
         # Create embedding spec for sparse
+        cache_dir = os.path.expandvars(os.path.expanduser(
+            os.getenv("FASTEMBED_CACHE_PATH", sparse_config.get("cache_dir", "~/models/fastembed_cache"))
+        ))
         spec = EmbeddingSpec(
             task="retrieval",
             runtime="fastembed",
@@ -145,7 +152,7 @@ class EmbeddingsManager:
             dimensions=None,  # Sparse embeddings don't have fixed dimensions
             batch_size=32,
             device=sparse_config.get("device"),
-            extra={"cache_dir": sparse_config.get("cache_dir", "~/models/fastembed_cache")},
+            extra={"cache_dir": cache_dir},
             vector_type="sparse"
         )
         

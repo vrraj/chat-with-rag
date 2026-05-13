@@ -10,12 +10,16 @@ class FastEmbedEmbeddingProvider:
 
     def _get_model(self, spec: EmbeddingSpec):
         from fastembed import TextEmbedding
+        import os
 
         key = f"{spec.model}:{spec.device or 'default'}"
         if key not in self._models:
             kwargs = {}
             if spec.extra:
                 kwargs.update(spec.extra)
+                # Expand cache_dir path if present
+                if "cache_dir" in kwargs:
+                    kwargs["cache_dir"] = os.path.expandvars(os.path.expanduser(kwargs["cache_dir"]))
 
             self._models[key] = TextEmbedding(
                 model_name=spec.model,
@@ -26,12 +30,16 @@ class FastEmbedEmbeddingProvider:
 
     def _get_sparse_model(self, spec: EmbeddingSpec):
         from fastembed import SparseTextEmbedding
+        import os
 
         key = f"{spec.model}:{spec.device or 'default'}"
         if key not in self._sparse_models:
             kwargs = {}
             if spec.extra:
                 kwargs.update(spec.extra)
+                # Expand cache_dir path if present
+                if "cache_dir" in kwargs:
+                    kwargs["cache_dir"] = os.path.expandvars(os.path.expanduser(kwargs["cache_dir"]))
 
             self._sparse_models[key] = SparseTextEmbedding(
                 model_name=spec.model,
