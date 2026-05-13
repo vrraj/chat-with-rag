@@ -266,16 +266,18 @@ def _index_chunks_with_retrieval(
                     pass
             
             # Build payload
+            chunk_url = chunk.get("url", "")
+            chunk_base_url = chunk.get("base_url", _strip_fragment_url(chunk_url))
             payload = {
                 "text": text,
                 "chunk_index": idx,
                 "total_chunks": len(chunks),
-                "url": chunk.get("url", ""),
-                "url_lower": (chunk.get("url", "") or "").lower(),
-                "base_url": chunk.get("base_url", chunk.get("url", "")),
-                "base_url_lower": (chunk.get("base_url", chunk.get("url", "")) or "").lower(),
+                "url": chunk_url,
+                "url_lower": (chunk_url or "").lower(),
+                "base_url": chunk_base_url,
+                "base_url_lower": (chunk_base_url or "").lower(),
                 "document_type": chunk.get("document_type", "mediawiki"),
-                "source": chunk.get("url", ""),
+                "source": chunk_url,
                 "title": chunk.get("title", ""),
                 "section": chunk.get("section", "Lead"),
                 "subsection": chunk.get("subsection"),
