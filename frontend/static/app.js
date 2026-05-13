@@ -210,6 +210,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const openDeleteIndexBtn = document.getElementById('openDeleteIndexBtn');
     const openPromptRegistryBtn = document.getElementById('openPromptRegistryBtn');
     const openToolRegistryBtn = document.getElementById('openToolRegistryBtn');
+    const openDomainEmbeddingConfigBtn = document.getElementById('openDomainEmbeddingConfigBtn');
     const openProcessBatchBtn = document.getElementById('openProcessBatchBtn');
     
     try {
@@ -500,6 +501,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     openDeleteIndexBtn && openDeleteIndexBtn.addEventListener('click', () => window.open('/delete_index', '_blank'));
     openPromptRegistryBtn && openPromptRegistryBtn.addEventListener('click', () => window.open('/prompt-registry', '_blank'));
     openToolRegistryBtn && openToolRegistryBtn.addEventListener('click', () => window.open('/tool-registry', '_blank'));
+    openDomainEmbeddingConfigBtn && openDomainEmbeddingConfigBtn.addEventListener('click', () => window.open('/domain-embedding-config', '_blank'));
     openListDocsBtn && openListDocsBtn.addEventListener('click', () => window.open('/list-docs.html', '_blank'));
     openChatBtn && openChatBtn.addEventListener('click', () => window.open('/chat.html', '_blank'));
     

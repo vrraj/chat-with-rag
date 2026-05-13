@@ -1,9 +1,93 @@
 """Configuration settings for the application."""
 
-from typing import Any, ClassVar, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
+import warnings
+
+import yaml
 
 from pydantic import BaseModel, field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+
+def _default_domain_embedding_config() -> Dict[str, Dict[str, Any]]:
+    return {
+        "default": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small",
+            "model_type": "hosted",
+            "vector_type": None,
+            "search_mode": "dense",
+        },
+        "mountains": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small",
+            "model_type": "hosted",
+            "vector_type": None,
+            "search_mode": "dense",
+        },
+        "oceans": {
+            "collection_name": "document_index_gemini",
+            "embedding_model_key": "gemini:native-embed",
+            "model_type": "hosted",
+            "vector_type": None,
+            "search_mode": "dense",
+        },
+        "finance": {
+            "collection_name": "document_index_finance",
+            "embedding_model_key": "local:dense_default",
+            "model_type": "local",
+            "vector_type": "hybrid",
+            "search_mode": "hybrid",
+        },
+    }
+
+
+class DomainEmbeddingEntry(BaseModel):
+    collection_name: str
+    embedding_model_key: str
+    model_type: Literal["hosted", "local"]
+    vector_type: Optional[Literal["dense", "hybrid"]] = None
+    search_mode: Literal["dense", "hybrid", "sparse"]
+
+    @model_validator(mode="after")
+    def validate_vector_search_mode(self):
+        if self.vector_type == "hybrid" and self.search_mode != "hybrid":
+            raise ValueError("search_mode must be 'hybrid' when vector_type is 'hybrid'")
+        return self
+
+
+class DomainEmbeddingConfigModel(BaseModel):
+    domains: Dict[str, DomainEmbeddingEntry]
+
+
+def _load_domain_embedding_config(
+    path: str,
+    fallback: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    p = Path(str(path or "").strip())
+    if not p.exists():
+        warnings.warn(
+            f"Domain embedding config not found at '{p}'. Using in-code defaults.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return fallback
+
+    try:
+        raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        candidate = raw.get("domains") if isinstance(raw, dict) and isinstance(raw.get("domains"), dict) else raw
+        if not isinstance(candidate, dict):
+            raise ValueError("YAML root must be a mapping or include a 'domains' mapping")
+        validated = DomainEmbeddingConfigModel(domains=candidate)
+        return {k: v.model_dump() for k, v in validated.domains.items()}
+    except Exception as exc:
+        warnings.warn(
+            f"Invalid domain embedding config at '{p}': {exc}. Using in-code defaults.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return fallback
 
 
 # -----------------------------------------------------------------------------
@@ -181,39 +265,23 @@ class Settings(BaseSettings):
     #
     # Recommendation: Keep existing collections at their current vector_type. Only use "dense" or "hybrid"
     # for new collections or after migrating data to named vector format.
-    DOMAIN_EMBEDDING_CONFIG: ClassVar[Dict[str, Dict[str, str]]] = {
-        "default": {
-            "collection_name": "document_index",
-            "embedding_model_key": "openai:embed_small",
-            "model_type": "hosted",
-            "vector_type": None,
-            "search_mode": "dense",
-        },
-        "mountains": {
-            "collection_name": "document_index",
-            "embedding_model_key": "openai:embed_small",
-            "model_type": "hosted",
-            "vector_type": None,
-            "search_mode": "dense",
-        },
-        "oceans": {
-            "collection_name": "document_index_gemini",
-            "embedding_model_key": "gemini:native-embed",
-            "model_type": "hosted",
-            "vector_type": None,
-            "search_mode": "dense",
-        },
-        "finance": {
-            "collection_name": "document_index_finance",
-            "embedding_model_key": "local:dense_default",
-            "model_type": "local",
-            "vector_type": "hybrid",
-            "search_mode": "hybrid",
-        }
-    }
+    domain_embedding_config_path: str = "prompts/domain_embedding_config.yaml"
+    DOMAIN_EMBEDDING_CONFIG: Dict[str, Dict[str, Any]] = _default_domain_embedding_config()
     
     # Active domain selection. Sets the collection_name and embedding_model_key
     active_domain: str = "mountains"
+
+    @model_validator(mode="after")
+    def load_and_validate_domain_embedding_config(self):
+        fallback = _default_domain_embedding_config()
+        loaded = _load_domain_embedding_config(self.domain_embedding_config_path, fallback)
+        validated = DomainEmbeddingConfigModel(domains=loaded)
+        self.DOMAIN_EMBEDDING_CONFIG = {k: v.model_dump() for k, v in validated.domains.items()}
+        if self.active_domain not in self.DOMAIN_EMBEDDING_CONFIG:
+            raise ValueError(
+                f"active_domain '{self.active_domain}' is not present in DOMAIN_EMBEDDING_CONFIG"
+            )
+        return self
 
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)

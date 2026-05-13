@@ -40,6 +40,7 @@ from backend.chat.prompt_registry import clear_prompt_registry_cache
 from backend.chat.chat_manager import clear_tool_registry_cache
 from backend.retrieval.eval_schemas import RetrievalEvalRequest, RetrievalEvalResponse
 from backend.retrieval.retrieval_eval_service import RetrievalEvalService
+from backend.core.config import DomainEmbeddingConfigModel
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
 from backend.llm.llm_client import generate, embed, get_pricing_for_model
@@ -1991,9 +1992,25 @@ class ToolRegistryUpdateRequest(BaseModel):
     registry: Dict[str, Any]
 
 
+class DomainEmbeddingConfigUpdateRequest(BaseModel):
+    """Request model for writing domain embedding config YAML."""
+
+    registry: Dict[str, Any]
+
+
 def _prompt_registry_path() -> Path:
     """Resolve configured prompt registry path to absolute path."""
     raw_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip() or "prompts/prompt_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / candidate
+
+
+def _domain_embedding_config_path() -> Path:
+    """Resolve domain embedding config path to absolute path."""
+    raw_path = str(getattr(settings, "domain_embedding_config_path", "") or "").strip() or "prompts/domain_embedding_config.yaml"
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return candidate
@@ -2127,6 +2144,32 @@ def _validate_tool_registry_shape(registry: Dict[str, Any]) -> None:
                         status_code=400,
                         detail=f"tools[{idx}].artifact.{key} is required when produces_artifact=true",
                     )
+
+
+def _validate_domain_embedding_registry_shape(registry: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize domain embedding config payload."""
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=400, detail="Registry must be a JSON object")
+
+    candidate = registry.get("domains") if isinstance(registry.get("domains"), dict) else registry
+    if not isinstance(candidate, dict):
+        raise HTTPException(status_code=400, detail="Expected object or object with 'domains' mapping")
+
+    try:
+        validated = DomainEmbeddingConfigModel(domains=candidate)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid domain embedding config: {exc}")
+
+    normalized = {k: v.model_dump() for k, v in validated.domains.items()}
+
+    active_domain = str(getattr(settings, "active_domain", "") or "").strip()
+    if active_domain and active_domain not in normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"active_domain '{active_domain}' is not present in domains",
+        )
+
+    return {"domains": normalized}
 
 
 @app.get(
@@ -2309,6 +2352,87 @@ async def tool_registry_page():
     """Serve the tool-registry HTML page for editing tool artifact metadata."""
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "tool-registry.html"))
+
+
+@app.get(
+    "/domain-embedding-config",
+    tags=["1. UI Pages"],
+    summary="9. Domain Embedding Config editor (HTML)",
+    response_class=HTMLResponse,
+)
+async def domain_embedding_config_page():
+    """Serve the domain embedding config editor page."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "domain-embedding-config.html"))
+
+
+@app.get(
+    "/api/domain-embedding-config",
+    tags=["5. Debug"],
+    summary="Get domain embedding config YAML",
+)
+async def get_domain_embedding_config():
+    """Return parsed domain embedding config YAML for UI editing."""
+    path = _domain_embedding_config_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Domain embedding config not found at {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            registry = yaml.safe_load(f) or {}
+
+        candidate = registry.get("domains") if isinstance(registry.get("domains"), dict) else registry
+        domains = sorted(list(candidate.keys())) if isinstance(candidate, dict) else []
+
+        return {
+            "registry_path": str(path),
+            "registry": registry,
+            "domains": domains,
+            "active_domain": str(getattr(settings, "active_domain", "") or ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read domain embedding config: {e}")
+
+
+@app.put(
+    "/api/domain-embedding-config",
+    tags=["5. Debug"],
+    summary="Update domain embedding config YAML",
+)
+async def update_domain_embedding_config(payload: DomainEmbeddingConfigUpdateRequest, request: Request):
+    """Validate and write domain embedding config YAML from editor UI."""
+    enforce_origin_host(request)
+    registry = payload.registry or {}
+    normalized = _validate_domain_embedding_registry_shape(registry)
+
+    path = _domain_embedding_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak")
+
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                previous = f.read()
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(previous)
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(normalized, f, sort_keys=False, allow_unicode=True)
+
+        settings.DOMAIN_EMBEDDING_CONFIG = normalized.get("domains", {})
+
+        return {
+            "ok": True,
+            "registry_path": str(path),
+            "backup_path": str(backup_path) if backup_path.exists() else None,
+            "domains": sorted(list(settings.DOMAIN_EMBEDDING_CONFIG.keys())),
+            "message": "Domain embedding config updated. Restart service to ensure all components pick up new settings.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write domain embedding config: {e}")
 
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():
