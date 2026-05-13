@@ -173,6 +173,47 @@ class QdrantDB:
         """
         try:
             model_key = self.embedding_model_key
+
+            if ":" not in str(model_key):
+                import os
+                from backend.retrieval.embedding_router import EmbeddingRouter
+                from backend.retrieval.schemas import EmbeddingSpec
+                from backend.retrieval.config_loader import get_model_config
+
+                dense_config = {}
+                try:
+                    dense_config = get_model_config("dense")
+                except Exception:
+                    dense_config = {}
+
+                cache_dir = os.getenv("FASTEMBED_CACHE_PATH", dense_config.get("cache_dir", ""))
+                cache_dir = os.path.expandvars(os.path.expanduser(str(cache_dir))) if cache_dir else None
+
+                try:
+                    dims = int(dense_config.get("dimensions")) if dense_config.get("dimensions") is not None else None
+                except Exception:
+                    dims = None
+
+                spec = EmbeddingSpec(
+                    task="embedding",
+                    runtime="fastembed",
+                    provider="local",
+                    model=str(model_key),
+                    dimensions=dims,
+                    normalize=True,
+                    batch_size=32,
+                    device=dense_config.get("device"),
+                    extra={"cache_dir": cache_dir} if cache_dir else {},
+                    vector_type="dense",
+                )
+
+                embedding_result = EmbeddingRouter().embed([text], spec)
+                vectors = embedding_result.vectors or []
+                if not vectors:
+                    raise ValueError("No embedding vectors returned from FastEmbed provider")
+                self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}
+                return vectors[0]
+
             provider = str(model_key).split(":", 1)[0].lower()
 
             kwargs: Dict[str, Any] = {
