@@ -147,8 +147,7 @@ class RetrievalEvalService:
         *,
         query: str,
         retrieval_results: List[Dict[str, Any]],
-        colbert_score_threshold: float,
-        max_items_for_cross_encoder: int,
+        colbert_top_n: int,
     ) -> Dict[str, Any]:
         model_cfg = get_model_config("late_interaction")
 
@@ -185,14 +184,15 @@ class RetrievalEvalService:
             )
 
         scored.sort(key=lambda x: x["colbert_score"], reverse=True)
-        limited_for_rerank = scored[: max(1, int(max_items_for_cross_encoder))]
+        top_n = max(1, int(colbert_top_n))
+        limited_for_rerank = scored[:top_n]
 
         return {
             "all_scored": scored,
             "for_rerank": limited_for_rerank,
             "model": model_name,
-            "threshold": None,
-            "count_after_threshold": len(scored),
+            "top_n": top_n,
+            "count_after_top_n": len(limited_for_rerank),
         }
 
     def rerank_with_cross_encoder(
@@ -247,9 +247,9 @@ class RetrievalEvalService:
         with_payload: bool,
         exact: bool,
         use_colbert: bool,
-        colbert_score_threshold: float,
-        max_items_for_cross_encoder: int,
-        reranked_top_n: int,
+        colbert_top_n: int,
+        enable_cross_encoder_rerank: bool,
+        cross_encoder_top_n: int,
     ) -> Dict[str, Any]:
         retrieval = self.retrieve(
             query=query,
@@ -269,16 +269,31 @@ class RetrievalEvalService:
             colbert_results = self.score_with_colbert(
                 query=query,
                 retrieval_results=retrieval_results,
-                colbert_score_threshold=colbert_score_threshold,
-                max_items_for_cross_encoder=max_items_for_cross_encoder,
+                colbert_top_n=colbert_top_n,
             )
             rerank_source_items = [x["item"] for x in colbert_results["for_rerank"]]
 
-        reranked = self.rerank_with_cross_encoder(
-            query=query,
-            items=rerank_source_items,
-            reranked_top_n=reranked_top_n,
-        )
+        if enable_cross_encoder_rerank:
+            reranked = self.rerank_with_cross_encoder(
+                query=query,
+                items=rerank_source_items,
+                reranked_top_n=cross_encoder_top_n,
+            )
+        else:
+            passthrough_top_n = max(1, int(cross_encoder_top_n))
+            reranked = {
+                "items": [
+                    {
+                        "original_index": idx,
+                        "cross_encoder_score": None,
+                        "item": row,
+                    }
+                    for idx, row in enumerate(rerank_source_items[:passthrough_top_n])
+                ],
+                "model": None,
+                "requested_top_n": passthrough_top_n,
+                "cross_encoder_enabled": False,
+            }
 
         return {
             "domain": {

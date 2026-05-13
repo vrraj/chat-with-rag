@@ -14,6 +14,12 @@ class RetrievalEvalRequest(BaseModel):
     with_payload: bool = True
 
     use_colbert: bool = False
+    colbert_top_n: int = 8
+
+    enable_cross_encoder_rerank: bool = True
+    cross_encoder_top_n: int = 5
+
+    # Backward-compat fields still accepted if older frontend sends them.
     colbert_score_threshold: float = 0.0
     max_items_for_cross_encoder: int = 8
     reranked_top_n: int = 5

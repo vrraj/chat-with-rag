@@ -79,9 +79,9 @@ document.addEventListener('DOMContentLoaded', () => {
       with_payload: !!document.getElementById('withPayload').checked,
       exact: !!document.getElementById('exact').checked,
       use_colbert: !!document.getElementById('useColbert').checked,
-      colbert_score_threshold: Number(document.getElementById('colbertScoreThreshold').value || 0.0),
-      max_items_for_cross_encoder: Number(document.getElementById('maxItemsForCrossEncoder').value || 8),
-      reranked_top_n: Number(document.getElementById('rerankedTopN').value || 5),
+      colbert_top_n: Number(document.getElementById('colbertTopN').value || 8),
+      enable_cross_encoder_rerank: !!document.getElementById('enableCrossEncoderRerank').checked,
+      cross_encoder_top_n: Number(document.getElementById('crossEncoderTopN').value || 5),
     };
 
     payloadPreview.textContent = JSON.stringify(payload, null, 2);
@@ -108,8 +108,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const colbert = data.colbert;
       if (colbert) {
         const rows = Array.isArray(colbert.all_scored) ? colbert.all_scored : [];
-        colbertMeta.textContent = `Model: ${colbert.model || 'n/a'} | Threshold: ${colbert.threshold ?? 'n/a'} | After threshold: ${colbert.count_after_threshold ?? rows.length}`;
-        colbertResults.innerHTML = rows.map((row) => card(row.item, 'colbert score', row.colbert_score)).join('') || '<div class="text-sm text-gray-500">No ColBERT results above threshold</div>';
+        colbertMeta.textContent = `Model: ${colbert.model || 'n/a'} | Top-N: ${colbert.top_n ?? 'n/a'} | Returned: ${colbert.count_after_top_n ?? rows.length}`;
+        colbertResults.innerHTML = rows.map((row) => card(row.item, 'colbert score', row.colbert_score)).join('') || '<div class="text-sm text-gray-500">No ColBERT results</div>';
       } else {
         colbertMeta.textContent = 'ColBERT disabled';
         colbertResults.innerHTML = '<div class="text-sm text-gray-500">Enable ColBERT to view section.</div>';

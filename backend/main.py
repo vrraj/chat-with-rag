@@ -1553,6 +1553,16 @@ async def run_retrieval_evals(eval_request: RetrievalEvalRequest):
     """Run retrieval and reranking stages for evaluation/testing."""
     try:
         service = RetrievalEvalService(active_domain=eval_request.active_domain)
+        colbert_top_n = int(
+            eval_request.colbert_top_n
+            if getattr(eval_request, "colbert_top_n", None) is not None
+            else eval_request.max_items_for_cross_encoder
+        )
+        cross_encoder_top_n = int(
+            eval_request.cross_encoder_top_n
+            if getattr(eval_request, "cross_encoder_top_n", None) is not None
+            else eval_request.reranked_top_n
+        )
         result = service.run_pipeline(
             query=eval_request.query,
             search_mode=eval_request.search_mode,
@@ -1562,9 +1572,9 @@ async def run_retrieval_evals(eval_request: RetrievalEvalRequest):
             with_payload=eval_request.with_payload,
             exact=eval_request.exact,
             use_colbert=eval_request.use_colbert,
-            colbert_score_threshold=eval_request.colbert_score_threshold,
-            max_items_for_cross_encoder=eval_request.max_items_for_cross_encoder,
-            reranked_top_n=eval_request.reranked_top_n,
+            colbert_top_n=colbert_top_n,
+            enable_cross_encoder_rerank=eval_request.enable_cross_encoder_rerank,
+            cross_encoder_top_n=cross_encoder_top_n,
         )
         result["payload_echo"] = eval_request.model_dump()
         return result
