@@ -166,32 +166,49 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Domain → (collection_name, embedding_model_key, model_type, vector_type) mapping
     # Each domain has its own collection, embedding model, and vector storage type
+    #
     # model_type: "hosted" (llm-adapter) or "local" (FastEmbed via YAML config)
-    # vector_type: None (unnamed), "dense" (named dense), or "hybrid" (dense + sparse)
+    #
+    # vector_type: Controls how vectors are stored and accessed in Qdrant
+    #   - None (unnamed): Legacy format - vectors stored without names, accessed via default vector
+    #   - "dense" (named dense): Modern format - vectors stored under "dense" key, enables multi-vector support
+    #   - "hybrid" (dense + sparse): Stores both dense and sparse vectors for hybrid retrieval
+    #
+    # IMPORTANT: Changing vector_type from None to "dense" or "hybrid" requires collection recreation:
+    #   - Search operations have runtime detection (qdrant_db.py checks collection schema at runtime)
+    #   - Write operations (add_embeddings) do NOT have fallback - they strictly follow vector_type config
+    #   - If you change None -> "dense" without recreating the collection, writes will fail
+    #
+    # Recommendation: Keep existing collections at their current vector_type. Only use "dense" or "hybrid"
+    # for new collections or after migrating data to named vector format.
     DOMAIN_EMBEDDING_CONFIG: ClassVar[Dict[str, Dict[str, str]]] = {
         "default": {
             "collection_name": "document_index",
             "embedding_model_key": "openai:embed_small",
             "model_type": "hosted",
             "vector_type": None,
+            "search_mode": "dense",
         },
         "mountains": {
             "collection_name": "document_index",
             "embedding_model_key": "openai:embed_small",
             "model_type": "hosted",
             "vector_type": None,
+            "search_mode": "dense",
         },
         "oceans": {
             "collection_name": "document_index_gemini",
             "embedding_model_key": "gemini:native-embed",
             "model_type": "hosted",
             "vector_type": None,
+            "search_mode": "dense",
         },
         "finance": {
             "collection_name": "document_index_finance",
             "embedding_model_key": "local:dense_default",
             "model_type": "local",
             "vector_type": "hybrid",
+            "search_mode": "hybrid",
         }
     }
     

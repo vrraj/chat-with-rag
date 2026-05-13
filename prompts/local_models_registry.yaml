@@ -41,13 +41,14 @@ retrieval:
       rerank:
         task: rerank
         enabled: true
-        runtime: llm
-        provider: openai
-        model: openai:gpt-4o-mini
+        runtime: fastembed
+        provider: local
+        model: BAAI/bge-reranker-base
         top_n: 5
         batch_size: 16
-        device: null
-        extra: {}
+        device: cpu
+        extra:
+          cache_dir: "/Users/raj/models/fastembed_cache"
 
 # Local model specifications (for FastEmbed)
 # Used when provider is "local" in runtime config above

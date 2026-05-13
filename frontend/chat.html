@@ -26,23 +26,6 @@
         </div>
         <h2 class="section-title">Parameters</h2>
         <form id="params_form" autocomplete="off">
-          <!-- Retrieval group -->
-          <div class="group-box ux-11px collapsible-group" data-section="retrieval">
-            <button type="button" class="collapsible-header" aria-expanded="true" onclick="toggleCollapsible(this, event)">
-              <span class="subsection-title">Retrieval</span>
-              <span class="chevron" aria-hidden="true">▲</span>
-            </button>
-            <div class="collapsible-body">
-              <div class="form-field">
-                <label for="top_k">Top K</label>
-                <input id="top_k" type="number" min="1" step="1" value="10" />
-              </div>
-              <div class="form-field">
-                <label for="score_threshold">Score Threshold</label>
-                <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
-              </div>
-            </div>
-          </div>
           <!-- Query Rewrite group -->
           <div class="group-box ux-11px collapsible-group is-collapsed" id="query_rewrite_section" style="position:relative;">
             <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
@@ -84,6 +67,23 @@
               <div class="form-field">
                 <label for="summarizer_max_input_tokens">Summarizer Max Input Tokens</label>
                 <input id="summarizer_max_input_tokens" type="number" min="0" step="1" />
+              </div>
+            </div>
+          </div>
+          <!-- Retrieval group -->
+          <div class="group-box ux-11px collapsible-group" data-section="retrieval">
+            <button type="button" class="collapsible-header" aria-expanded="true" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title">Retrieval</span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </button>
+            <div class="collapsible-body">
+              <div class="form-field">
+                <label for="top_k">Top K</label>
+                <input id="top_k" type="number" min="1" step="1" value="10" />
+              </div>
+              <div class="form-field">
+                <label for="score_threshold">Score Threshold</label>
+                <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
               </div>
             </div>
           </div>
