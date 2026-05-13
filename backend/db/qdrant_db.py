@@ -365,9 +365,8 @@ class QdrantDB:
         with_payload: bool = True,
         exact: Optional[bool] = True,
     ) -> List[Dict[str, Any]]:
-        """
-        Search for similar vectors in the collection
-        
+        """Dense-only search using direct query_points.
+
         Args:
             query: Query string to search for
             limit: Maximum number of results to return
@@ -376,7 +375,7 @@ class QdrantDB:
             with_vectors: Whether to include vectors in the response
             with_payload: Whether to include payload in the response
             exact: If True (default), use exact search; if False, allow approximate (HNSW) search.
-            
+
         Returns:
             List of search results with scores and payloads
         """
@@ -475,9 +474,9 @@ class QdrantDB:
         with_payload: bool = True,
         exact: Optional[bool] = True,
     ) -> List[Dict[str, Any]]:
-        """Hybrid search using dense + sparse vectors with fusion (RRF).
+        """Hybrid search using prefetch + RRF fusion on dense + sparse vectors.
 
-        Falls back to dense-only search when sparse vector capability is not available.
+        Falls back to dense when sparse vectors missing or fusion yields no hits.
         """
         try:
             caps = self._get_collection_vector_capabilities()
@@ -526,12 +525,14 @@ class QdrantDB:
                 params=search_params,
             )
 
+            # Do not apply dense-style score_threshold to RRF fusion scores.
+            # Hybrid confidence is controlled by prefetch limits + final limit;
+            # optional thresholding should happen after reranking, if needed.
             response = self.client.query_points(
                 collection_name=self.collection_name,
                 prefetch=[prefetch_dense, prefetch_sparse],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
                 limit=limit,
-                score_threshold=score_threshold,
                 with_payload=with_payload,
             )
             search_results = response.points
@@ -569,9 +570,9 @@ class QdrantDB:
         with_payload: bool = True,
         exact: Optional[bool] = True,
     ) -> List[Dict[str, Any]]:
-        """Sparse-only search.
+        """Sparse-only search using direct query_points.
 
-        Falls back to dense-only search when sparse vector capability is not available.
+        Falls back to dense when sparse vectors missing.
         """
         try:
             caps = self._get_collection_vector_capabilities()

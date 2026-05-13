@@ -175,8 +175,6 @@ class RetrievalEvalService:
             sim_matrix = np.dot(query_embedding, doc_matrix.T)
             max_sim_per_query_token = np.max(sim_matrix, axis=1)
             score = float(np.sum(max_sim_per_query_token))
-            if score < colbert_score_threshold:
-                continue
 
             scored.append(
                 {
@@ -193,7 +191,7 @@ class RetrievalEvalService:
             "all_scored": scored,
             "for_rerank": limited_for_rerank,
             "model": model_name,
-            "threshold": colbert_score_threshold,
+            "threshold": None,
             "count_after_threshold": len(scored),
         }
 
