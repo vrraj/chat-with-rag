@@ -42,11 +42,23 @@ class QdrantDB:
                     self.client.create_collection(
                         collection_name=collection_name,
                         vectors_config={
-                            "dense": VectorParams(size=vector_size, distance=Distance.COSINE, on_disk=True)
+                            "dense": VectorParams(
+                                size=vector_size,
+                                distance=Distance.COSINE,
+                                on_disk=True,
+                                hnsw_config=models.HnswConfigDiff(
+                                    m=16,
+                                    ef_construct=100,
+                                    full_scan_threshold=10000,
+                                )
+                            )
                         },
                         sparse_vectors_config={
                             "sparse": models.SparseVectorParams(
-                                index=models.SparseIndexParams(on_disk=True)
+                                index=models.SparseIndexParams(
+                                    on_disk=True,
+                                    full_scan_threshold=10000,
+                                )
                             )
                         }
                     )
@@ -56,7 +68,16 @@ class QdrantDB:
                     self.client.create_collection(
                         collection_name=collection_name,
                         vectors_config={
-                            "dense": VectorParams(size=vector_size, distance=Distance.COSINE, on_disk=True)
+                            "dense": VectorParams(
+                                size=vector_size,
+                                distance=Distance.COSINE,
+                                on_disk=True,
+                                hnsw_config=models.HnswConfigDiff(
+                                    m=16,
+                                    ef_construct=100,
+                                    full_scan_threshold=10000,
+                                )
+                            )
                         }
                     )
                     logger.info("Created collection %s with named dense vector (%d)", collection_name, vector_size)
@@ -64,7 +85,15 @@ class QdrantDB:
                     # Create collection with unnamed vector (existing behavior)
                     self.client.create_collection(
                         collection_name=collection_name,
-                        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+                        vectors_config=VectorParams(
+                            size=vector_size,
+                            distance=Distance.COSINE,
+                            hnsw_config=models.HnswConfigDiff(
+                                m=16,
+                                ef_construct=100,
+                                full_scan_threshold=10000,
+                            )
+                        ),
                     )
                     logger.info("Created collection %s with unnamed vector (%d)", collection_name, vector_size)
             except Exception as e:
@@ -454,6 +483,9 @@ class QdrantDB:
         # Removed commented-out print lines for cleanliness.
         
         try:
+            import time
+            start_total = time.time()
+            
             # Generate embedding for the query
             logger.debug(
                 "Generating embeddings for query (truncated): %s",
@@ -461,8 +493,11 @@ class QdrantDB:
                 if (getattr(settings, "debug_verbose", False) and len(query) > getattr(settings, "debug_log_truncate_chars", 500))
                 else query
             )
+            start_embed = time.time()
             query_embedding = self.generate_embeddings(query)
             query_embedding = self._coerce_dense_vector(query_embedding)
+            embed_time = time.time() - start_embed
+            logger.info("[TIMING] Embedding generation took %.3f seconds", embed_time)
 
             # Convert simple dict to Qdrant Filter if provided
             qdrant_filter = self._build_filter(query_filter)
@@ -488,6 +523,7 @@ class QdrantDB:
             except Exception:
                 pass
 
+            start_search = time.time()
             if has_named_vectors:
                 response = self.client.query_points(
                     collection_name=self.collection_name,
@@ -511,6 +547,8 @@ class QdrantDB:
                     with_payload=with_payload,
                     search_params=search_params
                 )
+            search_time = time.time() - start_search
+            logger.info("[TIMING] Qdrant search took %.3f seconds", search_time)
             search_results = response.points
 
             logger.debug("Qdrant search returned %d results", len(search_results))

@@ -150,7 +150,7 @@
       } catch (error) {
         console.warn('Failed to load domains from API, using fallback options:', error);
         // Fallback to hardcoded options
-        const fallbackDomains = ['mountains', 'finance'];
+        const fallbackDomains = ['mountains', 'oceans', 'finance'];
         fallbackDomains.forEach(domain => {
           const option = document.createElement('option');
           option.value = domain;

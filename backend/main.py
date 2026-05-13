@@ -2393,7 +2393,7 @@ async def get_domain_config(domain: str):
         rerank_model_key = None
         try:
             from backend.retrieval.config_loader import get_model_config
-            retrieval_specs = get_model_config("rerank")
+            retrieval_specs = get_model_config("reranker")
             if retrieval_specs:
                 rerank_model_key = retrieval_specs.get("model_key")
         except Exception as e:

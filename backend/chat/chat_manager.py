@@ -3256,6 +3256,23 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 retrieval = retrieval_result.get("retrieval", {})
                 results = retrieval.get("results", [])
             
+            # Emit SSE events for ColBERT and Cross-Encoder stages
+            if _use_colbert and retrieval_result.get("colbert"):
+                try:
+                    logger.info("[PIPELINE] emit stage: ColBERT Late Interaction")
+                    if show_processing_steps:
+                        emit_stage(req_id, "ColBERT Late Interaction")
+                except Exception:
+                    pass
+            
+            if _enable_cross_encoder_rerank and retrieval_result.get("reranked"):
+                try:
+                    logger.info("[PIPELINE] emit stage: Cross Encoder Rerank")
+                    if show_processing_steps:
+                        emit_stage(req_id, "Cross Encoder Rerank")
+                except Exception:
+                    pass
+            
             # Skip reranking stage since we already did it in the service
             skip_rerank = True
         except Exception as e:

@@ -46,7 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       setDomainOptions(Array.isArray(data.domains) ? data.domains : []);
     } catch (_) {
-      setDomainOptions(['default', 'mountains', 'finance']);
+      setDomainOptions(['default', 'mountains', 'oceans', 'finance']);
     }
   }
 
