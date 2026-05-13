@@ -32,14 +32,7 @@ class QdrantDB:
         except Exception:
             logger.warning("Collection or alias %s not found. Creating collection %s…", collection_name, collection_name)
             try:
-                vector_size = int(settings.vector_size)
-                try:
-                    model_info = get_model_info(model_key=self.embedding_model_key)
-                    dims = (getattr(model_info, "capabilities", {}) or {}).get("dimensions") if model_info is not None else None
-                    if isinstance(dims, int) and dims > 0:
-                        vector_size = int(dims)
-                except Exception:
-                    pass
+                vector_size = self._get_expected_dense_vector_size()
                 
                 # Check vector type from domain config
                 vector_type = settings.vector_type
@@ -129,6 +122,51 @@ class QdrantDB:
         except Exception:
             pass
         return {"has_dense": has_dense, "has_sparse": has_sparse}
+
+    def _get_expected_dense_vector_size(self) -> int:
+        """Resolve expected dense vector size.
+
+        Priority:
+        1) Model registry (llm_adapter) capabilities for self.embedding_model_key
+        2) local_models_registry-derived dense config dimensions
+        3) Collection vector config
+        4) settings.vector_size
+        """
+        # 1) llm_adapter/model registry capabilities
+        try:
+            info = get_model_info(model_key=self.embedding_model_key)
+            dims = (getattr(info, "capabilities", {}) or {}).get("dimensions") if info is not None else None
+            if isinstance(dims, int) and dims > 0:
+                return int(dims)
+        except Exception:
+            pass
+
+        # 2) local_models_registry (via retrieval config loader)
+        try:
+            from backend.retrieval.config_loader import get_model_config
+            dense_cfg = get_model_config("dense") or {}
+            dims = dense_cfg.get("dimensions")
+            if dims is not None:
+                dims_i = int(dims)
+                if dims_i > 0:
+                    return dims_i
+        except Exception:
+            pass
+
+        # 3) collection config
+        try:
+            collection_info = self.client.get_collection(self.collection_name)
+            vectors_cfg = collection_info.config.params.vectors
+            if isinstance(vectors_cfg, dict):
+                dense_cfg = vectors_cfg.get("dense")
+                size = getattr(dense_cfg, "size", None)
+            else:
+                size = getattr(vectors_cfg, "size", None)
+            if isinstance(size, int) and size > 0:
+                return int(size)
+        except Exception:
+            pass
+        return int(settings.vector_size)
 
     def update_payload_by_url(self, request: PayloadUpdateRequest) -> int:
         """
@@ -235,7 +273,11 @@ class QdrantDB:
                 if not vectors:
                     raise ValueError("No embedding vectors returned from FastEmbed provider")
                 self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}
-                return vectors[0]
+                # Ensure we return a list, not a tuple (Qdrant query_points requires list)
+                embedding = vectors[0]
+                if isinstance(embedding, tuple):
+                    embedding = list(embedding)
+                return embedding
 
             provider = str(model_key).split(":", 1)[0].lower()
 
@@ -299,9 +341,14 @@ class QdrantDB:
             # Handle different response structures
             embedding_data = response.data[0]
             if hasattr(embedding_data, 'embedding'):
-                return embedding_data.embedding
+                embedding = embedding_data.embedding
+                if isinstance(embedding, tuple):
+                    embedding = list(embedding)
+                return embedding
             elif isinstance(embedding_data, list):
                 return embedding_data
+            elif isinstance(embedding_data, tuple):
+                return list(embedding_data)
             else:
                 raise ValueError(f"Unexpected embedding response structure: {type(embedding_data)}")
         except Exception as e:
@@ -390,6 +437,8 @@ class QdrantDB:
                 else query
             )
             query_embedding = self.generate_embeddings(query)
+            if isinstance(query_embedding, tuple):
+                query_embedding = list(query_embedding)
 
             # Convert simple dict to Qdrant Filter if provided
             qdrant_filter = self._build_filter(query_filter)
@@ -632,9 +681,13 @@ class QdrantDB:
         """
         try:
             # Basic validation
-            if len(query_embedding) != int(settings.vector_size):
+            if isinstance(query_embedding, tuple):
+                query_embedding = list(query_embedding)
+
+            expected_dim = self._get_expected_dense_vector_size()
+            if len(query_embedding) != expected_dim:
                 raise ValueError(
-                    f"Embedding dim {len(query_embedding)} != expected {settings.vector_size}"
+                    f"Embedding dim {len(query_embedding)} != expected {expected_dim}"
                 )
             if any(
                 (v is None) or (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
@@ -671,6 +724,7 @@ class QdrantDB:
                     search_params=q_search_params,
                     using="dense"  # Use named dense vector
                 )
+                points = results.points
             else:
                 results = self.client.search(
                     collection_name=self.collection_name,
@@ -681,11 +735,12 @@ class QdrantDB:
                     with_payload=with_payload,
                     search_params=q_search_params
                 )
-            logger.debug("Found %d results for similarity search", len(results))
+                points = results
+            logger.debug("Found %d results for similarity search", len(points))
 
             return [
                 {"score": result.score, "payload": result.payload}
-                for result in results
+                for result in points
             ]
         except Exception as e:
             logger.exception("Error searching Qdrant with embedding: %s", e)
