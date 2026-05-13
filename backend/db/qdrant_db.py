@@ -168,6 +168,41 @@ class QdrantDB:
             pass
         return int(settings.vector_size)
 
+    def _coerce_dense_vector(self, value: Any) -> List[float]:
+        """Coerce heterogeneous embedding outputs into a flat float vector."""
+        # Object-style payloads from SDKs
+        if hasattr(value, "embedding"):
+            value = getattr(value, "embedding")
+
+        # Tuple -> list for Qdrant compatibility
+        if isinstance(value, tuple):
+            value = list(value)
+
+        if not isinstance(value, list):
+            raise ValueError(f"Embedding payload is not a list: {type(value)}")
+
+        # Some providers may return [vector, usage, normalize_flag, provider]
+        # Keep only the actual numeric vector payload.
+        if value and isinstance(value[0], (list, tuple)):
+            candidate = value[0]
+            if isinstance(candidate, tuple):
+                candidate = list(candidate)
+            value = candidate
+
+        # Validate and coerce numbers only
+        out: List[float] = []
+        for x in value:
+            if isinstance(x, bool) or x is None:
+                raise ValueError(f"Invalid embedding element type: {type(x)}")
+            try:
+                out.append(float(x))
+            except Exception as exc:
+                raise ValueError(f"Invalid embedding element type: {type(x)}") from exc
+
+        if not out:
+            raise ValueError("Embedding vector is empty")
+        return out
+
     def update_payload_by_url(self, request: PayloadUpdateRequest) -> int:
         """
         Update a specific payload field for all chunks matching the given URL.
@@ -340,17 +375,7 @@ class QdrantDB:
 
             # Handle different response structures
             embedding_data = response.data[0]
-            if hasattr(embedding_data, 'embedding'):
-                embedding = embedding_data.embedding
-                if isinstance(embedding, tuple):
-                    embedding = list(embedding)
-                return embedding
-            elif isinstance(embedding_data, list):
-                return embedding_data
-            elif isinstance(embedding_data, tuple):
-                return list(embedding_data)
-            else:
-                raise ValueError(f"Unexpected embedding response structure: {type(embedding_data)}")
+            return self._coerce_dense_vector(embedding_data)
         except Exception as e:
             logger.exception("Error generating embeddings: %s", e)
             self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}
@@ -437,8 +462,7 @@ class QdrantDB:
                 else query
             )
             query_embedding = self.generate_embeddings(query)
-            if isinstance(query_embedding, tuple):
-                query_embedding = list(query_embedding)
+            query_embedding = self._coerce_dense_vector(query_embedding)
 
             # Convert simple dict to Qdrant Filter if provided
             qdrant_filter = self._build_filter(query_filter)
@@ -455,6 +479,15 @@ class QdrantDB:
                 has_named_vectors = False
 
             # Perform the search (Qdrant v1.18+ uses query_points instead of search)
+            try:
+                logger.debug(
+                    "Dense query vector diagnostics: len=%d first_types=%s",
+                    len(query_embedding),
+                    [type(x).__name__ for x in query_embedding[:3]],
+                )
+            except Exception:
+                pass
+
             if has_named_vectors:
                 response = self.client.query_points(
                     collection_name=self.collection_name,
@@ -539,7 +572,7 @@ class QdrantDB:
                     exact=exact,
                 )
 
-            dense_query_embedding = self.generate_embeddings(query)
+            dense_query_embedding = self._coerce_dense_vector(self.generate_embeddings(query))
 
             sparse_query_embedding = self.generate_sparse_embeddings(query)
             sparse_indices = sparse_query_embedding.get("indices") or []
@@ -714,6 +747,14 @@ class QdrantDB:
 
             # Execute search with the prepared parameters
             if has_named_vectors:
+                try:
+                    logger.debug(
+                        "Dense precomputed vector diagnostics: len=%d first_types=%s",
+                        len(query_embedding),
+                        [type(x).__name__ for x in query_embedding[:3]],
+                    )
+                except Exception:
+                    pass
                 results = self.client.query_points(
                     collection_name=self.collection_name,
                     query=query_embedding,

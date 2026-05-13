@@ -3211,6 +3211,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # Otherwise fall back to the legacy path
     use_new_retrieval = bool(params.get("search_mode") or params.get("use_colbert") or params.get("enable_cross_encoder_rerank"))
     skip_rerank = False  # Will be set to True if we use the new service
+    _embed_model_for_metrics = None
     
     # Best-effort debug log of the embedding spec used for retrieval (provider/model/dimensions).
     try:
@@ -3381,6 +3382,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
 
     n = len(results) if results else 0
     logger.debug("[RETRIEVE] (%s) Qdrant returned %d", log_origin, n)
+    kept = min(int(getattr(settings_obj, "re_ranker_input_rows", 5)), n)
 
     # Embedding stage metrics
     embed_tokens = 0
