@@ -497,6 +497,17 @@ class QdrantDB:
             sparse_indices = sparse_query_embedding.get("indices") or []
             sparse_values = sparse_query_embedding.get("values") or []
 
+            # If sparse query cannot be formed, gracefully fall back to dense search.
+            if not sparse_indices or not sparse_values:
+                return self.search_similar(
+                    query=query,
+                    limit=limit,
+                    score_threshold=score_threshold if score_threshold is not None else settings.score_threshold,
+                    query_filter=query_filter,
+                    with_payload=with_payload,
+                    exact=exact,
+                )
+
             qdrant_filter = self._build_filter(query_filter)
             search_params = models.SearchParams(exact=exact) if exact is not None else None
 
@@ -524,6 +535,18 @@ class QdrantDB:
                 with_payload=with_payload,
             )
             search_results = response.points
+
+            # If hybrid fusion yields no hits (often due to threshold/fusion dynamics),
+            # return dense results instead of empty output.
+            if not search_results:
+                return self.search_similar(
+                    query=query,
+                    limit=limit,
+                    score_threshold=score_threshold if score_threshold is not None else settings.score_threshold,
+                    query_filter=query_filter,
+                    with_payload=with_payload,
+                    exact=exact,
+                )
 
             return [
                 {

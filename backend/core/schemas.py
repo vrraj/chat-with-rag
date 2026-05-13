@@ -25,6 +25,9 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[Dict]
     total: int
+    requested_search_mode: Optional[str] = None
+    effective_search_mode: Optional[str] = None
+    fallback_reason: Optional[str] = None
 
 class ChatRequest(BaseModel):
     message: str

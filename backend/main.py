@@ -1438,7 +1438,13 @@ async def search_content(search_request: SearchRequest):
                     url=search_request.query_filter["url"],
                     limit=search_request.limit
                 )
-                return SearchResponse(results=results, total=len(results))
+                return SearchResponse(
+                    results=results,
+                    total=len(results),
+                    requested_search_mode="dense",
+                    effective_search_mode="dense",
+                    fallback_reason=None,
+                )
             else:
                 raise HTTPException(status_code=400, detail="URL must be provided in query_filter if no query is given.")
         else:
@@ -1466,9 +1472,24 @@ async def search_content(search_request: SearchRequest):
             if search_mode not in {"dense", "hybrid", "sparse"}:
                 raise HTTPException(status_code=400, detail="search_mode must be one of: dense, hybrid, sparse")
             effective_score_threshold = score_threshold if search_mode == "dense" else None
+            requested_search_mode = search_mode
+            effective_search_mode = search_mode
+            fallback_reason = None
+
+            try:
+                caps = qdrant_db._get_collection_vector_capabilities()
+            except Exception:
+                caps = {"has_dense": True, "has_sparse": False}
+
+            if search_mode == "hybrid" and not (caps.get("has_dense") and caps.get("has_sparse")):
+                effective_search_mode = "dense"
+                fallback_reason = "collection_missing_dense_or_sparse"
+            elif search_mode == "sparse" and not caps.get("has_sparse"):
+                effective_search_mode = "dense"
+                fallback_reason = "collection_missing_sparse"
             
             # Use QdrantDB directly for search mode selection.
-            if search_mode == "hybrid":
+            if effective_search_mode == "hybrid":
                 results = qdrant_db.search_similar_hybrid(
                     query=search_request.query,
                     limit=search_request.limit,
@@ -1477,7 +1498,7 @@ async def search_content(search_request: SearchRequest):
                     exact=exact,
                     with_payload=with_payload,
                 )
-            elif search_mode == "sparse":
+            elif effective_search_mode == "sparse":
                 results = qdrant_db.search_similar_sparse(
                     query=search_request.query,
                     limit=search_request.limit,
@@ -1496,7 +1517,13 @@ async def search_content(search_request: SearchRequest):
                     with_payload=with_payload
                 )
             logger.debug("Search results count: %d", len(results))
-            return SearchResponse(results=results, total=len(results))
+            return SearchResponse(
+                results=results,
+                total=len(results),
+                requested_search_mode=requested_search_mode,
+                effective_search_mode=effective_search_mode,
+                fallback_reason=fallback_reason,
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
