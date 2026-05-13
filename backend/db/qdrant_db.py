@@ -107,6 +107,29 @@ class QdrantDB:
                 )
         return models.Filter(must=must) if must else None
 
+    def _get_collection_vector_capabilities(self) -> Dict[str, bool]:
+        """Return whether current collection has dense and/or sparse vectors configured."""
+        has_dense = False
+        has_sparse = False
+        try:
+            collection_info = self.client.get_collection(self.collection_name)
+            params = getattr(getattr(collection_info, "config", None), "params", None)
+            vectors_cfg = getattr(params, "vectors", None)
+            sparse_cfg = getattr(params, "sparse_vectors", None)
+
+            if isinstance(vectors_cfg, dict):
+                has_dense = bool(vectors_cfg)
+            else:
+                has_dense = vectors_cfg is not None
+
+            if isinstance(sparse_cfg, dict):
+                has_sparse = bool(sparse_cfg)
+            else:
+                has_sparse = sparse_cfg is not None
+        except Exception:
+            pass
+        return {"has_dense": has_dense, "has_sparse": has_sparse}
+
     def update_payload_by_url(self, request: PayloadUpdateRequest) -> int:
         """
         Update a specific payload field for all chunks matching the given URL.
@@ -285,6 +308,52 @@ class QdrantDB:
             logger.exception("Error generating embeddings: %s", e)
             self.last_embedding_usage = {"input_tokens": 0, "total_tokens": 0}
             raise
+
+    def generate_sparse_embeddings(self, text: str) -> Dict[str, List[float]]:
+        """Generate sparse query embeddings for hybrid retrieval."""
+        try:
+            import os
+            from backend.retrieval.embedding_router import EmbeddingRouter
+            from backend.retrieval.schemas import EmbeddingSpec
+            from backend.retrieval.config_loader import get_model_config
+
+            sparse_config = get_model_config("sparse")
+            sparse_model = sparse_config.get("name")
+            if not sparse_model:
+                raise ValueError("Sparse model name missing from retrieval config")
+
+            cache_dir = os.getenv("FASTEMBED_CACHE_PATH", sparse_config.get("cache_dir", ""))
+            cache_dir = os.path.expandvars(os.path.expanduser(str(cache_dir))) if cache_dir else None
+
+            spec = EmbeddingSpec(
+                task="embedding",
+                runtime="fastembed",
+                provider="local",
+                model=str(sparse_model),
+                dimensions=None,
+                normalize=False,
+                batch_size=32,
+                device=sparse_config.get("device"),
+                extra={"cache_dir": cache_dir} if cache_dir else {},
+                vector_type="sparse",
+            )
+
+            embedding_result = EmbeddingRouter().embed([text], spec)
+            vectors = embedding_result.vectors or []
+            if not vectors:
+                return {"indices": [], "values": []}
+
+            sparse_vector = vectors[0]
+            if not isinstance(sparse_vector, dict):
+                return {"indices": [], "values": []}
+
+            return {
+                "indices": sparse_vector.get("indices") or [],
+                "values": sparse_vector.get("values") or [],
+            }
+        except Exception as e:
+            logger.exception("Error generating sparse embeddings: %s", e)
+            raise
             
     def search_similar(
         self,
@@ -395,6 +464,133 @@ class QdrantDB:
 
         except Exception as e:
             logger.exception("Error in search_similar: %s", e)
+            raise
+
+    def search_similar_hybrid(
+        self,
+        query: str,
+        limit: int = settings.top_k,
+        score_threshold: Optional[float] = settings.score_threshold,
+        query_filter: Optional[Dict] = None,
+        with_payload: bool = True,
+        exact: Optional[bool] = True,
+    ) -> List[Dict[str, Any]]:
+        """Hybrid search using dense + sparse vectors with fusion (RRF).
+
+        Falls back to dense-only search when sparse vector capability is not available.
+        """
+        try:
+            caps = self._get_collection_vector_capabilities()
+            if not (caps.get("has_dense") and caps.get("has_sparse")):
+                return self.search_similar(
+                    query=query,
+                    limit=limit,
+                    score_threshold=score_threshold if score_threshold is not None else settings.score_threshold,
+                    query_filter=query_filter,
+                    with_payload=with_payload,
+                    exact=exact,
+                )
+
+            dense_query_embedding = self.generate_embeddings(query)
+
+            sparse_query_embedding = self.generate_sparse_embeddings(query)
+            sparse_indices = sparse_query_embedding.get("indices") or []
+            sparse_values = sparse_query_embedding.get("values") or []
+
+            qdrant_filter = self._build_filter(query_filter)
+            search_params = models.SearchParams(exact=exact) if exact is not None else None
+
+            prefetch_dense = models.Prefetch(
+                query=dense_query_embedding,
+                using="dense",
+                limit=limit,
+                filter=qdrant_filter,
+                params=search_params,
+            )
+            prefetch_sparse = models.Prefetch(
+                query=models.SparseVector(indices=sparse_indices, values=sparse_values),
+                using="sparse",
+                limit=limit,
+                filter=qdrant_filter,
+                params=search_params,
+            )
+
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                prefetch=[prefetch_dense, prefetch_sparse],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=with_payload,
+            )
+            search_results = response.points
+
+            return [
+                {
+                    "id": hit.id,
+                    "score": hit.score,
+                    "payload": hit.payload,
+                }
+                for hit in search_results
+            ]
+        except Exception as e:
+            logger.exception("Error in search_similar_hybrid: %s", e)
+            raise
+
+    def search_similar_sparse(
+        self,
+        query: str,
+        limit: int = settings.top_k,
+        score_threshold: Optional[float] = settings.score_threshold,
+        query_filter: Optional[Dict] = None,
+        with_payload: bool = True,
+        exact: Optional[bool] = True,
+    ) -> List[Dict[str, Any]]:
+        """Sparse-only search.
+
+        Falls back to dense-only search when sparse vector capability is not available.
+        """
+        try:
+            caps = self._get_collection_vector_capabilities()
+            if not caps.get("has_sparse"):
+                return self.search_similar(
+                    query=query,
+                    limit=limit,
+                    score_threshold=score_threshold if score_threshold is not None else settings.score_threshold,
+                    query_filter=query_filter,
+                    with_payload=with_payload,
+                    exact=exact,
+                )
+
+            sparse_query_embedding = self.generate_sparse_embeddings(query)
+            sparse_indices = sparse_query_embedding.get("indices") or []
+            sparse_values = sparse_query_embedding.get("values") or []
+
+            qdrant_filter = self._build_filter(query_filter)
+            search_params = models.SearchParams(exact=exact) if exact is not None else None
+
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=models.SparseVector(indices=sparse_indices, values=sparse_values),
+                using="sparse",
+                query_filter=qdrant_filter,
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=with_payload,
+                search_params=search_params,
+            )
+            search_results = response.points
+
+            return [
+                {
+                    "id": hit.id,
+                    "score": hit.score,
+                    "payload": hit.payload,
+                }
+                for hit in search_results
+            ]
+        except Exception as e:
+            logger.exception("Error in search_similar_sparse: %s", e)
             raise
 
     def search_similar_by_embedding(

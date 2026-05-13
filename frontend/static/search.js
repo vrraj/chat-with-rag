@@ -48,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const query = document.getElementById('searchQuery').value;
         const limit = parseInt(document.getElementById('searchLimit').value);
         const urlFilter = document.getElementById('searchUrlFilter').value;
+        const searchMode = String(document.getElementById('searchMode')?.value || 'dense').trim().toLowerCase();
         const scoreThresholdRaw = document.getElementById('scoreThreshold')?.value;
         const scoreThreshold = scoreThresholdRaw !== undefined && scoreThresholdRaw !== null
             ? parseFloat(scoreThresholdRaw)
@@ -57,9 +58,10 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('Sending request with payload:', {
             query: query.trim() || null,
             query_filter: urlFilter ? { url: urlFilter } : null,
-            limit
+            limit,
+            search_mode: searchMode,
         });
-        console.log('Form values:', { query, limit, urlFilter });
+        console.log('Form values:', { query, limit, urlFilter, searchMode });
 
         if (!query.trim()) {
             alert('Please enter a search query');
@@ -75,6 +77,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 query_filter: urlFilter ? { url: urlFilter } : null,
                 limit,
                 active_domain: getActiveDomain() || undefined,
+                search_mode: searchMode,
             };
             if (Number.isFinite(scoreThreshold)) {
                 payload.score_threshold = scoreThreshold;

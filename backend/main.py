@@ -212,9 +212,12 @@ def _index_chunks_with_retrieval(
     try:
         collection_info = qdrant.client.get_collection(collection_name)
         vectors_cfg = collection_info.config.params.vectors
+        sparse_cfg = collection_info.config.params.sparse_vectors
         has_named_dense_vector = isinstance(vectors_cfg, dict) and "dense" in vectors_cfg
+        has_sparse_vector = isinstance(sparse_cfg, dict) and "sparse" in sparse_cfg
     except Exception:
         has_named_dense_vector = False
+        has_sparse_vector = False
     
     # Cap chunks if needed
     effective_cap = int(getattr(settings, "max_chunks_per_doc", 500))
@@ -287,9 +290,29 @@ def _index_chunks_with_retrieval(
             }
             
             point_id = str(uuid.uuid4())
+
+            sparse_vector = None
+            if has_sparse_vector:
+                try:
+                    sparse_emb = qdrant.generate_sparse_embeddings(text)
+                    sparse_indices = sparse_emb.get("indices") or []
+                    sparse_values = sparse_emb.get("values") or []
+                    sparse_vector = models.SparseVector(indices=sparse_indices, values=sparse_values)
+                except Exception:
+                    sparse_vector = models.SparseVector(indices=[], values=[])
+
+            if has_named_dense_vector and sparse_vector is not None:
+                vector_payload = {"dense": embedding, "sparse": sparse_vector}
+            elif has_named_dense_vector:
+                vector_payload = {"dense": embedding}
+            elif sparse_vector is not None:
+                vector_payload = {"sparse": sparse_vector}
+            else:
+                vector_payload = embedding
+
             points.append(models.PointStruct(
                 id=point_id,
-                vector={"dense": embedding} if has_named_dense_vector else embedding,
+                vector=vector_payload,
                 payload=payload,
             ))
     
@@ -1410,16 +1433,39 @@ async def search_content(search_request: SearchRequest):
             score_threshold = search_request.score_threshold
             exact = search_request.exact
             with_payload = search_request.with_payload
+            search_mode = str(search_request.search_mode or "dense").strip().lower()
+            if search_mode not in {"dense", "hybrid", "sparse"}:
+                raise HTTPException(status_code=400, detail="search_mode must be one of: dense, hybrid, sparse")
+            effective_score_threshold = score_threshold if search_mode == "dense" else None
             
-            # Use QdrantDB directly for the search with query string
-            results = qdrant_db.search_similar(
-                query=search_request.query,
-                limit=search_request.limit,
-                query_filter=qdrant_filter,
-                score_threshold=score_threshold,
-                exact=exact,
-                with_payload=with_payload
-            )
+            # Use QdrantDB directly for search mode selection.
+            if search_mode == "hybrid":
+                results = qdrant_db.search_similar_hybrid(
+                    query=search_request.query,
+                    limit=search_request.limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=effective_score_threshold,
+                    exact=exact,
+                    with_payload=with_payload,
+                )
+            elif search_mode == "sparse":
+                results = qdrant_db.search_similar_sparse(
+                    query=search_request.query,
+                    limit=search_request.limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=effective_score_threshold,
+                    exact=exact,
+                    with_payload=with_payload,
+                )
+            else:
+                results = qdrant_db.search_similar(
+                    query=search_request.query,
+                    limit=search_request.limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=effective_score_threshold,
+                    exact=exact,
+                    with_payload=with_payload
+                )
             logger.debug("Search results count: %d", len(results))
             return SearchResponse(results=results, total=len(results))
     except Exception as e:

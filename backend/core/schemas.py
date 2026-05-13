@@ -20,6 +20,7 @@ class SearchRequest(BaseModel):
     exact: Optional[bool] = False
     with_payload: Optional[bool] = True
     active_domain: Optional[str] = ""
+    search_mode: Optional[str] = "dense"
 
 class SearchResponse(BaseModel):
     results: List[Dict]

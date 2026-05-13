@@ -420,10 +420,10 @@ def cmd_truncate(args) -> int:
         print("Collection name did not match. Aborting without deleting anything.")
         return 0
 
-    # Delete all points but keep collection config: use All() selector
+    # Delete all points but keep collection config: use Filter with empty must
     client.delete(
         collection_name=args.collection,
-        points_selector=rest.All(),
+        points_selector=Filter(must=[]),
     )
 
     print(f"Truncated collection '{args.collection}'; deleted {points_count} point(s).")
