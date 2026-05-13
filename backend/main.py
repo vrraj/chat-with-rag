@@ -38,6 +38,8 @@ from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from backend.chat.prompt_registry import clear_prompt_registry_cache
 from backend.chat.chat_manager import clear_tool_registry_cache
+from backend.retrieval.eval_schemas import RetrievalEvalRequest, RetrievalEvalResponse
+from backend.retrieval.retrieval_eval_service import RetrievalEvalService
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
 from backend.llm.llm_client import generate, embed, get_pricing_for_model
@@ -488,6 +490,19 @@ async def search_page():
     """Serve the dedicated search interface page"""
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "search.html"))
+
+
+@app.get(
+    "/retrieval_evals",
+    tags=["1. UI Pages"],
+    summary="Retrieval evaluation page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Retrieval Evals Page</body></html>"}}}},
+)
+async def retrieval_evals_page():
+    """Serve the retrieval evaluation page with retrieval + reranking controls."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "retrieval-evals.html"))
 
 # Debug index HTML page (separate from API JSON at /debug-index)
 @app.get(
@@ -1524,6 +1539,37 @@ async def search_content(search_request: SearchRequest):
                 effective_search_mode=effective_search_mode,
                 fallback_reason=fallback_reason,
             )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/retrieval-evals/run",
+    tags=["3. Search & Chat"],
+    summary="Run retrieval eval pipeline (retrieval + optional ColBERT + cross-encoder)",
+    response_model=RetrievalEvalResponse,
+)
+async def run_retrieval_evals(eval_request: RetrievalEvalRequest):
+    """Run retrieval and reranking stages for evaluation/testing."""
+    try:
+        service = RetrievalEvalService(active_domain=eval_request.active_domain)
+        result = service.run_pipeline(
+            query=eval_request.query,
+            search_mode=eval_request.search_mode,
+            top_k=eval_request.top_k,
+            score_threshold=eval_request.score_threshold,
+            query_filter=eval_request.query_filter,
+            with_payload=eval_request.with_payload,
+            exact=eval_request.exact,
+            use_colbert=eval_request.use_colbert,
+            colbert_score_threshold=eval_request.colbert_score_threshold,
+            max_items_for_cross_encoder=eval_request.max_items_for_cross_encoder,
+            reranked_top_n=eval_request.reranked_top_n,
+        )
+        result["payload_echo"] = eval_request.model_dump()
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

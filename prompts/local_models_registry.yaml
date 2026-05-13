@@ -69,7 +69,7 @@ local_models:
   
   # TIER 2: LATE INTERACTION (Token-level precision for symbols/code)
   late_interaction:
-    enabled: false
+    enabled: true 
     model_key: "local:late_interaction_default"
     name: "colbert-ir/colbertv2.0"
     dimensions: 128  # ColBERT uses 128-dim embeddings PER token
