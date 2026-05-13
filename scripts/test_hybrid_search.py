@@ -15,7 +15,7 @@ from fastembed import TextEmbedding, SparseTextEmbedding
 COLLECTION_NAME = "test_hybrid_collection"
 DENSE_MODEL = "BAAI/bge-base-en-v1.5"
 SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
-CACHE_DIR = os.path.expanduser("~/models/fastembed_cache")
+CACHE_DIR = os.path.expandvars(os.path.expanduser(os.getenv("FASTEMBED_CACHE_PATH", "~/models/fastembed_cache")))
 TEST_TEXT = "Finance policy updates and risk outlook for Q4 2024"
 TEST_QUERY = "financial risk management"
 

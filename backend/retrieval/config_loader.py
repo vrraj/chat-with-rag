@@ -57,6 +57,10 @@ def get_model_config(model_type: str) -> Dict[str, Any]:
     
     model_config = local_models[model_type]
     
+    # Expand cache_dir path if present
+    if "cache_dir" in model_config:
+        model_config["cache_dir"] = os.path.expandvars(os.path.expanduser(model_config["cache_dir"]))
+    
     # Check if model is enabled (for optional models like late_interaction and reranker)
     if "enabled" in model_config and not model_config["enabled"]:
         raise ValueError(f"Model type '{model_type}' is disabled in configuration.")

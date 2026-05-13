@@ -2,7 +2,7 @@ import os
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 
 # 1. Point to your permanent models folder
-cache_path = os.path.expanduser("~/models/fastembed_cache")
+cache_path = os.path.expandvars(os.path.expanduser(os.getenv("FASTEMBED_CACHE_PATH", "~/models/fastembed_cache")))
 
 # 2. Initialize the Cross-Encoder
 # Note: This model is ~1.1GB, so it will trigger the hotspot download

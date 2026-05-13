@@ -1,6 +1,10 @@
+import logging
 from typing import List
 
 from backend.retrieval.schemas import EmbeddingSpec, EmbeddingResult
+
+
+logger = logging.getLogger(__name__)
 
 
 class FastEmbedEmbeddingProvider:
@@ -8,18 +12,34 @@ class FastEmbedEmbeddingProvider:
         self._models = {}
         self._sparse_models = {}
 
+    @staticmethod
+    def _build_model_kwargs(spec: EmbeddingSpec):
+        import os
+
+        kwargs = {}
+        if spec.extra:
+            kwargs.update(spec.extra)
+
+        cache_dir = kwargs.get("cache_dir")
+        if not cache_dir:
+            cache_dir = os.getenv("FASTEMBED_CACHE_PATH")
+
+        if cache_dir:
+            kwargs["cache_dir"] = os.path.expandvars(os.path.expanduser(str(cache_dir)))
+
+        return kwargs
+
     def _get_model(self, spec: EmbeddingSpec):
         from fastembed import TextEmbedding
-        import os
 
         key = f"{spec.model}:{spec.device or 'default'}"
         if key not in self._models:
-            kwargs = {}
-            if spec.extra:
-                kwargs.update(spec.extra)
-                # Expand cache_dir path if present
-                if "cache_dir" in kwargs:
-                    kwargs["cache_dir"] = os.path.expandvars(os.path.expanduser(kwargs["cache_dir"]))
+            kwargs = self._build_model_kwargs(spec)
+            logger.debug(
+                "Initializing FastEmbed dense model='%s' cache_dir='%s'",
+                spec.model,
+                kwargs.get("cache_dir"),
+            )
 
             self._models[key] = TextEmbedding(
                 model_name=spec.model,
@@ -30,16 +50,15 @@ class FastEmbedEmbeddingProvider:
 
     def _get_sparse_model(self, spec: EmbeddingSpec):
         from fastembed import SparseTextEmbedding
-        import os
 
         key = f"{spec.model}:{spec.device or 'default'}"
         if key not in self._sparse_models:
-            kwargs = {}
-            if spec.extra:
-                kwargs.update(spec.extra)
-                # Expand cache_dir path if present
-                if "cache_dir" in kwargs:
-                    kwargs["cache_dir"] = os.path.expandvars(os.path.expanduser(kwargs["cache_dir"]))
+            kwargs = self._build_model_kwargs(spec)
+            logger.debug(
+                "Initializing FastEmbed sparse model='%s' cache_dir='%s'",
+                spec.model,
+                kwargs.get("cache_dir"),
+            )
 
             self._sparse_models[key] = SparseTextEmbedding(
                 model_name=spec.model,

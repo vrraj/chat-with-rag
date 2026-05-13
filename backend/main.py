@@ -207,6 +207,14 @@ def _index_chunks_with_retrieval(
     except Exception:
         logger.debug("Collection not found, creating it now...")
         qdrant.create_collection()
+
+    # Detect whether collection expects named vectors (e.g., "dense")
+    try:
+        collection_info = qdrant.client.get_collection(collection_name)
+        vectors_cfg = collection_info.config.params.vectors
+        has_named_dense_vector = isinstance(vectors_cfg, dict) and "dense" in vectors_cfg
+    except Exception:
+        has_named_dense_vector = False
     
     # Cap chunks if needed
     effective_cap = int(getattr(settings, "max_chunks_per_doc", 500))
@@ -279,7 +287,7 @@ def _index_chunks_with_retrieval(
             point_id = str(uuid.uuid4())
             points.append(models.PointStruct(
                 id=point_id,
-                vector=embedding,
+                vector={"dense": embedding} if has_named_dense_vector else embedding,
                 payload=payload,
             ))
     
