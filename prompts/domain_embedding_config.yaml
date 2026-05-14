@@ -1,3 +1,4 @@
+active_domain: finance
 domains:
   default:
     collection_name: document_index

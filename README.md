@@ -476,6 +476,91 @@ This ensures safe separation of system instructions from dynamic data while main
 
 For detailed configuration options, see the [Configuration Reference](https://github.com/vrraj/chat-with-rag/blob/main/docs/configuration.md#prompt-registry).
 
+---
+
+## 🌐 Domain Embedding Configuration
+
+The system uses a YAML-based domain configuration to map domain names to their embedding models, Qdrant collections, and vector/search settings. This enables domain isolation and runtime domain switching without code changes.
+
+### 📝 Configuration File
+
+- **Path:** `prompts/domain_embedding_config.yaml`
+- **Role:** Defines domain-to-embedding mappings and the default active domain.
+- **Format:**
+
+```yaml
+active_domain: finance
+domains:
+  default:
+    collection_name: document_index
+    embedding_model_key: openai:embed_small
+    model_type: hosted
+    vector_type: null
+    search_mode: dense
+  mountains:
+    collection_name: document_index
+    embedding_model_key: openai:embed_small
+    model_type: hosted
+    vector_type: null
+    search_mode: dense
+  finance:
+    collection_name: document_index_finance
+    embedding_model_key: local:dense_default
+    model_type: local
+    vector_type: hybrid
+    search_mode: hybrid
+```
+
+### 🎯 Active Domain Behavior
+
+The `active_domain` field determines the default domain used by the system when no request-level override is provided. The resolution priority is:
+
+1. **Request-level override** — If `params.active_domain` is sent in a chat/search request, that value is used.
+2. **Environment variable** — If `ACTIVE_DOMAIN` is set in `.env`, it overrides the YAML value.
+3. **YAML file** — The `active_domain` field in `prompts/domain_embedding_config.yaml` is used as the default.
+
+This means:
+- **Users can change domain per request** via dropdowns in `chat.html`, `search.html`, etc., without affecting the global default.
+- **Server restarts preserve the active domain** from YAML (unless env var overrides).
+- **Environment variables take precedence** for production deployments where you want centralized control.
+
+### 🔧 UI Editor
+
+A web UI is available at `/domain-embedding-config` to edit the domain configuration:
+
+- **View and edit** domain mappings (collection names, embedding models, vector types, search modes).
+- **Set the active domain** via a dropdown and "Apply" button.
+- **Save changes** to `prompts/domain_embedding_config.yaml` with automatic backup (`.bak`).
+- **Auto-apply active domain** — Saving the YAML automatically applies the selected active domain.
+
+### 🔄 Frontend Synchronization
+
+All relevant frontend screens (`chat.html`, `search.html`, `delete-index.html`, `list-docs.html`, home/ingestion) initialize their active domain selectors from a unified API endpoint:
+
+- **Endpoint:** `GET /api/ui/runtime-context`
+- **Response:**
+
+```json
+{
+  "active_domain": "finance",
+  "domains": ["mountains", "oceans", "finance"]
+}
+```
+
+This ensures consistency across the UI — when you change the active domain in the YAML editor or via API, all screens reflect the new value on reload.
+
+### 📋 Domain Configuration Fields
+
+| Field | Description | Valid Values |
+|-------|-------------|--------------|
+| `collection_name` | Qdrant collection name for the domain | Any valid Qdrant collection |
+| `embedding_model_key` | Embedding model identifier from model registry | e.g., `openai:embed_small`, `gemini:native-embed`, `local:dense_default` |
+| `model_type` | Whether the model is hosted or local | `hosted`, `local` |
+| `vector_type` | Vector storage type (null for default, or named vectors) | `null`, `dense`, `hybrid` |
+| `search_mode` | Retrieval search mode | `dense`, `hybrid`, `sparse` |
+
+> **Note:** When `vector_type` is `hybrid`, `search_mode` must also be `hybrid`. This is validated on load.
+
 
 ---
 

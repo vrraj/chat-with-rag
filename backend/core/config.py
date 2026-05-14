@@ -1,6 +1,7 @@
 """Configuration settings for the application."""
 
 from pathlib import Path
+import os
 from typing import Any, Dict, List, Literal, Optional
 import warnings
 
@@ -58,13 +59,24 @@ class DomainEmbeddingEntry(BaseModel):
 
 
 class DomainEmbeddingConfigModel(BaseModel):
+    active_domain: Optional[str] = None
     domains: Dict[str, DomainEmbeddingEntry]
+
+    @model_validator(mode="after")
+    def validate_active_domain(self):
+        if self.active_domain and self.active_domain not in self.domains:
+            raise ValueError(f"active_domain '{self.active_domain}' is not present in domains")
+        return self
+
+
+def _has_active_domain_env_override() -> bool:
+    return bool(os.getenv("ACTIVE_DOMAIN") or os.getenv("active_domain"))
 
 
 def _load_domain_embedding_config(
     path: str,
     fallback: Dict[str, Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, Any]:
     p = Path(str(path or "").strip())
     if not p.exists():
         warnings.warn(
@@ -72,22 +84,31 @@ def _load_domain_embedding_config(
             RuntimeWarning,
             stacklevel=2,
         )
-        return fallback
+        return {"domains": fallback, "active_domain": None}
 
     try:
         raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        candidate = raw.get("domains") if isinstance(raw, dict) and isinstance(raw.get("domains"), dict) else raw
+        has_domains_key = isinstance(raw, dict) and isinstance(raw.get("domains"), dict)
+        candidate = raw.get("domains") if has_domains_key else raw
         if not isinstance(candidate, dict):
             raise ValueError("YAML root must be a mapping or include a 'domains' mapping")
-        validated = DomainEmbeddingConfigModel(domains=candidate)
-        return {k: v.model_dump() for k, v in validated.domains.items()}
+
+        active_domain = None
+        if has_domains_key:
+            active_domain = str(raw.get("active_domain") or "").strip() or None
+
+        validated = DomainEmbeddingConfigModel(domains=candidate, active_domain=active_domain)
+        return {
+            "domains": {k: v.model_dump() for k, v in validated.domains.items()},
+            "active_domain": validated.active_domain,
+        }
     except Exception as exc:
         warnings.warn(
             f"Invalid domain embedding config at '{p}': {exc}. Using in-code defaults.",
             RuntimeWarning,
             stacklevel=2,
         )
-        return fallback
+        return {"domains": fallback, "active_domain": None}
 
 
 # -----------------------------------------------------------------------------
@@ -275,8 +296,15 @@ class Settings(BaseSettings):
     def load_and_validate_domain_embedding_config(self):
         fallback = _default_domain_embedding_config()
         loaded = _load_domain_embedding_config(self.domain_embedding_config_path, fallback)
-        validated = DomainEmbeddingConfigModel(domains=loaded)
+        validated = DomainEmbeddingConfigModel(
+            domains=loaded.get("domains") or fallback,
+            active_domain=loaded.get("active_domain"),
+        )
         self.DOMAIN_EMBEDDING_CONFIG = {k: v.model_dump() for k, v in validated.domains.items()}
+
+        if validated.active_domain and not _has_active_domain_env_override():
+            self.active_domain = validated.active_domain
+
         if self.active_domain not in self.DOMAIN_EMBEDDING_CONFIG:
             raise ValueError(
                 f"active_domain '{self.active_domain}' is not present in DOMAIN_EMBEDDING_CONFIG"

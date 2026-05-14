@@ -2444,7 +2444,15 @@ async def update_domain_embedding_config(payload: DomainEmbeddingConfigUpdateReq
                 bf.write(previous)
 
         with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(normalized, f, sort_keys=False, allow_unicode=True)
+            yaml.safe_dump(
+                {
+                    "active_domain": str(getattr(settings, "active_domain", "") or "").strip() or None,
+                    "domains": normalized.get("domains", {}),
+                },
+                f,
+                sort_keys=False,
+                allow_unicode=True,
+            )
 
         settings.DOMAIN_EMBEDDING_CONFIG = normalized.get("domains", {})
 
@@ -2482,6 +2490,25 @@ async def set_active_domain(payload: ActiveDomainUpdateRequest, request: Request
         )
 
     settings.active_domain = requested
+
+    path = _domain_embedding_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_domains = available_domains if isinstance(available_domains, dict) else {}
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                {
+                    "active_domain": settings.active_domain,
+                    "domains": existing_domains,
+                },
+                f,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist active_domain to YAML: {e}")
+
     return {
         "ok": True,
         "active_domain": settings.active_domain,
