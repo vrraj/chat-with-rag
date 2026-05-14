@@ -240,7 +240,7 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     # Vector/search shape & retrieval knobs
     # collection_name and embedding_model_key are computed dynamically based on active_domain
-    top_k: int = 8  # Recall: Number of documents to retrieve
+    top_k: int = 20  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
 
@@ -374,7 +374,7 @@ class Settings(BaseSettings):
     # --- Inference context control --- Number of reranked rows (retrieved) to include in inference prompt as input context
     inference_context_rows: int = 4
 
-    max_inference_output_tokens: int = 500
+    max_inference_output_tokens: int = 1200
     tools_synth_max_output_tokens: int = 600
 
     # to include reasoning for the inference_model, set the inference_reasoning_effort and inference_reasoning_model
