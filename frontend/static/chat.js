@@ -1440,19 +1440,108 @@
     }
   }
 
+  // Initialize domain dropdown from runtime context
+  async function initDomainDropdown() {
+    const activeDomainSelect = qs('#active_domain');
+    if (!activeDomainSelect) return;
+
+    function getActiveDomain() {
+      try {
+        return String(localStorage.getItem('active_domain') || '').trim();
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function setActiveDomain(domain) {
+      try {
+        const val = String(domain || '').trim();
+        if (val) {
+          localStorage.setItem('active_domain', val);
+        } else {
+          localStorage.removeItem('active_domain');
+        }
+      } catch (_) {
+        // no-op
+      }
+    }
+
+    try {
+      const resp = await fetch('/api/ui/runtime-context');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const ctx = await resp.json();
+      const domains = Array.isArray(ctx.domains) ? ctx.domains : [];
+
+      // Clear existing options except the first (default)
+      while (activeDomainSelect.options.length > 1) {
+        activeDomainSelect.remove(1);
+      }
+
+      // Add dynamic options
+      domains.forEach((domain) => {
+        if (domain && domain !== 'default') {
+          const option = document.createElement('option');
+          option.value = domain;
+          option.textContent = domain;
+          activeDomainSelect.appendChild(option);
+        }
+      });
+
+      // Set selected value
+      const backendDomain = String(ctx.active_domain || '').trim();
+      const localDomain = getActiveDomain();
+      const selected = backendDomain || localDomain || '';
+      activeDomainSelect.value = selected;
+      setActiveDomain(selected);
+    } catch (error) {
+      const initialDomain = getActiveDomain();
+      activeDomainSelect.value = initialDomain || '';
+      console.warn('Failed to initialize runtime domain context:', error);
+    }
+
+    // Add change listener
+    activeDomainSelect.addEventListener('change', () => {
+      setActiveDomain(activeDomainSelect.value);
+      updateActiveCollectionDisplay();
+      updateModelsBasedOnDomain();
+    });
+  }
+
   // Load model configuration and live model registry when the page loads
   document.addEventListener('DOMContentLoaded', async () => {
+    try {
+      // Initialize domain dropdown from runtime context
+      await initDomainDropdown();
+    } catch (e) {
+      console.error('Failed to initialize domain dropdown', e);
+    }
+
     try {
       // Prefer live registry (overwrites defaults in MODEL_REGISTRY / MODELS_BY_STAGE)
       await fetchModelRegistry();
     } catch (e) {
       console.error('Failed to fetch model registry', e);
     }
+
     try {
+      // Load runtime config (active_domain, collection_name, etc.)
       await loadModelConfig();
     } catch (e) {
-      console.error('Failed to load model configuration', e);
+      console.error('Failed to load model config', e);
     }
+
+    try {
+      // Add event listener for cross encoder checkbox to update reranker model display
+      const enableCrossEncoder = qs('#enable_cross_encoder_rerank');
+      if (enableCrossEncoder) {
+        enableCrossEncoder.addEventListener('change', async () => {
+          await updateModelsBasedOnDomain();
+        });
+      }
+    } catch (e) {
+      console.debug('Failed to initialize event listeners', e);
+    }
+
     // After backend config/labels are loaded, wire and init the models modal.
     try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
 
@@ -1462,23 +1551,6 @@
       await updateModelsBasedOnDomain();
     } catch (e) {
       console.debug('Failed to initialize domain display', e);
-    }
-
-    // Add event listener for domain change
-    const activeDomainSelect = qs('#active_domain');
-    if (activeDomainSelect) {
-      activeDomainSelect.addEventListener('change', async () => {
-        await updateActiveCollectionDisplay();
-        await updateModelsBasedOnDomain();
-      });
-    }
-
-    // Add event listener for cross encoder checkbox to update reranker model display
-    const enableCrossEncoder = qs('#enable_cross_encoder_rerank');
-    if (enableCrossEncoder) {
-      enableCrossEncoder.addEventListener('change', async () => {
-        await updateModelsBasedOnDomain();
-      });
     }
   });
 

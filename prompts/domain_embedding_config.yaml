@@ -1,4 +1,4 @@
-active_domain: finance
+active_domain: backpacking
 domains:
   default:
     collection_name: document_index
@@ -20,6 +20,12 @@ domains:
     search_mode: dense
   finance:
     collection_name: document_index_finance
+    embedding_model_key: local:dense_default
+    model_type: local
+    vector_type: hybrid
+    search_mode: hybrid
+  backpacking:
+    collection_name: document_index_backpack
     embedding_model_key: local:dense_default
     model_type: local
     vector_type: hybrid

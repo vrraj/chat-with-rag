@@ -49,7 +49,7 @@ class QdrantDB:
                                 hnsw_config=models.HnswConfigDiff(
                                     m=16,
                                     ef_construct=100,
-                                    full_scan_threshold=10000,
+                                    full_scan_threshold=1000,
                                 )
                             )
                         },
@@ -57,7 +57,7 @@ class QdrantDB:
                             "sparse": models.SparseVectorParams(
                                 index=models.SparseIndexParams(
                                     on_disk=True,
-                                    full_scan_threshold=10000,
+                                    full_scan_threshold=1000,
                                 )
                             )
                         }
@@ -75,7 +75,7 @@ class QdrantDB:
                                 hnsw_config=models.HnswConfigDiff(
                                     m=16,
                                     ef_construct=100,
-                                    full_scan_threshold=10000,
+                                    full_scan_threshold=1000,
                                 )
                             )
                         }
@@ -91,7 +91,7 @@ class QdrantDB:
                             hnsw_config=models.HnswConfigDiff(
                                 m=16,
                                 ef_construct=100,
-                                full_scan_threshold=10000,
+                                full_scan_threshold=1000,
                             )
                         ),
                     )

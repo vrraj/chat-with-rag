@@ -1,3 +1,4 @@
+active_domain: finance
 domains:
   default:
     collection_name: document_index
@@ -5,23 +6,26 @@ domains:
     model_type: hosted
     vector_type: null
     search_mode: dense
-
   mountains:
     collection_name: document_index
     embedding_model_key: openai:embed_small
     model_type: hosted
     vector_type: null
     search_mode: dense
-
   oceans:
     collection_name: document_index_gemini
     embedding_model_key: gemini:native-embed
     model_type: hosted
     vector_type: null
     search_mode: dense
-
   finance:
     collection_name: document_index_finance
+    embedding_model_key: local:dense_default
+    model_type: local
+    vector_type: hybrid
+    search_mode: hybrid
+  backpacking:
+    collection_name: document_index_backpack
     embedding_model_key: local:dense_default
     model_type: local
     vector_type: hybrid
