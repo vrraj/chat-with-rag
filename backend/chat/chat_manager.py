@@ -3040,20 +3040,89 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     # --- Retrieve with new service or legacy path ---
     if use_new_retrieval:
         # Use the new retrieval/rerank service
+        logger.info("[RETRIEVE - NEW] (%s) using new retrieval service with search_mode=%s, use_colbert=%s, enable_cross_encoder=%s", 
+                   log_origin, _search_mode, _use_colbert, _enable_cross_encoder_rerank)
         try:
-            logger.info("[RETRIEVE] (%s) using new retrieval service with search_mode=%s, use_colbert=%s, enable_cross_encoder=%s", 
-                       log_origin, _search_mode, _use_colbert, _enable_cross_encoder_rerank)
-            retrieval_result = _retrieve_with_rerank(
+            # Create service instance and call methods individually for stage emissions
+            service = RetrievalEvalService(active_domain=_active_domain)
+            
+            # Step 1: Retrieve
+            retrieve_start = time.time()
+            retrieval = service.retrieve(
                 query=effective_query,
-                active_domain=_active_domain,
                 search_mode=_search_mode,
                 top_k=int(top_k),
                 score_threshold=float(score_threshold) if score_threshold is not None else None,
-                use_colbert=_use_colbert,
-                colbert_top_n=_colbert_top_n,
-                enable_cross_encoder_rerank=_enable_cross_encoder_rerank,
-                cross_encoder_top_n=_cross_encoder_top_n,
+                query_filter=None,
+                with_payload=True,
+                exact=False,
             )
+            retrieve_elapsed = time.time() - retrieve_start
+            retrieval_results = retrieval.get("results", [])
+            logger.info("[TIMING-RETRIEVAL] (%s) retrieved %d results in %.2fs", log_origin, len(retrieval_results), retrieve_elapsed)
+            
+            # Step 2: ColBERT scoring (if enabled)
+            colbert_results = None
+            rerank_source_items = retrieval_results
+            if _use_colbert:
+                try:
+                    logger.info("[PIPELINE] emit stage: ColBERT Late Interaction")
+                    if show_processing_steps:
+                        emit_stage(req_id, "ColBERT Late Interaction")
+                except Exception:
+                    pass
+                colbert_start = time.time()
+                colbert_results = service.score_with_colbert(
+                    query=effective_query,
+                    retrieval_results=retrieval_results,
+                    colbert_top_n=_colbert_top_n,
+                )
+                colbert_elapsed = time.time() - colbert_start
+                logger.info("[TIMING-COLBERT] (%s) scored %d items in %.2fs", log_origin, len(retrieval_results), colbert_elapsed)
+                rerank_source_items = [x["item"] for x in colbert_results["for_rerank"]]
+            
+            # Step 3: Cross-encoder reranking (if enabled)
+            if _enable_cross_encoder_rerank:
+                try:
+                    logger.info("[PIPELINE] emit stage: Cross Encoder Rerank")
+                    if show_processing_steps:
+                        emit_stage(req_id, "Cross Encoder Rerank")
+                except Exception:
+                    pass
+                rerank_start = time.time()
+                reranked = service.rerank_with_cross_encoder(
+                    query=effective_query,
+                    items=rerank_source_items,
+                    reranked_top_n=_cross_encoder_top_n,
+                )
+                rerank_elapsed = time.time() - rerank_start
+                logger.info("[TIMING-CROSS_ENCODER] (%s) reranked %d items in %.2fs", log_origin, len(rerank_source_items), rerank_elapsed)
+            else:
+                passthrough_top_n = max(1, int(_cross_encoder_top_n))
+                reranked = {
+                    "items": [
+                        {
+                            "original_index": idx,
+                            "cross_encoder_score": None,
+                            "item": row,
+                        }
+                        for idx, row in enumerate(rerank_source_items[:passthrough_top_n])
+                    ],
+                    "model": None,
+                    "requested_top_n": passthrough_top_n,
+                    "cross_encoder_enabled": False,
+                }
+            
+            # Manually assemble result to match expected structure
+            retrieval_result = {
+                "domain": {
+                    **service.domain_meta,
+                    "embedding_dimensions": service._embedding_dimensions(),
+                },
+                "retrieval": retrieval,
+                "colbert": colbert_results,
+                "reranked": reranked,
+            }
             
             # Extract results from the retrieval response
             if _enable_cross_encoder_rerank and retrieval_result.get("reranked"):
@@ -3061,8 +3130,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 reranked = retrieval_result["reranked"]
                 results = [item["item"] for item in reranked.get("items", [])]
                 # Log retrieval results before cross encoder
-                retrieval = retrieval_result.get("retrieval", {})
-                retrieval_results = retrieval.get("results", [])
                 logger.info(
                     "[RETRIEVAL] before cross-encoder sample keys=%s payload_keys=%s sample=%s",
                     list(retrieval_results[0].keys()) if retrieval_results else [],
@@ -3084,7 +3151,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     [r.get("payload", {}).get("text", "")[:75] for r in results])
             else:
                 # Use retrieval results (with or without ColBERT)
-                retrieval = retrieval_result.get("retrieval", {})
                 results = retrieval.get("results", [])
                 # Log retrieval results
                 logger.info(
@@ -3097,23 +3163,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     log_origin, len(results),
                     [r.get("payload", {}).get("text", "")[:75] for r in results])
             
-            # Emit SSE events for ColBERT and Cross-Encoder stages
-            if _use_colbert and retrieval_result.get("colbert"):
-                try:
-                    logger.info("[PIPELINE] emit stage: ColBERT Late Interaction")
-                    if show_processing_steps:
-                        emit_stage(req_id, "ColBERT Late Interaction")
-                except Exception:
-                    pass
-            
-            if _enable_cross_encoder_rerank and retrieval_result.get("reranked"):
-                try:
-                    logger.info("[PIPELINE] emit stage: Cross Encoder Rerank")
-                    if show_processing_steps:
-                        emit_stage(req_id, "Cross Encoder Rerank")
-                except Exception:
-                    pass
-            
             # Skip reranking stage since we already did it in the service
             skip_rerank = True
         except Exception as e:
@@ -3124,6 +3173,7 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
     
     if not use_new_retrieval:
         # Legacy retrieval path
+        logger.info("[RETRIEVE - LEGACY] (%s) using legacy retrieval path", log_origin)
         _es = (stage_specs or {}).get("embedding") or {}
         _emb_runtime = str(_es.get("runtime") or "hosted").strip().lower() or "hosted"
         _emb_provider_stage = str(_es.get("provider") or "openai").strip() or "openai"
