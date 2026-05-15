@@ -202,6 +202,17 @@ class RetrievalEvalService:
         items: List[Dict[str, Any]],
         reranked_top_n: int,
     ) -> Dict[str, Any]:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Debug: check what we're receiving
+        if items:
+            logger.info("[RERANK] received items count=%d sample_keys=%s sample_payload_keys=%s",
+                len(items),
+                list(items[0].keys()) if items else [],
+                list((items[0].get("payload") or {}).keys()) if items else [],
+            )
+        
         model_cfg = get_model_config("reranker")
 
         model_name = str(model_cfg.get("name") or "").strip()

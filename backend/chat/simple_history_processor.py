@@ -34,28 +34,16 @@ class SimpleHistoryProcessor:
         3. Predictable ordering
         4. Stable content cleaning
         """
-        # DEBUG: Log input
-        logger.info(f"[TAIL] INFO: format_recent_conversation called with {len(verbatim_tail)} messages, log_origin={log_origin}")
-        logger.debug(f"[TAIL] ({log_origin}) Input: {len(verbatim_tail)} messages to format")
-        for i, msg in enumerate(verbatim_tail):
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            logger.debug(f"[TAIL] ({log_origin})   {i+1}. {role}: {content}")
         
         # Create a deterministic copy to avoid modifying the original
         _tail = [dict(msg) for msg in verbatim_tail]
         
         # Get assistant role once to ensure consistency
         assistant_role = self._get_assistant_role(params)
-        logger.debug(f"[TAIL] ({log_origin}) Assistant role: '{assistant_role}'")
         
         # Remove processing message from tail (deterministic)
         original_tail_length = len(_tail)
         
-        # Log the input for debugging
-        if _tail:
-            last_msg = _tail[-1]
-            logger.debug(f"[TAIL] ({log_origin}) Last message before processing removal: role='{last_msg.get('role')}', content='{last_msg.get('content')}'")
         
         # Remove processing message(s) from the end
         while _tail:
@@ -68,20 +56,13 @@ class SimpleHistoryProcessor:
             is_assistant = (role == "assistant" or role == assistant_role)
             is_processing = (content == "processing")
             
-            logger.debug(f"[TAIL] ({log_origin}) Checking: is_assistant={is_assistant}, role='{role}', assistant_role='{assistant_role}', is_processing={is_processing}, content='{content}'")
             
             if is_assistant and is_processing:
                 _tail.pop()
-                logger.debug(f"[TAIL] ({log_origin}) Removed processing message from recent conversation (was {len(_tail)+1} messages, now {len(_tail)})")
             else:
                 # No more processing messages at the end
                 break
         
-        # Log final tail length for debugging
-        if original_tail_length != len(_tail):
-            logger.info(f"[TAIL] ({log_origin}) Recent conversation: {len(_tail)} messages after processing removal (removed {original_tail_length - len(_tail)} processing messages)")
-        elif _tail:
-            logger.debug(f"[TAIL] ({log_origin}) No processing messages found to remove, keeping {len(_tail)} messages")
         
         # Format each message deterministically
         tail_lines: List[str] = []
@@ -92,16 +73,12 @@ class SimpleHistoryProcessor:
             role = str(msg.get("role", "user")).strip()
             content = str(msg.get("content", "")).strip()
             
-            # DEBUG: Log before cleaning
-            logger.debug(f"[TAIL] ({log_origin}) Processing {role}: {content}")
             
             # Clean sources from both original and target role formats
             if role == "assistant" or role == assistant_role:
                 cleaned = self._strip_sources_deterministic(content)
                 if cleaned != content:
                     trimmed += 1
-                    logger.debug(f"[TAIL] ({log_origin}) Sources stripped - before: {content}")
-                    logger.debug(f"[TAIL] ({log_origin}) Sources stripped - after:  {cleaned}")
                 content = cleaned
                 # Convert to target role if it was the original "assistant" role
                 if role == "assistant":
@@ -113,16 +90,9 @@ class SimpleHistoryProcessor:
         # Join with consistent line endings
         recent_block_str = "\n".join(tail_lines) + "\n\n"
         
-        # DEBUG: Log final output
-        logger.info(f"[TAIL] INFO: Final recent_conversation output ({len(recent_block_str)} chars):")
-        output_lines = recent_block_str.strip().split('\n')
-        for i, line in enumerate(output_lines):
-            logger.debug(f"[TAIL] INFO:   {i+1}. {line}")
         
         if trimmed:
-            logger.debug(
-                f"[TAIL] ({log_origin}) Removed {trimmed} processing messages from recent conversation"
-            )
+            pass
         
         return recent_block_str
     
@@ -133,14 +103,12 @@ class SimpleHistoryProcessor:
             role = get_assistant_role(self.settings_obj, params)
             if role:
                 result = str(role).strip()
-                logger.debug(f"[TAIL] Assistant role from config: '{result}'")
                 return result
         except Exception as e:
-            logger.debug(f"[TAIL] Error getting assistant role from config: {e}")
+            pass
         
         # Fallback to default
         default_role = str(getattr(self.settings_obj, 'assistant_role_default', 'assistant') or 'assistant').strip()
-        logger.debug(f"[TAIL] Using default assistant role: '{default_role}'")
         return default_role
     
     def _strip_sources_deterministic(self, content: str) -> str:

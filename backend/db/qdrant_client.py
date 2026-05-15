@@ -152,12 +152,6 @@ class QdrantStorage:
 
             for point in batch:
                 payload = point["payload"]
-                from pprint import pformat
-                try:
-                    preview = pformat(payload)
-                except Exception:
-                    preview = str(payload)
-                #logger.debug("Qdrant: payload for %s %s", point['id'], preview[:getattr(settings, 'debug_log_truncate_chars', 500)] if getattr(settings, 'debug_verbose', False) else "<hidden>")
                 # Use the full original payload as-is to retain all custom metadata fields (e.g., section_index, title, etc.)
                 enriched_payload = payload
                 if "url" in enriched_payload:
@@ -266,4 +260,3 @@ class QdrantStorage:
             collection_name=self.collection_name,
             points_selector=models.PointIdsList(points=ids)
         )
-

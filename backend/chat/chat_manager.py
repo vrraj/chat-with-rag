@@ -53,6 +53,7 @@ from backend.llm.llm_client import generate, embed, get_pricing_for_model, LLMEr
 from backend.chat.simple_history_processor import SimpleHistoryProcessor
 from backend.chat.utils import _get_param_int, split_history_for_prompt
 from backend.chat.chunked_history_manager import ChunkedHistoryManager
+from backend.chat.rewrite_helpers import should_rewrite
 from backend.chat.prompt_registry import (
     resolve_inference_prompt,
     resolve_rewrite_prompt,
@@ -1575,208 +1576,6 @@ def _build_tools_synth_messages(
     )
     return synth_messages
 
-# --- Query rewrite helpers (not wired; no behavior change) ---
-_REWRITE_DEICTIC_RE = re.compile(r"\b(it|this|that|these|those|here|there|they|them|their|its|he|she|his|her|also|then)\b", re.I)
-_REWRITE_SHORT_Q_RE = re.compile(
-    r"\b(what about|how about|how far|how long|how much|where is|when is|which one)\b",
-    re.I,
-)
-
-def should_rewrite(message: str) -> bool:
-    """Heuristic: return True if the message is likely underspecified (coreference or very short).
-    Safe default: if this returns False, we skip rewrite and use the original message.
-    Diagnostic logging included.
-    """
-    if not message:
-        logger.debug("[REWRITE] heuristic=empty_message -> False")
-        return False
-    txt = message.strip()
-    # Rewrite deictic follow-ups like:
-    # "how far is it", "what about that one", "where is it"
-    if _REWRITE_DEICTIC_RE.search(txt):
-        logger.debug("[REWRITE] heuristic=deictic -> True")
-        return True
-
-    # Short follow-up style questions without explicit entities.
-    # Avoid rewriting generic conversational/support requests like:
-    # "can I talk to someone"
-    if len(txt.split()) <= 7 and _REWRITE_SHORT_Q_RE.search(txt):
-        logger.debug(
-            "[REWRITE] heuristic=short_followup_question words=%d -> True",
-            len(txt.split()),
-        )
-        return True
-    logger.debug("[REWRITE] heuristic=none -> False")
-    return False
-
-
-def build_rewrite_prompt(
-    tail_messages: List[Dict[str, str]] | None,
-    summary_text: str,
-    message: str,
-) -> str:
-    """Build a structured prompt for the rewrite model using conversation history.
-
-    Uses:
-      - Optional long-term summary (summary_text)
-      - Recent verbatim turns (tail_messages)
-      - Current user message (message)
-
-    The model is instructed to output ONLY a JSON object with the shape:
-      {"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}
-    """
-    parts: List[str] = []
-
-    # 1. SYSTEM IDENTITY (Static/Cacheable)
-    parts.append("### ROLE\n")
-    parts.append(
-        "You are a Search Query Optimizer. Your task is to rewrite the user's latest message "
-        "into a single, standalone search query that can be sent to a vector database or search engine, "
-        "using only the provided conversation context.\n\n"
-    )
-
-    # 2. HIERARCHICAL INSTRUCTIONS (Static/Cacheable)
-    parts.append("### INSTRUCTIONS\n")
-    parts.append(
-        "1. PRIORITY: Use the 'RECENT CONVERSATION' to resolve immediate pronouns and vague references "
-        "(e.g., it, this, that, they, those, their, its).\n"
-    )
-    parts.append(
-        "2. BACKGROUND: Use the 'CONVERSATION SUMMARY' only to understand the overall topic when the recent turns "
-        "are not sufficient by themselves.\n"
-    )
-    parts.append(
-        "3. STANDALONE QUERY: The 'rewritten' field must be a clear, self-contained search query. "
-        "If the user's latest message is already a clear standalone question, return it unchanged and set "
-        "'changed': false.\n"
-    )
-    parts.append(
-        "4. NO CHAT / NO ANSWERS: Do not answer the question. Do not add explanations, opinions, or chit-chat. "
-        "Your only job is to rewrite the query for retrieval.\n"
-    )
-    parts.append(
-        "5. AMBIGUITY HANDLING: If you cannot confidently resolve what a pronoun or vague reference refers to, "
-        "keep the original question unchanged, set 'ambiguous': true, and briefly explain why in 'reason'.\n\n"
-    )
-
-    # 3. OUTPUT SCHEMA (Static/Cacheable)
-    parts.append("### OUTPUT SCHEMA\n")
-    parts.append(
-        "Return STRICTLY a single JSON object with this shape and field meanings (no extra text, no code fences):\n"
-    )
-    parts.append(
-        '{"rewritten":"...","changed":true|false,"confidence":0.0,'
-        '"ambiguous":true|false,"reason":"..."}\n'
-    )
-    parts.append(
-        "- rewritten: the final standalone search query.\n"
-        "- changed: true if you modified the user question, false if you kept it as-is.\n"
-        "- confidence: a float from 0.0 to 1.0 indicating how confident you are in the rewrite.\n"
-        "- ambiguous: true if the context is too unclear to safely rewrite; otherwise false.\n"
-        "- reason: a short phrase (max ~15-20 tokens) explaining your decision.\n\n"
-    )
-
-    # 4. FEW-SHOT EXAMPLES (Static/Cacheable)
-    parts.append("### EXAMPLES\n")
-
-    # EXAMPLE 1: Mount Whitney (domain-specific, location + weather + airport)
-    parts.append("EXAMPLE 1\n")
-    parts.append("SUMMARY: user is interested in mount whitney.\n")
-    parts.append(
-        'RECENT: USER: "what is the elevtion ." | ASSISTANT: "The elevation is 14505 ft."\n'
-    )
-    parts.append('CURRENT: "Current weather and closest airport."\n')
-    parts.append(
-        '{"rewritten": "what is the current weather in Mount Whitney, California and the closest airport to it", '
-        '"changed": true, "confidence": 0.98, "ambiguous": false, '
-        '"reason": "added full context for mount whitney"}\n\n'
-    )
-
-    # EXAMPLE 2: SDK / Linux compatibility (resolving "it" to Python SDK)
-    parts.append("EXAMPLE 2\n")
-    parts.append("SUMMARY: user is installing and using a Python SDK.\n")
-    parts.append(
-        'RECENT: USER: "How do I install the Python SDK?" | ASSISTANT: "You can install it with pip using `pip install my-sdk`."\n'
-    )
-    parts.append('CURRENT: "Does it work on Linux?"\n')
-    parts.append(
-        '{"rewritten": "Linux compatibility and system requirements for the my-sdk Python SDK", '
-        '"changed": true, "confidence": 0.96, "ambiguous": false, '
-        '"reason": "resolved it to Python SDK and added linux compatibility context"}\n\n'
-    )
-
-    # EXAMPLE 3: Q3 revenue / projections (topic continuation)
-    parts.append("EXAMPLE 3\n")
-    parts.append("SUMMARY: user is asking about company financial performance for Q3.\n")
-    parts.append(
-        'RECENT: USER: "Tell me about the Q3 revenue." | ASSISTANT: "Q3 revenue was $45M, up 12% year-over-year."\n'
-    )
-    parts.append('CURRENT: "What about the projections?"\n')
-    parts.append(
-        '{"rewritten": "Q3 revenue projections and future financial outlook for the company", '
-        '"changed": true, "confidence": 0.94, "ambiguous": false, '
-        '"reason": "used prior Q3 revenue topic to expand vague projections into standalone query"}\n\n'
-    )
-
-    # EXAMPLE 4: Car clicking sound (entity clarification)
-    parts.append("EXAMPLE 4\n")
-    parts.append("SUMMARY: user has a car with a clicking sound and wants to understand the issue.\n")
-    parts.append(
-        'RECENT: USER: "My car is making a clicking sound when I accelerate." | ASSISTANT: "That can have several causes, typically related to CV joints or engine components."\n'
-    )
-    parts.append('CURRENT: "How much to fix it?"\n')
-    parts.append(
-        '{"rewritten": "cost and repair estimates to fix a car that makes a clicking sound when accelerating", '
-        '"changed": true, "confidence": 0.92, "ambiguous": false, '
-        '"reason": "expanded it into explicit car clicking sound repair cost query"}\n\n'
-    )
-
-    # EXAMPLE 5: Already clear airports question (no semantic change, but more context)
-    parts.append("EXAMPLE 5\n")
-    parts.append("SUMMARY: user is researching airports near Mount Whitney.\n")
-    parts.append(
-        'RECENT: USER: "What are the closest airports to Mount Whitney?" | ASSISTANT: "There are several nearby, including Bishop and Fresno Yosemite."\n'
-    )
-    parts.append('CURRENT: "What are the closest airports to Mount Whitney?"\n')
-    parts.append(
-        '{"rewritten": "What are the closest airports to Mount Whitney?", '
-        '"changed": false, "confidence": 0.99, "ambiguous": false, '
-        '"reason": "question already clear and self-contained"}\n\n'
-    )
-
-    # EXAMPLE 6: Truly ambiguous follow-up (keep original, mark ambiguous)
-    parts.append("EXAMPLE 6\n")
-    parts.append("SUMMARY: user is asking many unrelated questions about different products and topics.\n")
-    parts.append(
-        'RECENT: USER: "How do I reset my router?" | ASSISTANT: "Press and hold the reset button for 10 seconds."\n'
-    )
-    parts.append('CURRENT: "What about that one?"\n')
-    parts.append(
-        '{"rewritten": "What about that one?", '
-        '"changed": false, "confidence": 0.2, "ambiguous": true, '
-        '"reason": "cannot determine what that one refers to from context"}\n\n'
-    )
-
-    # 5. DYNAMIC DATA (Changes every turn)
-    if summary_text:
-        parts.append("### CONVERSATION SUMMARY (Long-term Context)\n")
-        parts.append(summary_text.strip())
-        parts.append("\n\n")
-
-    if tail_messages:
-        parts.append("### RECENT CONVERSATION (Immediate Context)\n")
-        for m in tail_messages:
-            role = (m.get("role") or "user").upper()
-            content = m.get("content", "") or ""
-            parts.append(f"{role}: {content}\n")
-        parts.append("\n")
-
-    parts.append("### CURRENT USER QUESTION\n")
-    parts.append(message.strip())
-    parts.append("\n")
-
-    return "".join(parts)
-
 
 def rewrite_query(
     tail_messages: List[Dict[str, str]] | None,
@@ -3261,10 +3060,42 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                 # Use cross-encoder reranked results
                 reranked = retrieval_result["reranked"]
                 results = [item["item"] for item in reranked.get("items", [])]
+                # Log retrieval results before cross encoder
+                retrieval = retrieval_result.get("retrieval", {})
+                retrieval_results = retrieval.get("results", [])
+                logger.info(
+                    "[RETRIEVAL] before cross-encoder sample keys=%s payload_keys=%s sample=%s",
+                    list(retrieval_results[0].keys()) if retrieval_results else [],
+                    list((retrieval_results[0].get("payload") or {}).keys()) if retrieval_results else [],
+                    retrieval_results[0] if retrieval_results else None,
+                )
+                logger.info("[RETRIEVAL] (%s) before cross-encoder (count=%d): %s",
+                    log_origin, len(retrieval_results),
+                    [r.get("payload", {}).get("text", "")[:75] for r in retrieval_results])
+                # Log results after cross encoder
+                logger.info(
+                    "[CROSS_ENCODER] after reranking sample keys=%s payload_keys=%s sample=%s",
+                    list(results[0].keys()) if results else [],
+                    list((results[0].get("payload") or {}).keys()) if results else [],
+                    results[0] if results else None,
+                )
+                logger.info("[CROSS_ENCODER] (%s) after reranking (count=%d): %s",
+                    log_origin, len(results),
+                    [r.get("payload", {}).get("text", "")[:75] for r in results])
             else:
                 # Use retrieval results (with or without ColBERT)
                 retrieval = retrieval_result.get("retrieval", {})
                 results = retrieval.get("results", [])
+                # Log retrieval results
+                logger.info(
+                    "[RETRIEVAL] sample keys=%s payload_keys=%s sample=%s",
+                    list(results[0].keys()) if results else [],
+                    list((results[0].get("payload") or {}).keys()) if results else [],
+                    results[0] if results else None,
+                )
+                logger.info("[RETRIEVAL] (%s) results (count=%d): %s",
+                    log_origin, len(results),
+                    [r.get("payload", {}).get("text", "")[:75] for r in results])
             
             # Emit SSE events for ColBERT and Cross-Encoder stages
             if _use_colbert and retrieval_result.get("colbert"):
