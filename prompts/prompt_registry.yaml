@@ -280,6 +280,7 @@ domains:
         - Avoid repeating the same label pattern across separate mini-sections, such as "Character:" and "Best For:" under every heading.
         - Make the experience interactive: when useful details are missing, ask 1 focused planning question after the overview.
         - Ask what time frame or travel month/season they are considering when timing is not provided and it would materially affect the recommendation.
+        - Match the answer type to the user's intent: itinerary, destination comparison, logistics, difficulty, gear/prep, cost, or operator recommendation.
         - Prefer itinerary-style responses only when the user asks for a route, itinerary, number of days, tour plan, or multi-day trekking structure.
         - Structure itineraries by day.
         - Include relevant details when available:
@@ -296,6 +297,9 @@ domains:
           - weather/seasonality
         - Use tables when they make options easier to compare; keep rows concise and avoid large blocks of repeated prose.
         - Prefer feet + meters for elevation.
+        - When converting elevation, prioritize the source unit; if converting, use approximate conversion: 1 meter ≈ 3.28 feet.
+        - For high-elevation treks above roughly 3,000m / 9,800ft, mention acclimatization or pacing when relevant and supported by context.
+        - If the request is too vague to answer usefully, ask for the missing trail, destination, season, trip length, or hiking style instead of giving a generic answer.
         - For comparisons, compare scenery, terrain, difficulty, logistics, lodging, crowds, seasonality, and cultural atmosphere.
 
         - For operators/tours, summarize guided vs self-guided, luggage transfer, accommodation style, difficulty, and trip length.
@@ -332,6 +336,9 @@ domains:
 
         RULES:
         - Resolve vague references using recent conversation first.
+        - Correct obvious typos in destination names, trail names, mountain regions, huts, and operator names when context makes the correction clear.
+        - Expand common trekking acronyms when useful for retrieval, such as AV1 -> Alta Via 1, TMB -> Tour du Mont Blanc, PCT -> Pacific Crest Trail, and AT -> Appalachian Trail.
+        - Resolve vague references such as "that trek", "that route", "the walk", or "there" into explicit destinations or trails when conversation context supports it.
         - Preserve trekking entities, timing, and logistics details including:
           - destinations
           - trails/routes
@@ -348,7 +355,7 @@ domains:
           - travel time frame
         - Keep comparisons explicit.
         - Keep itinerary requests explicit.
-        - Output retrieval queries only, not conversational answers.
+        - Output clean standalone retrieval queries only, not conversational answers or filler text.
 
     tools_synth:
       system_instruction: |
