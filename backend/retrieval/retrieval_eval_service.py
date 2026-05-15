@@ -19,11 +19,15 @@ def _get_colbert_model(model_name: str, cache_dir: str):
     return LateInteractionTextEmbedding(model_name=model_name, cache_dir=cache_dir)
 
 
-@lru_cache(maxsize=2)
+_cross_encoder_cache = {}
+
 def _get_cross_encoder_model(model_name: str, cache_dir: str):
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-    return TextCrossEncoder(model_name=model_name, cache_dir=cache_dir)
+    cache_key = (model_name, cache_dir)
+    if cache_key not in _cross_encoder_cache:
+        _cross_encoder_cache[cache_key] = TextCrossEncoder(model_name=model_name, cache_dir=cache_dir)
+    return _cross_encoder_cache[cache_key]
 
 
 def _extract_text(item: Dict[str, Any]) -> str:
