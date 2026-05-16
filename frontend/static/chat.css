@@ -172,6 +172,20 @@ body {
 }
 .form-field:last-child { margin-bottom: 0; }
 
+.form-field.checkbox-field {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
+
+.form-field.checkbox-field > input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+.form-field.checkbox-field > label {
+  width: 100%;
+  overflow-wrap: break-word;
+}
+
 /* Optional variant retains same grid for row style */
 .form-field.field-row { grid-template-columns: var(--label-col, 95px) auto; }
 
