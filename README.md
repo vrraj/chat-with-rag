@@ -65,7 +65,7 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 | Pipeline | Flow |
 |---|---|
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
-| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
+| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `(Optional) ColBERT Late Interaction` → `(Optional) Local Cross-Encoder Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
 ```mermaid
 %%{init: {'themeVariables': { 'fontSize': '16px', 'subgraphFontSize': '20px', 'subgraphTitleColor': '#1e6bb8'}}}%%
@@ -79,9 +79,12 @@ graph LR
         direction LR
         U[User Prompt] --> QR[Query Rewrite]
         QR --> Search[Retrieval]
+        Search --> ColBERT[ColBERT Late Interaction (optional)]
+        Search --> R
+        ColBERT --> R[Local Cross-Encoder Rerank (optional)]
 
         %% Return path from Ingestion back to Chat
-        R[Rerank] --> Ctx[Context Assembly] --> Inf[LLM Inference]
+        R --> Ctx[Context Assembly] --> Inf[LLM Inference]
 
         Inf --> Tools{Tool Execution?}
         Tools -- "Yes" --> API[Tool Calls] --> Synth[Response Synthesis] --> Post[Post-Processing]
@@ -97,13 +100,14 @@ graph LR
 
     %% PHYSICAL CONNECTIONS
     Search -- "Query" --> DB
+    DB -- "Results" --> ColBERT
     DB -- "Results" --> R
 
     %% Apply Themes
     %% Using 'core' style for the main entry/exit and database
     class U,Out,DB core;
     %% Using 'feat' style for standard logic steps
-    class QR,Search,R,Ctx,API,Post,S,P,C,D,E feat;
+    class QR,Search,ColBERT,R,Ctx,API,Post,S,P,C,D,E feat;
     %% Using 'highlight' (Cayman Green) for the critical LLM stages
     class Inf,Synth highlight;
 ```
@@ -560,6 +564,26 @@ This ensures consistency across the UI — when you change the active domain in 
 | `search_mode` | Retrieval search mode | `dense`, `hybrid`, `sparse` |
 
 > **Note:** When `vector_type` is `hybrid`, `search_mode` must also be `hybrid`. This is validated on load.
+
+
+### ⚡ Local Retrieval + Rerank Options (BGE-M3 + ColBERT)
+
+- **Local BGE-M3 embeddings.** The FastEmbed build of `BAAI/bge-m3` can simultaneously produce dense semantic vectors, lexical (sparse) representations, and ColBERT-style token grids, letting you keep the entire retrieval stack on-box for lower token usage and zero hosted-network latency. Use `prompts/local_models_registry.yaml` to point the `dense`, `sparse`, and `late_interaction` entries at the BGE-M3 checkpoint; the helper script in `scripts/test_bge-m3.py` validates that the model exposes all three capabilities in one artifact (@scripts/test_bge-m3.py#3-28).
+- **Cross-encoder rerank with the same checkpoint.** Because the reranker stage also resolves from `local_models_registry.yaml`, you can reuse the BGE family locally (for example, `BAAI/bge-m3` or `BAAI/bge-reranker-base`) so cross-encoder scoring happens without hosted limits and you can safely push more context (higher `cross_encoder_top_n`) through the rerank window (@prompts/local_models_registry.yaml#53-86; @backend/retrieval/retrieval_eval_service.py#202-252).
+- **ColBERT late interaction stage.** When `use_colbert` is enabled, retrieved documents are rescored with the FastEmbed Late Interaction model before they are handed to the cross-encoder, keeping code/token-heavy domains precise at the token level (@backend/retrieval/retrieval_eval_service.py#149-200).
+
+#### Tuning the pipeline from chat/search requests
+
+The chat/search APIs expose the retrieval parameters so you can opt into the new flow per request (UI dropdowns set the same keys) (@backend/chat/chat_manager.py#3011-3151):
+
+| Param | What it controls |
+|-------|------------------|
+| `active_domain` | Chooses which domain entry (and therefore which embedding/rerank stack) to load. |
+| `search_mode` | Switch between dense, sparse, or hybrid retrieval before reranking. |
+| `use_colbert` + `colbert_top_n` | Enable ColBERT late interaction scoring and decide how many candidates it forwards to the reranker. |
+| `enable_cross_encoder_rerank` + `cross_encoder_top_n` | Toggle the cross-encoder stage and control how many ColBERT-ranked (or raw) docs are rescored locally. |
+
+This staging lets you mix and match: keep BGE-M3 embeddings for retrieval, optionally apply ColBERT for token-level precision, and finish with a cross-encoder that shares the same local weights—maximizing consistency while sidestepping hosted rate limits.
 
 
 ---
