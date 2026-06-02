@@ -8,7 +8,15 @@ Unlike simple vector-search demos, this project provides a **multi-stage RAG pip
 
 **🚀 Get Started:** See section **[Getting Started](#-getting-started)** to run the system locally.
 
-### 🆕 What's New in v2.0
+## 🆕 What's New in v2.5
+
+- **Local BGE-M3 + ColBERT stack**  
+Run retrieval, optional ColBERT late interaction, and the cross-encoder reranker entirely on-device with FastEmbed’s `BAAI/bge-m3` family, reducing hosted latency while letting you pass more context through the rerank window.
+- **Front-end active-domain switcher.** The chat/search UIs now source domains from `GET /api/ui/runtime-context`, so you can flip collections and prompt overrides directly in the browser without editing backend config or restarting services.
+- **Prompt registry + retrieval auto-routing.** Each request carries `params.active_domain`, and the chat manager wires that through the RetrievalEvalService so the matching Qdrant collection plus embedding/ColBERT/cross-encoder stack are loaded automatically—no manual `config.py` edits between runs.
+
+
+### 🆕 Features
 
 - **Multi‑LLM Pipeline Orchestration**  
 Use different LLM providers and models across pipeline stages through the **vrraj‑llm‑adapter**, based on cost, capabilities, and task suitability.
@@ -39,6 +47,8 @@ Isolation and authorization enforced consistently across APIs and embedded clien
 
 - **Dual Chat Modes: Stateful and Stateless**  
 Support for both **stateless** (`/chat`) and **stateful** (`/chat/{session_id}`) chat patterns.
+
+
 
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
