@@ -40,7 +40,6 @@ function getActiveDomain() {
 let pdfUrlInput, pdfFileInput, pdfMaxChunksInput, pdfSkipSectionsInput, pdfEstimateToggle, pdfForceDelete, pdfIndexBtn, pdfProgress;
 let mwUrlInput, mwMaxChunksInput, mwSkipSectionsInput, mwApiUrlInput, mwUAInput, mwEstimateToggle, mwForceDelete, mwIndexBtn, mwProgress;
 let htmlUrlInput, htmlMaxChunksInput, htmlSkipSectionsInput, htmlEstimateToggle, htmlForceDelete, htmlIndexBtn, htmlProgress;
-let activeDomainSelect;
 
 // Initialize DOM references
 function initializeElements() {
@@ -73,58 +72,6 @@ function initializeElements() {
     htmlForceDelete = document.getElementById('htmlForceDelete');
     htmlIndexBtn = document.getElementById('htmlIndexBtn');
     htmlProgress = document.getElementById('htmlProgress');
-
-    // Domain selector
-    activeDomainSelect = document.getElementById('activeDomain');
-}
-
-// Populate domain dropdown dynamically
-async function populateDomainDropdown() {
-    if (!activeDomainSelect) return;
-
-    try {
-        const resp = await fetch('/api/ui/runtime-context');
-        if (!resp.ok) throw new Error('Failed to fetch runtime context');
-        const data = await resp.json();
-        const domains = Array.isArray(data.domains) ? data.domains : [];
-        const backendDomain = String(data.active_domain || '').trim();
-
-        // Clear existing options except the first (default)
-        while (activeDomainSelect.options.length > 1) {
-            activeDomainSelect.remove(1);
-        }
-
-        // Add dynamic options
-        domains.forEach(domain => {
-            if (domain && domain !== 'default') {
-                const option = document.createElement('option');
-                option.value = domain;
-                option.textContent = domain;
-                activeDomainSelect.appendChild(option);
-            }
-        });
-
-        // Set initial value from backend runtime domain, then local fallback.
-        const currentDomain = backendDomain || getActiveDomain();
-        if (currentDomain) {
-            activeDomainSelect.value = currentDomain;
-            try {
-                localStorage.setItem('active_domain', currentDomain);
-            } catch (error) {
-                console.debug('Failed to persist active_domain', error);
-            }
-        }
-    } catch (error) {
-        console.warn('Failed to load runtime domain context, using fallback options:', error);
-        // Fallback to hardcoded options
-        const fallbackDomains = ['mountains', 'finance'];
-        fallbackDomains.forEach(domain => {
-            const option = document.createElement('option');
-            option.value = domain;
-            option.textContent = domain;
-            activeDomainSelect.appendChild(option);
-        });
-    }
 }
 
 // Apply configuration to form fields
@@ -184,29 +131,9 @@ async function fetchConfig() {
 
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('DOM fully loaded, initializing app...');
-
+    
     // Initialize all DOM elements
     initializeElements();
-
-    // Populate domain dropdown
-    await populateDomainDropdown();
-
-    // Add domain change listener
-    if (activeDomainSelect) {
-        activeDomainSelect.addEventListener('change', () => {
-            try {
-                const val = String(activeDomainSelect.value || '').trim();
-                if (val) {
-                    localStorage.setItem('active_domain', val);
-                } else {
-                    localStorage.removeItem('active_domain');
-                }
-                console.log('Active domain changed to:', val || '(default)');
-            } catch (error) {
-                console.debug('Failed to persist active_domain', error);
-            }
-        });
-    }
     
     // Quick link buttons
     const openSearchBtn = document.getElementById('openSearchBtn');
@@ -216,7 +143,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const openDeleteIndexBtn = document.getElementById('openDeleteIndexBtn');
     const openPromptRegistryBtn = document.getElementById('openPromptRegistryBtn');
     const openToolRegistryBtn = document.getElementById('openToolRegistryBtn');
-    const openDomainEmbeddingConfigBtn = document.getElementById('openDomainEmbeddingConfigBtn');
     const openProcessBatchBtn = document.getElementById('openProcessBatchBtn');
     
     try {
@@ -507,7 +433,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     openDeleteIndexBtn && openDeleteIndexBtn.addEventListener('click', () => window.open('/delete_index', '_blank'));
     openPromptRegistryBtn && openPromptRegistryBtn.addEventListener('click', () => window.open('/prompt-registry', '_blank'));
     openToolRegistryBtn && openToolRegistryBtn.addEventListener('click', () => window.open('/tool-registry', '_blank'));
-    openDomainEmbeddingConfigBtn && openDomainEmbeddingConfigBtn.addEventListener('click', () => window.open('/domain-embedding-config', '_blank'));
     openListDocsBtn && openListDocsBtn.addEventListener('click', () => window.open('/list-docs.html', '_blank'));
     openChatBtn && openChatBtn.addEventListener('click', () => window.open('/chat.html', '_blank'));
     

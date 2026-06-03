@@ -24,43 +24,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function initDomainContext() {
-        if (!activeDomainSelect) return;
-        try {
-            const resp = await fetch('/api/ui/runtime-context');
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const ctx = await resp.json();
-            const domains = Array.isArray(ctx.domains) ? ctx.domains : [];
-
-            while (activeDomainSelect.options.length > 1) {
-                activeDomainSelect.remove(1);
-            }
-            domains.forEach((domain) => {
-                if (domain && domain !== 'default') {
-                    const option = document.createElement('option');
-                    option.value = domain;
-                    option.textContent = domain;
-                    activeDomainSelect.appendChild(option);
-                }
-            });
-
-            const backendDomain = String(ctx.active_domain || '').trim();
-            const localDomain = getActiveDomain();
-            const selected = backendDomain || localDomain || '';
-            activeDomainSelect.value = selected;
-            setActiveDomain(selected);
-        } catch (error) {
-            const initialDomain = getActiveDomain();
-            activeDomainSelect.value = initialDomain || '';
-            console.warn('Failed to initialize runtime domain context:', error);
-        }
-
+    const initialDomain = getActiveDomain();
+    if (activeDomainSelect) {
+        activeDomainSelect.value = initialDomain || '';
         activeDomainSelect.addEventListener('change', () => {
             setActiveDomain(activeDomainSelect.value);
         });
     }
-
-    initDomainContext();
 
     console.log('Search form initialized');
     console.log('Form elements:', {
@@ -78,7 +48,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const query = document.getElementById('searchQuery').value;
         const limit = parseInt(document.getElementById('searchLimit').value);
         const urlFilter = document.getElementById('searchUrlFilter').value;
-        const searchMode = String(document.getElementById('searchMode')?.value || 'dense').trim().toLowerCase();
         const scoreThresholdRaw = document.getElementById('scoreThreshold')?.value;
         const scoreThreshold = scoreThresholdRaw !== undefined && scoreThresholdRaw !== null
             ? parseFloat(scoreThresholdRaw)
@@ -88,10 +57,9 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('Sending request with payload:', {
             query: query.trim() || null,
             query_filter: urlFilter ? { url: urlFilter } : null,
-            limit,
-            search_mode: searchMode,
+            limit
         });
-        console.log('Form values:', { query, limit, urlFilter, searchMode });
+        console.log('Form values:', { query, limit, urlFilter });
 
         if (!query.trim()) {
             alert('Please enter a search query');
@@ -107,7 +75,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 query_filter: urlFilter ? { url: urlFilter } : null,
                 limit,
                 active_domain: getActiveDomain() || undefined,
-                search_mode: searchMode,
             };
             if (Number.isFinite(scoreThreshold)) {
                 payload.score_threshold = scoreThreshold;
