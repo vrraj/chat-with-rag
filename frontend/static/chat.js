@@ -111,6 +111,75 @@
     updateLabel('rerank', 'model_reranker');
   }
 
+  // Update active collection display based on domain selection
+  async function updateActiveCollectionDisplay() {
+    const activeDomainSelect = qs('#active_domain');
+    const activeCollectionSpan = qs('#active_collection');
+    if (!activeDomainSelect || !activeCollectionSpan) return;
+
+    const domain = activeDomainSelect.value || '';
+    if (!domain) {
+      activeCollectionSpan.textContent = 'Loading...';
+      return;
+    }
+
+    try {
+      const resp = await fetch(`/api/config/domain/${domain}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        activeCollectionSpan.textContent = data.collection_name || 'Unknown';
+      } else {
+        activeCollectionSpan.textContent = 'Unknown';
+      }
+    } catch (e) {
+      console.debug('Failed to fetch collection info', e);
+      activeCollectionSpan.textContent = 'Unknown';
+    }
+  }
+
+  // Update models display based on domain selection
+  async function updateModelsBasedOnDomain() {
+    const activeDomainSelect = qs('#active_domain');
+    if (!activeDomainSelect) return;
+
+    const domain = activeDomainSelect.value || '';
+    if (!domain) return;
+
+    try {
+      const resp = await fetch(`/api/config/domain/${domain}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        
+        // Update embedding model from domain config
+        const embeddingEl = qs('#model_embedding');
+        if (embeddingEl && data.embedding_model_key) {
+          const info = getModelInfo(data.embedding_model_key);
+          embeddingEl.textContent = info.display || data.embedding_model_key || 'Not Found';
+        }
+
+        // Update reranker model based on domain config and cross encoder checkbox
+        const rerankEl = qs('#model_reranker');
+        const enableCrossEncoder = qs('#enable_cross_encoder_rerank');
+        if (rerankEl) {
+          if (enableCrossEncoder && enableCrossEncoder.checked && data.rerank_model_key) {
+            const info = getModelInfo(data.rerank_model_key);
+            rerankEl.textContent = info.display || data.rerank_model_key || 'Not Found';
+          } else {
+            rerankEl.textContent = 'Disabled';
+          }
+        }
+
+        // Update search_mode default based on domain config
+        const searchModeSelect = qs('#search_mode');
+        if (searchModeSelect && data.search_mode) {
+          searchModeSelect.value = data.search_mode;
+        }
+      }
+    } catch (e) {
+      console.debug('Failed to update models based on domain', e);
+    }
+  }
+
   // Fetch live model registry from backend and hydrate MODEL_REGISTRY / MODELS_BY_STAGE
   async function fetchModelRegistry() {
     try {
@@ -756,8 +825,13 @@
       score_threshold: getNum('score_threshold'),
       summarizer_max_input_tokens: getNum('summarizer_max_input_tokens'),
       summarizer_max_output_tokens: getNum('summarizer_max_output_tokens'),
-      prompt_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
-      active_domain: (qs('#prompt_domain') ? String(qs('#prompt_domain').value || '') : ''),
+      prompt_domain: (qs('#active_domain') ? String(qs('#active_domain').value || '') : ''),
+      active_domain: (qs('#active_domain') ? String(qs('#active_domain').value || '') : ''),
+      search_mode: (qs('#search_mode') ? String(qs('#search_mode').value || 'dense') : 'dense'),
+      use_colbert: (qs('#use_colbert') ? !!qs('#use_colbert').checked : false),
+      colbert_top_n: getNum('colbert_top_n') || 8,
+      enable_cross_encoder_rerank: (qs('#enable_cross_encoder_rerank') ? !!qs('#enable_cross_encoder_rerank').checked : true),
+      cross_encoder_top_n: getNum('cross_encoder_top_n') || 5,
       temperature: getNum('temperature'),
       max_output_tokens: getNum('max_output_tokens'),
       top_p: getNum('top_p'),
@@ -1334,6 +1408,18 @@
               el.value = String(cfg[cfgKey]);
             }
           });
+
+          // Keep chat domain selector aligned with backend runtime active_domain.
+          try {
+            const domainEl = document.getElementById('active_domain');
+            const backendDomain = String(cfg.active_domain || '').trim();
+            if (domainEl && backendDomain) {
+              domainEl.value = backendDomain;
+              try { localStorage.setItem('active_domain', backendDomain); } catch (_) {}
+            }
+          } catch (e) {
+            console.debug('Failed to sync active_domain from backend config', e);
+          }
         }
       } catch (err) {
         // silently ignore if /api/config isn't available or fails
@@ -1354,21 +1440,118 @@
     }
   }
 
+  // Initialize domain dropdown from runtime context
+  async function initDomainDropdown() {
+    const activeDomainSelect = qs('#active_domain');
+    if (!activeDomainSelect) return;
+
+    function getActiveDomain() {
+      try {
+        return String(localStorage.getItem('active_domain') || '').trim();
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function setActiveDomain(domain) {
+      try {
+        const val = String(domain || '').trim();
+        if (val) {
+          localStorage.setItem('active_domain', val);
+        } else {
+          localStorage.removeItem('active_domain');
+        }
+      } catch (_) {
+        // no-op
+      }
+    }
+
+    try {
+      const resp = await fetch('/api/ui/runtime-context');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const ctx = await resp.json();
+      const domains = Array.isArray(ctx.domains) ? ctx.domains : [];
+
+      // Clear existing options except the first (default)
+      while (activeDomainSelect.options.length > 1) {
+        activeDomainSelect.remove(1);
+      }
+
+      // Add dynamic options
+      domains.forEach((domain) => {
+        if (domain && domain !== 'default') {
+          const option = document.createElement('option');
+          option.value = domain;
+          option.textContent = domain;
+          activeDomainSelect.appendChild(option);
+        }
+      });
+
+      // Set selected value
+      const backendDomain = String(ctx.active_domain || '').trim();
+      const localDomain = getActiveDomain();
+      const selected = backendDomain || localDomain || '';
+      activeDomainSelect.value = selected;
+      setActiveDomain(selected);
+    } catch (error) {
+      const initialDomain = getActiveDomain();
+      activeDomainSelect.value = initialDomain || '';
+      console.warn('Failed to initialize runtime domain context:', error);
+    }
+
+    // Add change listener
+    activeDomainSelect.addEventListener('change', () => {
+      setActiveDomain(activeDomainSelect.value);
+      updateActiveCollectionDisplay();
+      updateModelsBasedOnDomain();
+    });
+  }
+
   // Load model configuration and live model registry when the page loads
   document.addEventListener('DOMContentLoaded', async () => {
+    try {
+      // Initialize domain dropdown from runtime context
+      await initDomainDropdown();
+    } catch (e) {
+      console.error('Failed to initialize domain dropdown', e);
+    }
+
     try {
       // Prefer live registry (overwrites defaults in MODEL_REGISTRY / MODELS_BY_STAGE)
       await fetchModelRegistry();
     } catch (e) {
       console.error('Failed to fetch model registry', e);
     }
+
     try {
+      // Load runtime config (active_domain, collection_name, etc.)
       await loadModelConfig();
     } catch (e) {
-      console.error('Failed to load model configuration', e);
+      console.error('Failed to load model config', e);
     }
+
+    try {
+      // Add event listener for cross encoder checkbox to update reranker model display
+      const enableCrossEncoder = qs('#enable_cross_encoder_rerank');
+      if (enableCrossEncoder) {
+        enableCrossEncoder.addEventListener('change', async () => {
+          await updateModelsBasedOnDomain();
+        });
+      }
+    } catch (e) {
+      console.debug('Failed to initialize event listeners', e);
+    }
+
     // After backend config/labels are loaded, wire and init the models modal.
     try { wireModelsModalEvents(); } catch (e) { console.debug('Failed to wire models modal', e); }
+
+    // Initialize active domain selection and update display
+    try {
+      await updateActiveCollectionDisplay();
+      await updateModelsBasedOnDomain();
+    } catch (e) {
+      console.debug('Failed to initialize domain display', e);
+    }
   });
 
   // Ensure a conversation_id exists on load

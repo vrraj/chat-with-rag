@@ -20,10 +20,14 @@ class SearchRequest(BaseModel):
     exact: Optional[bool] = False
     with_payload: Optional[bool] = True
     active_domain: Optional[str] = ""
+    search_mode: Optional[str] = "dense"
 
 class SearchResponse(BaseModel):
     results: List[Dict]
     total: int
+    requested_search_mode: Optional[str] = None
+    effective_search_mode: Optional[str] = None
+    fallback_reason: Optional[str] = None
 
 class ChatRequest(BaseModel):
     message: str

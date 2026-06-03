@@ -1,9 +1,114 @@
 """Configuration settings for the application."""
 
-from typing import Any, ClassVar, Dict, List, Optional
+from pathlib import Path
+import os
+from typing import Any, Dict, List, Literal, Optional
+import warnings
+
+import yaml
 
 from pydantic import BaseModel, field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+
+def _default_domain_embedding_config() -> Dict[str, Dict[str, Any]]:
+    return {
+        "default": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small",
+            "model_type": "hosted",
+            "vector_type": None,
+            "search_mode": "dense",
+        },
+        "mountains": {
+            "collection_name": "document_index",
+            "embedding_model_key": "openai:embed_small",
+            "model_type": "hosted",
+            "vector_type": None,
+            "search_mode": "dense",
+        },
+        "oceans": {
+            "collection_name": "document_index_gemini",
+            "embedding_model_key": "gemini:native-embed",
+            "model_type": "hosted",
+            "vector_type": None,
+            "search_mode": "dense",
+        },
+        "finance": {
+            "collection_name": "document_index_finance",
+            "embedding_model_key": "local:dense_default",
+            "model_type": "local",
+            "vector_type": "hybrid",
+            "search_mode": "hybrid",
+        },
+    }
+
+
+class DomainEmbeddingEntry(BaseModel):
+    collection_name: str
+    embedding_model_key: str
+    model_type: Literal["hosted", "local"]
+    vector_type: Optional[Literal["dense", "hybrid"]] = None
+    search_mode: Literal["dense", "hybrid", "sparse"]
+
+    @model_validator(mode="after")
+    def validate_vector_search_mode(self):
+        if self.vector_type == "hybrid" and self.search_mode != "hybrid":
+            raise ValueError("search_mode must be 'hybrid' when vector_type is 'hybrid'")
+        return self
+
+
+class DomainEmbeddingConfigModel(BaseModel):
+    active_domain: Optional[str] = None
+    domains: Dict[str, DomainEmbeddingEntry]
+
+    @model_validator(mode="after")
+    def validate_active_domain(self):
+        if self.active_domain and self.active_domain not in self.domains:
+            raise ValueError(f"active_domain '{self.active_domain}' is not present in domains")
+        return self
+
+
+def _has_active_domain_env_override() -> bool:
+    return bool(os.getenv("ACTIVE_DOMAIN") or os.getenv("active_domain"))
+
+
+def _load_domain_embedding_config(
+    path: str,
+    fallback: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    p = Path(str(path or "").strip())
+    if not p.exists():
+        warnings.warn(
+            f"Domain embedding config not found at '{p}'. Using in-code defaults.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return {"domains": fallback, "active_domain": None}
+
+    try:
+        raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        has_domains_key = isinstance(raw, dict) and isinstance(raw.get("domains"), dict)
+        candidate = raw.get("domains") if has_domains_key else raw
+        if not isinstance(candidate, dict):
+            raise ValueError("YAML root must be a mapping or include a 'domains' mapping")
+
+        active_domain = None
+        if has_domains_key:
+            active_domain = str(raw.get("active_domain") or "").strip() or None
+
+        validated = DomainEmbeddingConfigModel(domains=candidate, active_domain=active_domain)
+        return {
+            "domains": {k: v.model_dump() for k, v in validated.domains.items()},
+            "active_domain": validated.active_domain,
+        }
+    except Exception as exc:
+        warnings.warn(
+            f"Invalid domain embedding config at '{p}': {exc}. Using in-code defaults.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return {"domains": fallback, "active_domain": None}
 
 
 # -----------------------------------------------------------------------------
@@ -135,7 +240,7 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     # Vector/search shape & retrieval knobs
     # collection_name and embedding_model_key are computed dynamically based on active_domain
-    top_k: int = 8  # Recall: Number of documents to retrieve
+    top_k: int = 20  # Recall: Number of documents to retrieve
     score_threshold: float = 0.35  # Precision: Minimum vector similarity score
     exact_match: bool = False  # use HNSW for faster search as opposed to ANN. Adjust results are not optimal
 
@@ -164,29 +269,47 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # 3A) Domain-based embedding configuration
     # -------------------------------------------------------------------------
-    # Domain → (collection_name, embedding_model_key) mapping
-    # Each domain has its own collection and embedding model
-    DOMAIN_EMBEDDING_CONFIG: ClassVar[Dict[str, Dict[str, str]]] = {
-        "default": {
-            "collection_name": "document_index",
-            "embedding_model_key": "openai:embed_small"
-        },
-        "mountains": {
-            "collection_name": "document_index",
-            "embedding_model_key": "openai:embed_small"
-        },
-        "oceans": {
-            "collection_name": "document_index_gemini",
-            "embedding_model_key": "gemini:native-embed"
-        },
-        "finance": {
-            "collection_name": "document_index_finance",
-            "embedding_model_key": "openai:embed_small"
-        }
-    }
+    # Domain → (collection_name, embedding_model_key, model_type, vector_type) mapping
+    # Each domain has its own collection, embedding model, and vector storage type
+    #
+    # model_type: "hosted" (llm-adapter) or "local" (FastEmbed via YAML config)
+    #
+    # vector_type: Controls how vectors are stored and accessed in Qdrant
+    #   - None (unnamed): Legacy format - vectors stored without names, accessed via default vector
+    #   - "dense" (named dense): Modern format - vectors stored under "dense" key, enables multi-vector support
+    #   - "hybrid" (dense + sparse): Stores both dense and sparse vectors for hybrid retrieval
+    #
+    # IMPORTANT: Changing vector_type from None to "dense" or "hybrid" requires collection recreation:
+    #   - Search operations have runtime detection (qdrant_db.py checks collection schema at runtime)
+    #   - Write operations (add_embeddings) do NOT have fallback - they strictly follow vector_type config
+    #   - If you change None -> "dense" without recreating the collection, writes will fail
+    #
+    # Recommendation: Keep existing collections at their current vector_type. Only use "dense" or "hybrid"
+    # for new collections or after migrating data to named vector format.
+    domain_embedding_config_path: str = "prompts/domain_embedding_config.yaml"
+    DOMAIN_EMBEDDING_CONFIG: Dict[str, Dict[str, Any]] = _default_domain_embedding_config()
     
     # Active domain selection. Sets the collection_name and embedding_model_key
     active_domain: str = "mountains"
+
+    @model_validator(mode="after")
+    def load_and_validate_domain_embedding_config(self):
+        fallback = _default_domain_embedding_config()
+        loaded = _load_domain_embedding_config(self.domain_embedding_config_path, fallback)
+        validated = DomainEmbeddingConfigModel(
+            domains=loaded.get("domains") or fallback,
+            active_domain=loaded.get("active_domain"),
+        )
+        self.DOMAIN_EMBEDDING_CONFIG = {k: v.model_dump() for k, v in validated.domains.items()}
+
+        if validated.active_domain and not _has_active_domain_env_override():
+            self.active_domain = validated.active_domain
+
+        if self.active_domain not in self.DOMAIN_EMBEDDING_CONFIG:
+            raise ValueError(
+                f"active_domain '{self.active_domain}' is not present in DOMAIN_EMBEDDING_CONFIG"
+            )
+        return self
 
     # -------------------------------------------------------------------------
     # 3B) LLM model profiles (registry keys)
@@ -240,6 +363,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Required: path to the prompt registry YAML for inference stage-1 prompt construction.
     inference_prompt_registry_path: str = "prompts/prompt_registry.yaml"
+    # Path to retrieval runtime registry YAML (embedding/rerank defaults + domain overrides).
+    retrieval_config_path: str = "prompts/local_models_registry.yaml"
     # Optional per-request override: params["prompt_domain"]. When unset, fall back to this default.
     prompt_domain_default: str = ""
 
@@ -249,7 +374,7 @@ class Settings(BaseSettings):
     # --- Inference context control --- Number of reranked rows (retrieved) to include in inference prompt as input context
     inference_context_rows: int = 4
 
-    max_inference_output_tokens: int = 500
+    max_inference_output_tokens: int = 1200
     tools_synth_max_output_tokens: int = 600
 
     # to include reasoning for the inference_model, set the inference_reasoning_effort and inference_reasoning_model
@@ -427,12 +552,29 @@ class Settings(BaseSettings):
 
     @property
     def vector_size(self) -> int:
-        """Vector size from embedding_model_key registry capabilities"""
+        """Vector size from embedding_model_key registry capabilities or YAML config for local models."""
         from backend.llm.llm_client import get_model_info
+        from backend.retrieval.config_loader import is_local_domain, get_model_config
         
+        # Check if current domain uses local models
+        if is_local_domain(self.active_domain):
+            try:
+                dense_config = get_model_config("dense")
+                dimensions = dense_config.get("dimensions")
+                if isinstance(dimensions, int) and dimensions > 0:
+                    return int(dimensions)
+            except Exception:
+                pass
+        
+        # Fallback to llm-adapter registry for hosted models
         model_info = get_model_info(model_key=self.embedding_model_key)
         dimensions = model_info.capabilities.get("dimensions")
         return int(dimensions)
+
+    @property
+    def vector_type(self) -> Optional[str]:
+        """Vector type from active domain configuration (None, 'dense', or 'hybrid')"""
+        return self.DOMAIN_EMBEDDING_CONFIG[self.active_domain].get("vector_type")
 
 def get_assistant_role(settings_obj: Any, params: Dict[str, Any] | None = None) -> str:
     """
