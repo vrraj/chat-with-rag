@@ -82,7 +82,3 @@ htmlcov/
 # Frontend dependencies and builds
 node_modules/
 qdrant_storage_backup_*/
-
-# Model caches
-models/
-*.onnx

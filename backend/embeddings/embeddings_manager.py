@@ -2,7 +2,6 @@ from typing import List, Dict, Any, Optional
 import uuid
 import logging
 import time
-import os
 from backend.core.config import settings
 from backend.db.qdrant_client import QdrantStorage
 from backend.extractor.splitters import TextSplitter
@@ -31,8 +30,6 @@ class EmbeddingsManager:
         cfg = available_domains.get(self.active_domain) or available_domains.get(configured_default_domain) or {}
         self.collection_name = str(cfg.get("collection_name") or settings.collection_name)
         self.embedding_model_key = str(cfg.get("embedding_model_key") or settings.embedding_model_key)
-        self.model_type = str(cfg.get("model_type") or "hosted")
-        self.vector_type = cfg.get("vector_type")
 
         self.qdrant: QdrantStorage = QdrantStorage(collection_name=self.collection_name)
         self.collection_manager = CollectionManager(self.qdrant.client)
@@ -70,104 +67,6 @@ class EmbeddingsManager:
             return max(1, len(text) // 4)
 
     def generate_embeddings(self, text: Any):
-        """
-        Generate embeddings for DOCUMENT INDEXING.
-
-        Routes based on model_type:
-        - "hosted": Uses llm-adapter embed() function (OpenAI/Gemini)
-        - "local": Uses embedding router with FastEmbed provider
-
-        Args:
-            text: Text to embed, or a list of texts for batched embeddings.
-        Returns:
-            - If `text` is a str: a single embedding vector (List[float]).
-            - If `text` is a list of str: a list of embedding vectors (List[List[float]]).
-        """
-        # Route based on model_type
-        if self.model_type == "local":
-            return self._generate_embeddings_local(text)
-        else:
-            return self._generate_embeddings_hosted(text)
-
-    def _generate_embeddings_local(self, text: Any):
-        """Generate embeddings using local FastEmbed models."""
-        from backend.retrieval.config_loader import get_model_config
-        from backend.retrieval.embedding_router import EmbeddingRouter
-        from backend.retrieval.schemas import EmbeddingSpec
-        
-        is_batch = isinstance(text, list)
-        texts_to_embed = text if is_batch else [text]
-        
-        # Get dense model configuration
-        dense_config = get_model_config("dense")
-        
-        # Create embedding spec for dense
-        cache_dir = os.path.expandvars(os.path.expanduser(
-            os.getenv("FASTEMBED_CACHE_PATH", dense_config.get("cache_dir", "~/models/fastembed_cache"))
-        ))
-        spec = EmbeddingSpec(
-            task="retrieval",
-            runtime="fastembed",
-            provider="fastembed",
-            model=dense_config["name"],
-            dimensions=dense_config.get("dimensions"),
-            batch_size=32,
-            device=dense_config.get("device"),
-            extra={"cache_dir": cache_dir},
-            vector_type="dense"
-        )
-        
-        # Use embedding router
-        router = EmbeddingRouter()
-        result = router.embed(texts_to_embed, spec)
-        
-        embeddings_list = result.vectors
-        
-        # Return single vector or list based on input
-        if not is_batch:
-            return embeddings_list[0] if embeddings_list else []
-        return embeddings_list
-
-    def generate_sparse_embeddings(self, text: Any):
-        """Generate sparse embeddings using local FastEmbed models for hybrid search."""
-        from backend.retrieval.config_loader import get_model_config
-        from backend.retrieval.embedding_router import EmbeddingRouter
-        from backend.retrieval.schemas import EmbeddingSpec
-        
-        is_batch = isinstance(text, list)
-        texts_to_embed = text if is_batch else [text]
-        
-        # Get sparse model configuration
-        sparse_config = get_model_config("sparse")
-        
-        # Create embedding spec for sparse
-        cache_dir = os.path.expandvars(os.path.expanduser(
-            os.getenv("FASTEMBED_CACHE_PATH", sparse_config.get("cache_dir", "~/models/fastembed_cache"))
-        ))
-        spec = EmbeddingSpec(
-            task="retrieval",
-            runtime="fastembed",
-            provider="fastembed",
-            model=sparse_config["name"],
-            dimensions=None,  # Sparse embeddings don't have fixed dimensions
-            batch_size=32,
-            device=sparse_config.get("device"),
-            extra={"cache_dir": cache_dir},
-            vector_type="sparse"
-        )
-        
-        # Use embedding router
-        router = EmbeddingRouter()
-        result = router.embed(texts_to_embed, spec)
-        
-        sparse_embeddings_list = result.vectors
-        
-        # Return single sparse embedding or list based on input
-        if not is_batch:
-            return sparse_embeddings_list[0] if sparse_embeddings_list else {"indices": [], "values": []}
-        return sparse_embeddings_list
-
-    def _generate_embeddings_hosted(self, text: Any):
         """
         Generate embeddings for DOCUMENT INDEXING.
 
@@ -544,33 +443,11 @@ class EmbeddingsManager:
                 else:
                     payload["subsection_index"] = None
 
-                # Generate sparse embeddings if hybrid
-                sparse_embedding = None
-                if self.vector_type == "hybrid":
-                    sparse_embedding = self.generate_sparse_embeddings(chunk_text)
-
-                # Build chunk data based on vector_type
-                if self.vector_type == "hybrid":
-                    chunk_data = {
-                        "id": chunk_id,
-                        "dense": embedding,
-                        "sparse": sparse_embedding,
-                        "payload": payload,
-                    }
-                elif self.vector_type == "dense":
-                    chunk_data = {
-                        "id": chunk_id,
-                        "dense": embedding,
-                        "payload": payload,
-                    }
-                else:
-                    chunk_data = {
-                        "id": chunk_id,
-                        "vector": embedding,
-                        "payload": payload,
-                    }
-
-                processed_chunks.append(chunk_data)
+                processed_chunks.append({
+                    "id": chunk_id,
+                    "vector": embedding,
+                    "payload": payload,
+                })
             except Exception as e:
                 failures += 1
                 logger.error("Error processing chunk %s: %s", chunk_id, e, exc_info=True)
@@ -614,7 +491,7 @@ class EmbeddingsManager:
 
             try:
                 #logger.debug("Inserting %d vectors into Qdrant collection: %s", len(processed_chunks), self.qdrant.collection_name)
-                success = self.qdrant.add_embeddings(processed_chunks, vector_type=self.vector_type)
+                success = self.qdrant.add_embeddings(processed_chunks)
                 if not success:
                     raise Exception("Failed to add embeddings to Qdrant")
                 #logger.debug("Successfully added %d embeddings to Qdrant", len(processed_chunks))
@@ -909,7 +786,7 @@ class EmbeddingsManager:
                 if url:
                     self.delete_document(url)
 
-        success = self.qdrant.add_embeddings(points, vector_type=self.vector_type)
+        success = self.qdrant.add_embeddings(points)
         if not success:
             raise Exception("Failed to add embeddings to Qdrant")
         return {"vectors_indexed": len(points), "tokens_used": int(self._tokens_used)}

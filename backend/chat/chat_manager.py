@@ -53,7 +53,6 @@ from backend.llm.llm_client import generate, embed, get_pricing_for_model, LLMEr
 from backend.chat.simple_history_processor import SimpleHistoryProcessor
 from backend.chat.utils import _get_param_int, split_history_for_prompt
 from backend.chat.chunked_history_manager import ChunkedHistoryManager
-from backend.chat.rewrite_helpers import should_rewrite
 from backend.chat.prompt_registry import (
     resolve_inference_prompt,
     resolve_rewrite_prompt,
@@ -62,10 +61,7 @@ from backend.chat.prompt_registry import (
     resolve_tools_synth_prompt,
     render_full_payload,
 )
-from backend.retrieval.config import resolve_retrieval_specs
-from backend.retrieval.schemas import EmbeddingSpec
-from backend.retrieval.providers.fastembed_embedding_provider import FastEmbedEmbeddingProvider
-from backend.retrieval.retrieval_eval_service import RetrievalEvalService
+
 from backend.markdown_render import render_markdown_to_html
 
 _SUMMARY_CACHE: Dict[str, str] = {}
@@ -75,7 +71,6 @@ _TOOL_REGISTRY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 _CHUNK_MANAGERS_BY_NS: Dict[str, ChunkedHistoryManager] = {}
 _CHUNK_MANAGERS_LAST_SEEN: Dict[str, float] = {}
-_FASTEMBED_EMBEDDING_PROVIDER = FastEmbedEmbeddingProvider()
 
 
 def _evict_idle_chunk_managers(now: float | None = None, max_idle_seconds: int | None = None) -> Dict[str, int]:
@@ -246,37 +241,15 @@ def resolve_stage_specs(
     # Tools synthesis model uses the same model as inference
     tools_synth_model = effective_inference_model
 
-    # Resolve retrieval runtime specs (defaults + optional domain override).
-    # Domain precedence: params.active_domain -> params.prompt_domain -> settings.active_domain.
-    _active_domain = str(
-        p.get("active_domain")
-        or p.get("prompt_domain")
-        or getattr(settings_obj, "active_domain", "")
-        or ""
-    ).strip()
-    _retrieval_specs = resolve_retrieval_specs(
-        domain=_active_domain,
-        config_path=str(getattr(settings_obj, "retrieval_config_path", "") or "").strip() or None,
-    )
-
-    # Embedding spec fallback: resolve from model registry.
+    # Embedding spec: settings.embedding_model is a provider key (openai/gemini).
+    # Resolve it into a provider-specific embedding model name for stage_specs consistency.
     try:
         _emb = resolve_embedding_spec(settings_obj)  # {provider, model, dimensions}
     except Exception:
         _emb = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1536}
 
-    _emb_cfg = (_retrieval_specs or {}).get("embedding") or {}
-    emb_runtime = str(_emb_cfg.get("runtime") or "hosted").strip() or "hosted"
-    emb_provider = str(_emb_cfg.get("provider") or (_emb or {}).get("provider") or "openai").strip() or "openai"
-    emb_model = str(_emb_cfg.get("model") or (_emb or {}).get("model") or "").strip()
-    emb_dimensions = _emb_cfg.get("dimensions", (_emb or {}).get("dimensions"))
-    emb_normalize = bool(_emb_cfg.get("normalize", True))
-    try:
-        emb_batch_size = int(_emb_cfg.get("batch_size", 32))
-    except Exception:
-        emb_batch_size = 32
-    emb_device = _emb_cfg.get("device")
-    emb_extra = _emb_cfg.get("extra") if isinstance(_emb_cfg.get("extra"), dict) else {}
+    emb_provider = str((_emb or {}).get("provider") or "openai").strip() or "openai"
+    emb_model = str((_emb or {}).get("model") or "").strip()
 
     # Existing flat temps/limits (read as-is)
     rewrite_temp = float(getattr(settings_obj, "rewrite_temperature", 0.2))
@@ -300,19 +273,6 @@ def resolve_stage_specs(
 
     rerank_temp = float(getattr(settings_obj, "re_ranker_temperature", 0.0))
     rerank_max_out = int(getattr(settings_obj, "re_ranker_max_output_tokens", 64))
-
-    _rr_cfg = (_retrieval_specs or {}).get("rerank") or {}
-    rerank_runtime = str(_rr_cfg.get("runtime") or "llm").strip() or "llm"
-    rerank_enabled_cfg = bool(_rr_cfg.get("enabled", True))
-    rerank_provider_cfg = str(_rr_cfg.get("provider") or "").strip()
-    rerank_model_cfg = str(_rr_cfg.get("model") or "").strip()
-    rerank_top_n_cfg = _rr_cfg.get("top_n")
-    rerank_device_cfg = _rr_cfg.get("device")
-    try:
-        rerank_batch_size_cfg = int(_rr_cfg.get("batch_size", 16))
-    except Exception:
-        rerank_batch_size_cfg = 16
-    rerank_extra_cfg = _rr_cfg.get("extra") if isinstance(_rr_cfg.get("extra"), dict) else {}
 
     inference_temp = float(getattr(settings_obj, "inference_temperature", 0.2))
     inference_top_p = float(getattr(settings_obj, "inference_top_p", 1.0))
@@ -364,14 +324,7 @@ def resolve_stage_specs(
         "embedding": {
             "provider": emb_provider,
             "model": emb_model,
-            "runtime": emb_runtime,
-            "kwargs": {
-                "dimensions": emb_dimensions,
-                "normalize": emb_normalize,
-                "batch_size": emb_batch_size,
-                "device": emb_device,
-                **emb_extra,
-            },
+            "kwargs": {},
         },
         "rewrite": {
             "provider": (rewrite_provider_override or "openai"),
@@ -392,17 +345,11 @@ def resolve_stage_specs(
             },
         },
         "rerank": {
-            "runtime": rerank_runtime,
-            "provider": (rerank_provider_override or rerank_provider_cfg or "openai"),
-            "model": (rerank_model_key_override or rerank_model_override or rerank_model_cfg or rerank_model),
+            "provider": (rerank_provider_override or "openai"),
+            "model": (rerank_model_key_override or rerank_model_override or rerank_model),
             "kwargs": {
-                "enabled": rerank_enabled_cfg,
                 "temperature": rerank_temp,
                 "max_output_tokens": rerank_max_out,
-                "top_n": rerank_top_n_cfg,
-                "batch_size": rerank_batch_size_cfg,
-                "device": rerank_device_cfg,
-                **rerank_extra_cfg,
             },
         },
         "inference": {
@@ -715,41 +662,6 @@ def _pick(params: Dict[str, Any] | None, keys: List[str], default=None):
         if k in p and p[k] is not None:
             return p[k]
     return default
-
-
-def _retrieve_with_rerank(
-    *,
-    query: str,
-    active_domain: str,
-    search_mode: str,
-    top_k: int,
-    score_threshold: float | None,
-    use_colbert: bool,
-    colbert_top_n: int,
-    enable_cross_encoder_rerank: bool,
-    cross_encoder_top_n: int,
-) -> Dict[str, Any]:
-    """
-    Retrieve and optionally rerank using RetrievalEvalService.
-    This is a modular wrapper that reuses the retrieval-evals pattern for chat.
-    """
-    service = RetrievalEvalService(active_domain=active_domain)
-    
-    result = service.run_pipeline(
-        query=query,
-        search_mode=search_mode,
-        top_k=top_k,
-        score_threshold=score_threshold,
-        query_filter=None,
-        with_payload=True,
-        exact=False,
-        use_colbert=use_colbert,
-        colbert_top_n=colbert_top_n,
-        enable_cross_encoder_rerank=enable_cross_encoder_rerank,
-        cross_encoder_top_n=cross_encoder_top_n,
-    )
-    
-    return result
 
 
 # Inserted helper: _get_param_float
@@ -1575,6 +1487,198 @@ def _build_tools_synth_messages(
         }
     )
     return synth_messages
+
+# --- Query rewrite helpers (not wired; no behavior change) ---
+_REWRITE_DEICTIC_RE = re.compile(r"\b(it|this|that|these|those|here|there|they|them|their|its|he|she|his|her|also|then)\b", re.I)
+_REWRITE_SHORT_Q_RE = re.compile(r"\b(where|when|how|why|which|what)\b", re.I)
+
+def should_rewrite(message: str) -> bool:
+    """Heuristic: return True if the message is likely underspecified (coreference or very short).
+    Safe default: if this returns False, we skip rewrite and use the original message.
+    Diagnostic logging included.
+    """
+    if not message:
+        logger.debug("[REWRITE] heuristic=empty_message -> False")
+        return False
+    txt = message.strip()
+    # Short messages are often follow-ups (<= 7 words)
+    if len(txt.split()) <= 7:
+        logger.debug("[REWRITE] heuristic=short_message words=%d -> True", len(txt.split()))
+        return True
+    # Contains deictic pronouns or bare question words (without explicit entities)
+    if _REWRITE_DEICTIC_RE.search(txt) and _REWRITE_SHORT_Q_RE.search(txt):
+        logger.debug("[REWRITE] heuristic=deictic+wh -> True")
+        return True
+    logger.debug("[REWRITE] heuristic=none -> False")
+    return False
+
+
+def build_rewrite_prompt(
+    tail_messages: List[Dict[str, str]] | None,
+    summary_text: str,
+    message: str,
+) -> str:
+    """Build a structured prompt for the rewrite model using conversation history.
+
+    Uses:
+      - Optional long-term summary (summary_text)
+      - Recent verbatim turns (tail_messages)
+      - Current user message (message)
+
+    The model is instructed to output ONLY a JSON object with the shape:
+      {"rewritten":"...","changed":true|false,"confidence":0.0,"ambiguous":true|false,"reason":"..."}
+    """
+    parts: List[str] = []
+
+    # 1. SYSTEM IDENTITY (Static/Cacheable)
+    parts.append("### ROLE\n")
+    parts.append(
+        "You are a Search Query Optimizer. Your task is to rewrite the user's latest message "
+        "into a single, standalone search query that can be sent to a vector database or search engine, "
+        "using only the provided conversation context.\n\n"
+    )
+
+    # 2. HIERARCHICAL INSTRUCTIONS (Static/Cacheable)
+    parts.append("### INSTRUCTIONS\n")
+    parts.append(
+        "1. PRIORITY: Use the 'RECENT CONVERSATION' to resolve immediate pronouns and vague references "
+        "(e.g., it, this, that, they, those, their, its).\n"
+    )
+    parts.append(
+        "2. BACKGROUND: Use the 'CONVERSATION SUMMARY' only to understand the overall topic when the recent turns "
+        "are not sufficient by themselves.\n"
+    )
+    parts.append(
+        "3. STANDALONE QUERY: The 'rewritten' field must be a clear, self-contained search query. "
+        "If the user's latest message is already a clear standalone question, return it unchanged and set "
+        "'changed': false.\n"
+    )
+    parts.append(
+        "4. NO CHAT / NO ANSWERS: Do not answer the question. Do not add explanations, opinions, or chit-chat. "
+        "Your only job is to rewrite the query for retrieval.\n"
+    )
+    parts.append(
+        "5. AMBIGUITY HANDLING: If you cannot confidently resolve what a pronoun or vague reference refers to, "
+        "keep the original question unchanged, set 'ambiguous': true, and briefly explain why in 'reason'.\n\n"
+    )
+
+    # 3. OUTPUT SCHEMA (Static/Cacheable)
+    parts.append("### OUTPUT SCHEMA\n")
+    parts.append(
+        "Return STRICTLY a single JSON object with this shape and field meanings (no extra text, no code fences):\n"
+    )
+    parts.append(
+        '{"rewritten":"...","changed":true|false,"confidence":0.0,'
+        '"ambiguous":true|false,"reason":"..."}\n'
+    )
+    parts.append(
+        "- rewritten: the final standalone search query.\n"
+        "- changed: true if you modified the user question, false if you kept it as-is.\n"
+        "- confidence: a float from 0.0 to 1.0 indicating how confident you are in the rewrite.\n"
+        "- ambiguous: true if the context is too unclear to safely rewrite; otherwise false.\n"
+        "- reason: a short phrase (max ~15-20 tokens) explaining your decision.\n\n"
+    )
+
+    # 4. FEW-SHOT EXAMPLES (Static/Cacheable)
+    parts.append("### EXAMPLES\n")
+
+    # EXAMPLE 1: Mount Whitney (domain-specific, location + weather + airport)
+    parts.append("EXAMPLE 1\n")
+    parts.append("SUMMARY: user is interested in mount whitney.\n")
+    parts.append(
+        'RECENT: USER: "what is the elevtion ." | ASSISTANT: "The elevation is 14505 ft."\n'
+    )
+    parts.append('CURRENT: "Current weather and closest airport."\n')
+    parts.append(
+        '{"rewritten": "what is the current weather in Mount Whitney, California and the closest airport to it", '
+        '"changed": true, "confidence": 0.98, "ambiguous": false, '
+        '"reason": "added full context for mount whitney"}\n\n'
+    )
+
+    # EXAMPLE 2: SDK / Linux compatibility (resolving "it" to Python SDK)
+    parts.append("EXAMPLE 2\n")
+    parts.append("SUMMARY: user is installing and using a Python SDK.\n")
+    parts.append(
+        'RECENT: USER: "How do I install the Python SDK?" | ASSISTANT: "You can install it with pip using `pip install my-sdk`."\n'
+    )
+    parts.append('CURRENT: "Does it work on Linux?"\n')
+    parts.append(
+        '{"rewritten": "Linux compatibility and system requirements for the my-sdk Python SDK", '
+        '"changed": true, "confidence": 0.96, "ambiguous": false, '
+        '"reason": "resolved it to Python SDK and added linux compatibility context"}\n\n'
+    )
+
+    # EXAMPLE 3: Q3 revenue / projections (topic continuation)
+    parts.append("EXAMPLE 3\n")
+    parts.append("SUMMARY: user is asking about company financial performance for Q3.\n")
+    parts.append(
+        'RECENT: USER: "Tell me about the Q3 revenue." | ASSISTANT: "Q3 revenue was $45M, up 12% year-over-year."\n'
+    )
+    parts.append('CURRENT: "What about the projections?"\n')
+    parts.append(
+        '{"rewritten": "Q3 revenue projections and future financial outlook for the company", '
+        '"changed": true, "confidence": 0.94, "ambiguous": false, '
+        '"reason": "used prior Q3 revenue topic to expand vague projections into standalone query"}\n\n'
+    )
+
+    # EXAMPLE 4: Car clicking sound (entity clarification)
+    parts.append("EXAMPLE 4\n")
+    parts.append("SUMMARY: user has a car with a clicking sound and wants to understand the issue.\n")
+    parts.append(
+        'RECENT: USER: "My car is making a clicking sound when I accelerate." | ASSISTANT: "That can have several causes, typically related to CV joints or engine components."\n'
+    )
+    parts.append('CURRENT: "How much to fix it?"\n')
+    parts.append(
+        '{"rewritten": "cost and repair estimates to fix a car that makes a clicking sound when accelerating", '
+        '"changed": true, "confidence": 0.92, "ambiguous": false, '
+        '"reason": "expanded it into explicit car clicking sound repair cost query"}\n\n'
+    )
+
+    # EXAMPLE 5: Already clear airports question (no semantic change, but more context)
+    parts.append("EXAMPLE 5\n")
+    parts.append("SUMMARY: user is researching airports near Mount Whitney.\n")
+    parts.append(
+        'RECENT: USER: "What are the closest airports to Mount Whitney?" | ASSISTANT: "There are several nearby, including Bishop and Fresno Yosemite."\n'
+    )
+    parts.append('CURRENT: "What are the closest airports to Mount Whitney?"\n')
+    parts.append(
+        '{"rewritten": "What are the closest airports to Mount Whitney?", '
+        '"changed": false, "confidence": 0.99, "ambiguous": false, '
+        '"reason": "question already clear and self-contained"}\n\n'
+    )
+
+    # EXAMPLE 6: Truly ambiguous follow-up (keep original, mark ambiguous)
+    parts.append("EXAMPLE 6\n")
+    parts.append("SUMMARY: user is asking many unrelated questions about different products and topics.\n")
+    parts.append(
+        'RECENT: USER: "How do I reset my router?" | ASSISTANT: "Press and hold the reset button for 10 seconds."\n'
+    )
+    parts.append('CURRENT: "What about that one?"\n')
+    parts.append(
+        '{"rewritten": "What about that one?", '
+        '"changed": false, "confidence": 0.2, "ambiguous": true, '
+        '"reason": "cannot determine what that one refers to from context"}\n\n'
+    )
+
+    # 5. DYNAMIC DATA (Changes every turn)
+    if summary_text:
+        parts.append("### CONVERSATION SUMMARY (Long-term Context)\n")
+        parts.append(summary_text.strip())
+        parts.append("\n\n")
+
+    if tail_messages:
+        parts.append("### RECENT CONVERSATION (Immediate Context)\n")
+        for m in tail_messages:
+            role = (m.get("role") or "user").upper()
+            content = m.get("content", "") or ""
+            parts.append(f"{role}: {content}\n")
+        parts.append("\n")
+
+    parts.append("### CURRENT USER QUESTION\n")
+    parts.append(message.strip())
+    parts.append("\n")
+
+    return "".join(parts)
 
 
 def rewrite_query(
@@ -3007,21 +3111,6 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
         }
 
     logger.debug("[RETRIEVE] (%s) query=%s top_k=%s thr=%.3f", log_origin, effective_query, top_k, score_threshold)
-    
-    # Extract new retrieval/rerank parameters from request
-    _active_domain = str(params.get("active_domain") or params.get("prompt_domain") or getattr(settings_obj, "active_domain", "") or "").strip()
-    _search_mode = str(params.get("search_mode") or "dense").strip().lower()
-    _use_colbert = bool(params.get("use_colbert", False))
-    _colbert_top_n = int(params.get("colbert_top_n", 8))
-    _enable_cross_encoder_rerank = bool(params.get("enable_cross_encoder_rerank", True))
-    _cross_encoder_top_n = int(params.get("cross_encoder_top_n", 5))
-    
-    # Use the new retrieval/rerank service if the parameters are provided
-    # Otherwise fall back to the legacy path
-    use_new_retrieval = bool(params.get("search_mode") or params.get("use_colbert") or params.get("enable_cross_encoder_rerank"))
-    skip_rerank = False  # Will be set to True if we use the new service
-    _embed_model_for_metrics = None
-    
     # Best-effort debug log of the embedding spec used for retrieval (provider/model/dimensions).
     try:
         _emb_spec_dbg = resolve_embedding_spec(settings_obj)
@@ -3036,215 +3125,280 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
             emit_stage(req_id, "Retrieve Vectors")
     except Exception:
         pass
-    
-    # --- Retrieve with new service or legacy path ---
-    if use_new_retrieval:
-        # Use the new retrieval/rerank service
-        logger.info("[RETRIEVE - NEW] (%s) using new retrieval service with search_mode=%s, use_colbert=%s, enable_cross_encoder=%s", 
-                   log_origin, _search_mode, _use_colbert, _enable_cross_encoder_rerank)
-        try:
-            # Create service instance and call methods individually for stage emissions
-            service = RetrievalEvalService(active_domain=_active_domain)
-            
-            # Step 1: Retrieve
-            retrieve_start = time.time()
-            retrieval = service.retrieve(
-                query=effective_query,
-                search_mode=_search_mode,
-                top_k=int(top_k),
-                score_threshold=float(score_threshold) if score_threshold is not None else None,
-                query_filter=None,
-                with_payload=True,
-                exact=False,
-            )
-            retrieve_elapsed = time.time() - retrieve_start
-            retrieval_results = retrieval.get("results", [])
-            logger.info("[TIMING-RETRIEVAL] (%s) retrieved %d results in %.2fs", log_origin, len(retrieval_results), retrieve_elapsed)
-            
-            # Step 2: ColBERT scoring (if enabled)
-            colbert_results = None
-            rerank_source_items = retrieval_results
-            if _use_colbert:
-                try:
-                    logger.info("[PIPELINE] emit stage: ColBERT Late Interaction")
-                    if show_processing_steps:
-                        emit_stage(req_id, "ColBERT Late Interaction")
-                except Exception:
-                    pass
-                colbert_start = time.time()
-                colbert_results = service.score_with_colbert(
-                    query=effective_query,
-                    retrieval_results=retrieval_results,
-                    colbert_top_n=_colbert_top_n,
+    # --- Retrieve
+    try:
+        results = db.search_similar(
+            query=effective_query,
+            limit=int(top_k),
+            score_threshold=float(score_threshold),
+            with_vectors=False,
+            with_payload=True,
+            exact=True,
+        )
+    except LLMError as e:
+        # Surface embedding/provider rate limits that occur during retrieval.
+        kind = getattr(e, "kind", "") or ""
+        if kind == "rate_limit":
+            try:
+                _prov = str(getattr(e, "provider", "") or "").strip() or "the embedding provider"
+                _model = str(getattr(e, "model", "") or "").strip() or "(unspecified embedding model)"
+                quota_msg = (
+                    f"Our embedding model (provider={_prov}, model={_model}) "
+                    "is currently over its rate-limit or quota. I couldn't "
+                    "retrieve context safely, so this turn has been stopped. "
+                    "Please try again later or contact the administrator to "
+                    "increase the quota."
                 )
-                colbert_elapsed = time.time() - colbert_start
-                logger.info("[TIMING-COLBERT] (%s) scored %d items in %.2fs", log_origin, len(retrieval_results), colbert_elapsed)
-                rerank_source_items = [x["item"] for x in colbert_results["for_rerank"]]
-            
-            # Step 3: Cross-encoder reranking (if enabled)
-            if _enable_cross_encoder_rerank:
-                try:
-                    logger.info("[PIPELINE] emit stage: Cross Encoder Rerank")
-                    if show_processing_steps:
-                        emit_stage(req_id, "Cross Encoder Rerank")
-                except Exception:
-                    pass
-                rerank_start = time.time()
-                reranked = service.rerank_with_cross_encoder(
-                    query=effective_query,
-                    items=rerank_source_items,
-                    reranked_top_n=_cross_encoder_top_n,
+            except Exception:
+                quota_msg = (
+                    "The embedding model is currently over its rate limit or quota. "
+                    "Please try again later."
                 )
-                rerank_elapsed = time.time() - rerank_start
-                logger.info("[TIMING-CROSS_ENCODER] (%s) reranked %d items in %.2fs", log_origin, len(rerank_source_items), rerank_elapsed)
-            else:
-                passthrough_top_n = max(1, int(_cross_encoder_top_n))
-                reranked = {
-                    "items": [
-                        {
-                            "original_index": idx,
-                            "cross_encoder_score": None,
-                            "item": row,
-                        }
-                        for idx, row in enumerate(rerank_source_items[:passthrough_top_n])
-                    ],
-                    "model": None,
-                    "requested_top_n": passthrough_top_n,
-                    "cross_encoder_enabled": False,
+
+            try:
+                emit_stage(
+                    req_id,
+                    "Final Answer",
+                    final=True,
+                    finalContent=quota_msg,
+                )
+            except Exception:
+                pass
+            try:
+                close_stream(req_id)
+            except Exception:
+                pass
+            try:
+                m.finalize_turn()
+                turn_metrics, convo_snapshot = m.snapshot()
+            except Exception:
+                turn_metrics = m.turn
+                convo_snapshot = {
+                    "tokens": {
+                        "embedding": 0,
+                        "llm_input": 0,
+                        "llm_output": 0,
+                        "conversation_total": 0,
+                    },
+                    "costs": {"conversation_total": 0.0},
                 }
-            
-            # Manually assemble result to match expected structure
-            retrieval_result = {
-                "domain": {
-                    **service.domain_meta,
-                    "embedding_dimensions": service._embedding_dimensions(),
-                },
-                "retrieval": retrieval,
-                "colbert": colbert_results,
-                "reranked": reranked,
+            return {
+                "answer": quota_msg,
+                "sources": [],
+                "turn_metrics": turn_metrics,
+                "conversation_totals": convo_snapshot,
+                "metrics": {"vectors_retrieved": 0},
+                "tools_used": [],
+                "rewrite_display": rewrite_display,
             }
-            
-            # Extract results from the retrieval response
-            if _enable_cross_encoder_rerank and retrieval_result.get("reranked"):
-                # Use cross-encoder reranked results
-                reranked = retrieval_result["reranked"]
-                results = [item["item"] for item in reranked.get("items", [])]
-                # Log retrieval results before cross encoder
-                logger.info(
-                    "[RETRIEVAL] before cross-encoder sample keys=%s payload_keys=%s sample=%s",
-                    list(retrieval_results[0].keys()) if retrieval_results else [],
-                    list((retrieval_results[0].get("payload") or {}).keys()) if retrieval_results else [],
-                    retrieval_results[0] if retrieval_results else None,
-                )
-                logger.info("[RETRIEVAL] (%s) before cross-encoder (count=%d): %s",
-                    log_origin, len(retrieval_results),
-                    [r.get("payload", {}).get("text", "")[:75] for r in retrieval_results])
-                # Log results after cross encoder
-                logger.info(
-                    "[CROSS_ENCODER] after reranking sample keys=%s payload_keys=%s sample=%s",
-                    list(results[0].keys()) if results else [],
-                    list((results[0].get("payload") or {}).keys()) if results else [],
-                    results[0] if results else None,
-                )
-                logger.info("[CROSS_ENCODER] (%s) after reranking (count=%d): %s",
-                    log_origin, len(results),
-                    [r.get("payload", {}).get("text", "")[:75] for r in results])
-            else:
-                # Use retrieval results (with or without ColBERT)
-                results = retrieval.get("results", [])
-                # Log retrieval results
-                logger.info(
-                    "[RETRIEVAL] sample keys=%s payload_keys=%s sample=%s",
-                    list(results[0].keys()) if results else [],
-                    list((results[0].get("payload") or {}).keys()) if results else [],
-                    results[0] if results else None,
-                )
-                logger.info("[RETRIEVAL] (%s) results (count=%d): %s",
-                    log_origin, len(results),
-                    [r.get("payload", {}).get("text", "")[:75] for r in results])
-            
-            # Skip reranking stage since we already did it in the service
-            skip_rerank = True
-        except Exception as e:
-            logger.error("[RETRIEVE] (%s) new retrieval service failed, falling back to legacy: %s", log_origin, e)
-            # Fall back to legacy path
-            use_new_retrieval = False
-            skip_rerank = False
+
+        # Non-rate-limit LLMErrors fall back to the outer handler.
+        raise
+
+    n = len(results) if results else 0
+    logger.debug("[RETRIEVE] (%s) Qdrant returned %d", log_origin, n)
+
+    # Embedding stage metrics
+    try:
+        raw_last = getattr(db, "last_embedding_usage", None)
+        logger.debug("[EMB] (%s) db.last_embedding_usage=%r", log_origin, raw_last)
+        last = raw_last or {}
+        embed_tokens = int((last.get("input_tokens") or last.get("total_tokens") or 0))
+        logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
+    except Exception:
+        embed_tokens = 0
+    # Use the concrete embedding model name resolved from settings so that
+    # pricing in model_registry can be applied correctly for cost metrics.
+    try:
+        _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
+        _emb_model_for_cost = str(
+            (_emb_spec_cost.get("model") or "text-embedding-3-small")
+        )
+    except Exception:
+        _emb_model_for_cost = "text-embedding-3-small"
+
+    m.record_stage(
+        "embedding",
+        model=_emb_model_for_cost,
+        pt=embed_tokens,
+        model_key=(_stage_model_keys or {}).get("embedding"),
+    )
+
+# Stage: Rerank Retrieval Results
     
-    if not use_new_retrieval:
-        # Legacy retrieval path
-        logger.info("[RETRIEVE - LEGACY] (%s) using legacy retrieval path", log_origin)
-        _es = (stage_specs or {}).get("embedding") or {}
-        _emb_runtime = str(_es.get("runtime") or "hosted").strip().lower() or "hosted"
-        _emb_provider_stage = str(_es.get("provider") or "openai").strip() or "openai"
-        _emb_model_stage = str(_es.get("model") or "").strip()
-        _emb_kwargs_stage = dict(_es.get("kwargs") or {})
-        _emb_extra_stage = {
-            k: v
-            for k, v in _emb_kwargs_stage.items()
-            if k not in {"dimensions", "normalize", "batch_size", "device"}
-        }
-        _embed_model_for_metrics = _emb_model_stage
+    # --- Rerank Decision Policy ---
+    # 
+    # Determines whether to apply reranking to search results based on several heuristics.
+    # The policy aims to skip expensive reranking when it's unlikely to improve results.
+    #
+    # Parameters:
+    #   - settings_obj: Configuration object containing reranking parameters
+    #   - results: List of search results with scores and metadata
+    #   - n: Total number of results available
+    #
+    # Returns:
+    #   - need_rerank: Boolean indicating if reranking should be performed
+    #   - skip_reason: String explaining why reranking was skipped (if applicable)
+    #   - kept: Number of top results to consider for reranking
+    #   - reranked: Initially set to input results, modified later if reranking is applied
+    #
+    # Decision Logic:
+    # 1. Skip if there's only 1 or fewer results (nothing to rerank)
+    # 2. Skip if results are fewer than re_ranker_input_rows (default 5)
+    # 3. Check for exact matches in top 5 results (fast path)
+    # 4. Check if top result is a clear winner based on:
+    #    - Score above rerank_clear_winner_min_top1 (default 0.65)
+    #    - Margin above 5th result > rerank_clear_winner_min_delta (default 0.15)
+    # 5. If any condition is met, skip reranking; otherwise, perform reranking
+    #
+    # Note: All thresholds are configurable via settings with sensible defaults.
+    kept = min(int(getattr(settings_obj, "re_ranker_input_rows", 5)), n)
+    reranked = results
+    need_rerank = False
+    skip_reason = ""
 
+    if n <= 1:
+        need_rerank = False
+        skip_reason = "<=1 candidate"
+    elif n < int(getattr(settings_obj, "re_ranker_input_rows", 5)):
+        need_rerank = False
+        skip_reason = f"fewer than re_ranker_input_rows ({n} < {getattr(settings_obj, 're_ranker_input_rows', 5)})"
+    else:
         try:
-            if _emb_runtime == "fastembed":
-                try:
-                    _dims = _emb_kwargs_stage.get("dimensions")
-                    _dims_i = int(_dims) if _dims is not None else None
-                except Exception:
-                    _dims_i = None
-                try:
-                    _batch_size = int(_emb_kwargs_stage.get("batch_size", 32))
-                except Exception:
-                    _batch_size = 32
-                _device = _emb_kwargs_stage.get("device")
+            scores = [float(r.get("score", 0.0) or 0.0) for r in results]
+            top1 = scores[0]
+            top5 = scores[4] if n >= 5 else scores[-1]
+            margin = top1 - top5
+            min_top1 = float(getattr(settings_obj, "rerank_clear_winner_min_top1", 0.65))
+            min_delta = float(getattr(settings_obj, "rerank_clear_winner_min_delta", 0.15))
 
-                _emb_spec = EmbeddingSpec(
-                    task="embedding",
-                    runtime="fastembed",
-                    provider=_emb_provider_stage,
-                    model=_emb_model_stage,
-                    dimensions=_dims_i,
-                    normalize=bool(_emb_kwargs_stage.get("normalize", True)),
-                    batch_size=max(1, _batch_size),
-                    device=(str(_device).strip() if _device is not None else None),
-                    extra=_emb_extra_stage,
-                )
-                _emb_res = _FASTEMBED_EMBEDDING_PROVIDER.embed([effective_query], _emb_spec)
-                _qv = (_emb_res.vectors or [[]])[0]
-                results = db.search_similar_by_embedding(
-                    query_embedding=_qv,
-                    limit=int(top_k),
-                    score_threshold=float(score_threshold),
-                    with_payload=True,
-                    exact=True,
-                )
+            # exact-match fast path in payload
+            has_exact = False
+            try:
+                for r in results[:5]:
+                    pl = r.get("payload") or {}
+                    if pl.get("exact_match") or pl.get("is_exact_match") or pl.get("id_match"):
+                        if float(r.get("score", 0.0) or 0.0) >= float(getattr(settings_obj, "rerank_exact_match_min_score", 0.80)):
+                            has_exact = True
+                            break
+            except Exception:
+                has_exact = False
+
+            if has_exact:
+                need_rerank = False
+                skip_reason = "exact-match fast path"
+            elif (top1 >= min_top1) and (margin >= min_delta):
+                need_rerank = False
+                skip_reason = f"clear winner (top1={top1:.2f}, Δ={margin:.2f})"
             else:
-                results = db.search_similar(
-                    query=effective_query,
-                    limit=int(top_k),
-                    score_threshold=float(score_threshold),
-                    with_vectors=False,
-                    with_payload=True,
-                    exact=True,
-                )
+                need_rerank = True
+        except Exception as e:
+            logger.warning("[RERANK] (%s) score analysis failed; defaulting to rerank: %s", log_origin, e, exc_info=True)
+            need_rerank = True
+    if need_rerank:
+        try:
+            logger.info("[PIPELINE] emit stage: Rerank Retrieval Results")
+            if show_processing_steps:
+                emit_stage(req_id, "Rerank Retrieval Results")
+        except Exception:
+            pass
+
+    if not need_rerank:
+        _dbg(f"[RERANK] {log_origin}", f"skipping rerank: {skip_reason}")
+        if show_processing_steps:
+            emit_stage(req_id, "Skipping Rerank")
+        reranked = results[:kept]
+    else:
+        _dbg(f"[RERANK] {log_origin}", f"applying rerank over {n} candidates; pool capped to {kept}")
+        logger.debug("Rerank pool stats", extra={"candidates": n, "kept": kept})
+        pool = results[:kept]
+        pool_n = len(pool)
+        logger.debug("[RERANK] (%s) Pool size=%d of %d", log_origin, pool_n, n)
+        try:
+            cand_text = _candidate_texts(pool)
+            try:
+                _pd_rr = str((params or {}).get("prompt_domain") or "").strip()
+            except Exception:
+                _pd_rr = ""
+            if not _pd_rr:
+                try:
+                    _pd_rr = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
+                except Exception:
+                    _pd_rr = ""
+
+            chunk_size = int(getattr(settings_obj, "reranker_chunk_size", 600))
+            candidates_block = "\n".join([f"[{i}] {t[:chunk_size]}" for i, t in enumerate(cand_text or [])])
+
+            registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
+            rr_spec = resolve_rerank_prompt(registry_path=registry_path, domain=_pd_rr)
+            rr_payload = render_full_payload(
+                rr_spec.full_payload_template,
+                variables={
+                    "query": effective_query,
+                    "candidates_block": candidates_block,
+                },
+            )
+            prompt_text = rr_spec.system_instruction + "\n\n" + rr_payload
+            _dbg(f"[RERANK] {log_origin} prompt:", prompt_text)
+
+            # Provider-aware rerank call via stage_specs (behavior-identical defaults).
+            _rs = (stage_specs or {}).get("rerank") or {}
+            _provider = str(_rs.get("provider") or "openai")
+            _model = str(
+                _rs.get("model")
+                or getattr(settings_obj, "re_ranker_model", settings_obj.inference_model)
+            )
+            _kwargs = dict(_rs.get("kwargs") or {})
+
+            logger.debug(
+                "[RERANK] (%s) provider=%s model=%s kwargs=%r",
+                log_origin,
+                _provider,
+                _model,
+                _kwargs,
+            )
+
+            # DEBUG: Log rerank stage details
+            logger.info(f"[DEBUG] RERANK stage: provider={_provider}, model={_model}")
+
+            resp_rerank = _responses_create(
+                provider=_provider,
+                model=_model,
+                input=prompt_text.strip(),
+                **_kwargs,
+            )
+            content = _extract_text_from_responses(resp_rerank).strip()
+            _dbg(f"[RERANK] {log_origin} raw:", content)
+            order = _parse_json_array_in_text(content, pool_n)
+            reranked = [pool[i] for i in order] or pool
+            reranked = reranked[:kept]
+
+            usage_rr = _extract_usage_from_responses(resp_rerank, provider=_provider) or {}
+            # Record rerank metrics against the actual model used (from stage_specs).
+            m.record_stage(
+                "rerank",
+                model=_model,
+                usage=usage_rr,
+                extra={"candidates_reranked": n},
+                model_key=(_stage_model_keys or {}).get("rerank"),
+            )
         except LLMError as e:
-            # Surface embedding/provider rate limits that occur during retrieval.
+            # Surface provider rate limits with a clear final answer instead of silently
+            # falling back when the rerank model is over its rate limit or quota.
             kind = getattr(e, "kind", "") or ""
             if kind == "rate_limit":
                 try:
-                    _prov = str(getattr(e, "provider", "") or "").strip() or "the embedding provider"
-                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified embedding model)"
+                    _prov = str(getattr(e, "provider", "") or "").strip() or "the rerank provider"
+                    _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
                     quota_msg = (
-                        f"Our embedding model (provider={_prov}, model={_model}) "
-                        "is currently over its rate-limit or quota. I couldn't "
-                        "retrieve context safely, so this turn has been stopped. "
-                        "Please try again later or contact the administrator to "
-                        "increase the quota."
+                        f"Our rerank model (provider={_prov}, model={_model}) "
+                        "is currently over its rate-limit or quota. I couldn't rerank "
+                        "your results safely, so this turn has been stopped. Please try "
+                        "again later or contact the administrator to increase the quota."
                     )
                 except Exception:
                     quota_msg = (
-                        "The embedding model is currently over its rate limit or quota. "
+                        "The rerank model is currently over its rate limit or quota. "
                         "Please try again later."
                     )
 
@@ -3285,290 +3439,13 @@ def run_pipeline(*, deps: Dict[str, Any], req: Dict[str, Any]) -> Dict[str, Any]
                     "rewrite_display": rewrite_display,
                 }
 
-            # Non-rate-limit LLMErrors fall back to the outer handler.
-            raise
-
-    n = len(results) if results else 0
-    logger.debug("[RETRIEVE] (%s) Qdrant returned %d", log_origin, n)
-    kept = min(int(getattr(settings_obj, "re_ranker_input_rows", 5)), n)
-
-    # Embedding stage metrics
-    embed_tokens = 0
-    if not use_new_retrieval and _emb_runtime == "fastembed":
-        # Local FastEmbed path does not currently expose token accounting in db.last_embedding_usage.
-        embed_tokens = 0
-    else:
-        try:
-            raw_last = getattr(db, "last_embedding_usage", None)
-            logger.debug("[EMB] (%s) db.last_embedding_usage=%r", log_origin, raw_last)
-            last = raw_last or {}
-            embed_tokens = int((last.get("input_tokens") or last.get("total_tokens") or 0))
-            logger.debug("[EMB] (%s) parsed embed_tokens=%d", log_origin, embed_tokens)
-        except Exception:
-            embed_tokens = 0
-
-    # Use stage-selected embedding model when provided; otherwise fall back to resolved hosted spec.
-    if _embed_model_for_metrics:
-        _emb_model_for_cost = _embed_model_for_metrics
-    else:
-        try:
-            _emb_spec_cost = resolve_embedding_spec(settings_obj) or {}
-            _emb_model_for_cost = str(
-                (_emb_spec_cost.get("model") or "text-embedding-3-small")
-            )
-        except Exception:
-            _emb_model_for_cost = "text-embedding-3-small"
-
-    m.record_stage(
-        "embedding",
-        model=_emb_model_for_cost,
-        pt=embed_tokens,
-        model_key=(_stage_model_keys or {}).get("embedding"),
-    )
-
-# Stage: Rerank Retrieval Results
-    
-    # Skip rerank stage if we already used the new retrieval/rerank service
-    if skip_rerank:
-        logger.debug("[RERANK] (%s) skipping rerank stage (already handled by retrieval service)", log_origin)
-        reranked = results
-    else:
-        # --- Rerank Decision Policy ---
-        # 
-        # Determines whether to apply reranking to search results based on several heuristics.
-        # The policy aims to skip expensive reranking when it's unlikely to improve results.
-        #
-        # Parameters:
-        #   - settings_obj: Configuration object containing reranking parameters
-        #   - results: List of search results with scores and metadata
-        #   - n: Total number of results available
-        #
-        # Returns:
-        #   - need_rerank: Boolean indicating if reranking should be performed
-        #   - skip_reason: String explaining why reranking was skipped (if applicable)
-        #   - kept: Number of top results to consider for reranking
-        #   - reranked: Initially set to input results, modified later if reranking is applied
-        #
-        # Decision Logic:
-        # 1. Skip if there's only 1 or fewer results (nothing to rerank)
-        # 2. Skip if results are fewer than re_ranker_input_rows (default 5)
-        # 3. Check for exact matches in top 5 results (fast path)
-        # 4. Check if top result is a clear winner based on:
-        #    - Score above rerank_clear_winner_min_top1 (default 0.65)
-        #    - Margin above 5th result > rerank_clear_winner_min_delta (default 0.15)
-        # 5. If any condition is met, skip reranking; otherwise, perform reranking
-        #
-        # Note: All thresholds are configurable via settings with sensible defaults.
-        _rs_cfg = (stage_specs or {}).get("rerank") or {}
-        _rs_kwargs = dict(_rs_cfg.get("kwargs") or {})
-        kept = min(int(getattr(settings_obj, "re_ranker_input_rows", 5)), n)
-        reranked = results
-        rerank_enabled = bool(_rs_kwargs.get("enabled", True))
-        skip_reason = ""
-        need_rerank = False
-
-        if not rerank_enabled:
-            need_rerank = False
-            skip_reason = "disabled by retrieval config"
-        elif n <= 1:
-            need_rerank = False
-            skip_reason = "<=1 candidate"
-        elif n < int(getattr(settings_obj, "re_ranker_input_rows", 5)):
-            need_rerank = False
-            skip_reason = f"fewer than re_ranker_input_rows ({n} < {getattr(settings_obj, 're_ranker_input_rows', 5)})"
-        else:
-            try:
-                scores = [float(r.get("score", 0.0) or 0.0) for r in results]
-                top1 = scores[0]
-                top5 = scores[4] if n >= 5 else scores[-1]
-                margin = top1 - top5
-                min_top1 = float(getattr(settings_obj, "rerank_clear_winner_min_top1", 0.65))
-                min_delta = float(getattr(settings_obj, "rerank_clear_winner_min_delta", 0.15))
-
-                # exact-match fast path in payload
-                has_exact = False
-                try:
-                    for r in results[:5]:
-                        pl = r.get("payload") or {}
-                        if pl.get("exact_match") or pl.get("is_exact_match") or pl.get("id_match"):
-                            if float(r.get("score", 0.0) or 0.0) >= float(getattr(settings_obj, "rerank_exact_match_min_score", 0.80)):
-                                has_exact = True
-                                break
-                except Exception:
-                    has_exact = False
-
-                if has_exact:
-                    need_rerank = False
-                    skip_reason = "exact-match fast path"
-                elif (top1 >= min_top1) and (margin >= min_delta):
-                    need_rerank = False
-                    skip_reason = f"clear winner (top1={top1:.2f}, Δ={margin:.2f})"
-                else:
-                    need_rerank = True
-            except Exception as e:
-                logger.warning("[RERANK] (%s) score analysis failed; defaulting to rerank: %s", log_origin, e, exc_info=True)
-                need_rerank = True
-
-        if need_rerank:
-            try:
-                logger.info("[PIPELINE] emit stage: Rerank Retrieval Results")
-                if show_processing_steps:
-                    emit_stage(req_id, "Rerank Retrieval Results")
-            except Exception:
-                pass
-
-        if not need_rerank:
-            _dbg(f"[RERANK] {log_origin}", f"skipping rerank: {skip_reason}")
-            if show_processing_steps:
-                emit_stage(req_id, "Skipping Rerank")
+            logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
             reranked = results[:kept]
-        else:
-            _dbg(f"[RERANK] {log_origin}", f"applying rerank over {n} candidates; pool capped to {kept}")
-            logger.debug("Rerank pool stats", extra={"candidates": n, "kept": kept})
-            pool = results[:kept]
-            pool_n = len(pool)
-            logger.debug("[RERANK] (%s) Pool size=%d of %d", log_origin, pool_n, n)
-            try:
-                cand_text = _candidate_texts(pool)
-                try:
-                    _pd_rr = str((params or {}).get("prompt_domain") or "").strip()
-                except Exception:
-                    _pd_rr = ""
-                if not _pd_rr:
-                    try:
-                        _pd_rr = str(getattr(settings_obj, "prompt_domain_default", "") or "").strip()
-                    except Exception:
-                        _pd_rr = ""
+        except Exception as e:
+            logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
+            reranked = results[:kept]
 
-                chunk_size = int(getattr(settings_obj, "reranker_chunk_size", 600))
-                candidates_block = "\n".join([f"[{i}] {t[:chunk_size]}" for i, t in enumerate(cand_text or [])])
-
-                registry_path = str(getattr(settings_obj, "inference_prompt_registry_path", "") or "").strip()
-                rr_spec = resolve_rerank_prompt(registry_path=registry_path, domain=_pd_rr)
-                rr_payload = render_full_payload(
-                    rr_spec.full_payload_template,
-                    variables={
-                        "query": effective_query,
-                        "candidates_block": candidates_block,
-                    },
-                )
-                prompt_text = rr_spec.system_instruction + "\n\n" + rr_payload
-                _dbg(f"[RERANK] {log_origin} prompt:", prompt_text)
-
-                # Provider-aware rerank call via stage_specs (behavior-identical defaults).
-                _rs = (stage_specs or {}).get("rerank") or {}
-                _provider = str(_rs.get("provider") or "openai")
-                _model = str(
-                    _rs.get("model")
-                    or getattr(settings_obj, "re_ranker_model", settings_obj.inference_model)
-                )
-                _runtime = str(_rs.get("runtime") or "llm").strip() or "llm"
-                _kwargs = dict(_rs.get("kwargs") or {})
-
-                logger.debug(
-                    "[RERANK] (%s) runtime=%s provider=%s model=%s kwargs=%r",
-                    log_origin,
-                    _runtime,
-                    _provider,
-                    _model,
-                    _kwargs,
-                )
-
-                usage_rr: Dict[str, Any] = {}
-                if _runtime == "llm":
-                    logger.info(f"[DEBUG] RERANK stage: provider={_provider}, model={_model}")
-                    _kwargs_llm = {
-                        k: v
-                        for k, v in _kwargs.items()
-                        if k not in {"enabled", "top_n", "batch_size", "device"}
-                    }
-                    resp_rerank = _responses_create(
-                        provider=_provider,
-                        model=_model,
-                        input=prompt_text.strip(),
-                        **_kwargs_llm,
-                    )
-                    content = _extract_text_from_responses(resp_rerank).strip()
-                    _dbg(f"[RERANK] {log_origin} raw:", content)
-                    order = _parse_json_array_in_text(content, pool_n)
-                    reranked = [pool[i] for i in order] or pool
-                    reranked = reranked[:kept]
-                    usage_rr = _extract_usage_from_responses(resp_rerank, provider=_provider) or {}
-                else:
-                    raise ValueError(f"Unsupported rerank runtime: {_runtime}")
-
-                # Record rerank metrics against the actual model used (from stage_specs).
-                m.record_stage(
-                    "rerank",
-                    model=_model,
-                    usage=usage_rr,
-                    extra={"candidates_reranked": n},
-                    model_key=(_stage_model_keys or {}).get("rerank"),
-                )
-            except LLMError as e:
-                # Surface provider rate limits with a clear final answer instead of silently
-                # falling back when the rerank model is over its rate limit or quota.
-                kind = getattr(e, "kind", "") or ""
-                if kind == "rate_limit":
-                    try:
-                        _prov = str(getattr(e, "provider", "") or "").strip() or "the rerank provider"
-                        _model = str(getattr(e, "model", "") or "").strip() or "(unspecified model)"
-                        quota_msg = (
-                            f"Our rerank model (provider={_prov}, model={_model}) "
-                            "is currently over its rate-limit or quota. I couldn't rerank "
-                            "your results safely, so this turn has been stopped. Please try "
-                            "again later or contact the administrator to increase the quota."
-                        )
-                    except Exception:
-                        quota_msg = (
-                            "The rerank model is currently over its rate limit or quota. "
-                            "Please try again later."
-                        )
-
-                    try:
-                        emit_stage(
-                            req_id,
-                            "Final Answer",
-                            final=True,
-                            finalContent=quota_msg,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        close_stream(req_id)
-                    except Exception:
-                        pass
-                    try:
-                        m.finalize_turn()
-                        turn_metrics, convo_snapshot = m.snapshot()
-                    except Exception:
-                        turn_metrics = m.turn
-                        convo_snapshot = {
-                            "tokens": {
-                                "embedding": 0,
-                                "llm_input": 0,
-                                "llm_output": 0,
-                                "conversation_total": 0,
-                            },
-                            "costs": {"conversation_total": 0.0},
-                        }
-                    return {
-                        "answer": quota_msg,
-                        "sources": [],
-                        "turn_metrics": turn_metrics,
-                        "conversation_totals": convo_snapshot,
-                        "metrics": {"vectors_retrieved": 0},
-                        "tools_used": [],
-                        "rewrite_display": rewrite_display,
-                    }
-
-                logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
-                reranked = results[:kept]
-            except Exception as e:
-                logger.error("[RERANK] (%s) failed; falling back: %s", log_origin, e, exc_info=True)
-                reranked = results[:kept]
-
-    # Stage: History Summary
+# Stage: History Summary
     try:
         logger.info("[PIPELINE] emit stage: Summarize Chat History")
         if show_processing_steps:

@@ -20,19 +20,29 @@
           <label for="show_processing_steps" style="margin:0;">Show Processing Steps</label>
           <input id="show_processing_steps" type="checkbox" checked />
         </div>
-        <div class="form-field" style="margin-bottom: 0.5rem; display:flex; align-items:center; justify-content:space-between; gap:8px;">
-          <label for="active_domain" style="margin:0;">Active Domain:</label>
-          <select id="active_domain" style="min-width: 120px;">
-            <option value="">(global_defaults)</option>
-            <!-- Options will be populated dynamically -->
-          </select>
-        </div>
         <div class="form-field" style="margin-bottom: 0.5rem; display:flex; align-items:center; gap:8px;">
           <label for="active_collection" style="margin:0;">Active Collection:</label>
           <span id="active_collection" style="font-weight: normal; color: #666;">Loading...</span>
         </div>
         <h2 class="section-title">Parameters</h2>
         <form id="params_form" autocomplete="off">
+          <!-- Retrieval group -->
+          <div class="group-box ux-11px collapsible-group" data-section="retrieval">
+            <button type="button" class="collapsible-header" aria-expanded="true" onclick="toggleCollapsible(this, event)">
+              <span class="subsection-title">Retrieval</span>
+              <span class="chevron" aria-hidden="true">▲</span>
+            </button>
+            <div class="collapsible-body">
+              <div class="form-field">
+                <label for="top_k">Top K</label>
+                <input id="top_k" type="number" min="1" step="1" value="10" />
+              </div>
+              <div class="form-field">
+                <label for="score_threshold">Score Threshold</label>
+                <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
+              </div>
+            </div>
+          </div>
           <!-- Query Rewrite group -->
           <div class="group-box ux-11px collapsible-group is-collapsed" id="query_rewrite_section" style="position:relative;">
             <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
@@ -77,56 +87,6 @@
               </div>
             </div>
           </div>
-          <!-- Retrieval group -->
-          <div class="group-box ux-11px collapsible-group" data-section="retrieval">
-            <button type="button" class="collapsible-header" aria-expanded="true" onclick="toggleCollapsible(this, event)">
-              <span class="subsection-title">Retrieval</span>
-              <span class="chevron" aria-hidden="true">▲</span>
-            </button>
-            <div class="collapsible-body">
-              <div class="form-field">
-                <label for="search_mode">Search Mode</label>
-                <select id="search_mode">
-                  <option value="dense">dense</option>
-                  <option value="sparse">sparse</option>
-                  <option value="hybrid">hybrid</option>
-                </select>
-              </div>
-              <div class="form-field">
-                <label for="top_k">Top K</label>
-                <input id="top_k" type="number" min="1" step="1" value="10" />
-              </div>
-              <div class="form-field">
-                <label for="score_threshold">Score Threshold</label>
-                <input id="score_threshold" type="number" min="0" max="1" step="0.01" value="0.35" />
-              </div>
-            </div>
-          </div>
-          <!-- Reranker group -->
-          <div class="group-box ux-11px collapsible-group" data-section="reranker">
-            <button type="button" class="collapsible-header" aria-expanded="true" onclick="toggleCollapsible(this, event)">
-              <span class="subsection-title">Reranker</span>
-              <span class="chevron" aria-hidden="true">▲</span>
-            </button>
-            <div class="collapsible-body">
-              <div class="form-field checkbox-field">
-                <input id="use_colbert" type="checkbox" />
-                <label for="use_colbert">Enable ColBERT Late Interaction</label>
-              </div>
-              <div class="form-field">
-                <label for="colbert_top_n">ColBERT Top N</label>
-                <input id="colbert_top_n" type="number" min="1" step="1" value="8" />
-              </div>
-              <div class="form-field checkbox-field">
-                <input id="enable_cross_encoder_rerank" type="checkbox" checked />
-                <label for="enable_cross_encoder_rerank">Enable Cross Encoder Rerank</label>
-              </div>
-              <div class="form-field">
-                <label for="cross_encoder_top_n">Cross Encoder Top N</label>
-                <input id="cross_encoder_top_n" type="number" min="1" step="1" value="5" />
-              </div>
-            </div>
-          </div>
           <!-- Context Window group -->
           <div class="group-box ux-11px collapsible-group is-collapsed">
             <button type="button" class="collapsible-header" aria-expanded="false" onclick="toggleCollapsible(this, event)">
@@ -158,12 +118,20 @@
               <span class="chevron" aria-hidden="true">▲</span>
             </button>
             <div class="collapsible-body">
-              <div class="form-field checkbox-field field-row" style="position: relative;">
-                <input id="use_tools" type="checkbox" />
+              <div class="form-field">
+                <label for="prompt_domain">Prompt Domain</label>
+                <select id="prompt_domain">
+                  <option value="">(global_defaults)</option>
+                  <option value="mountains" selected>mountains</option>
+                  <option value="finance">finance</option>
+                </select>
+              </div>
+              <div class="form-field field-row" style="position: relative;">
                 <label for="use_tools">
                   Use tools?
                   <a href="#" id="tools_help_link" class="help-link" aria-haspopup="true" aria-controls="tools_help_popup">Help</a>
                 </label>
+                <input id="use_tools" type="checkbox" />
                 <!-- Lightweight popover container; populated by chat.js -->
                 <div id="tools_help_popup" class="popover" role="dialog" aria-hidden="true" style="display:none;"></div>
               </div>
@@ -181,7 +149,7 @@
               </div>
               <div class="form-field">
                 <label for="max_output_tokens">Max Output Tokens</label>
-                <input id="max_output_tokens" type="number" min="1" step="1" />
+                <input id="max_output_tokens" type="number" min="1" step="1" value="300" />
               </div>
             </div>
           </div>
