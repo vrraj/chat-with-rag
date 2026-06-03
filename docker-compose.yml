@@ -1,7 +1,7 @@
 services:
   # 1. Qdrant Vector Database Service
   qdrant:
-    image: qdrant/qdrant:v1.14.1
+    image: qdrant/qdrant:v1.18
     container_name: qdrant-server
     restart: unless-stopped
     logging:

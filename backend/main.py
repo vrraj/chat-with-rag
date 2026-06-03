@@ -38,6 +38,9 @@ from backend.db import QdrantDB
 from backend.chat.chat_manager import ChatManager
 from backend.chat.prompt_registry import clear_prompt_registry_cache
 from backend.chat.chat_manager import clear_tool_registry_cache
+from backend.retrieval.eval_schemas import RetrievalEvalRequest, RetrievalEvalResponse
+from backend.retrieval.retrieval_eval_service import RetrievalEvalService
+from backend.core.config import DomainEmbeddingConfigModel
 from pydantic import BaseModel
 from backend.api.endpoints import model_keys as model_keys_endpoint
 from backend.llm.llm_client import generate, embed, get_pricing_for_model
@@ -106,11 +109,15 @@ def _resolve_domain_config(active_domain: Optional[str]) -> Dict[str, str]:
     cfg = available_domains.get(effective_domain) or available_domains.get(configured_default_domain) or {}
     collection_name = str(cfg.get("collection_name") or settings.collection_name)
     embedding_model_key = str(cfg.get("embedding_model_key") or settings.embedding_model_key)
+    model_type = str(cfg.get("model_type") or "hosted")
+    vector_type = cfg.get("vector_type")
     return {
         "requested_domain": requested_domain,
         "effective_domain": effective_domain,
         "collection_name": collection_name,
         "embedding_model_key": embedding_model_key,
+        "model_type": model_type,
+        "vector_type": vector_type,
     }
 
 
@@ -122,6 +129,241 @@ def _build_domain_qdrant(active_domain: Optional[str]) -> QdrantDB:
         collection_name=domain_cfg["collection_name"],
         embedding_model_key=domain_cfg["embedding_model_key"],
     )
+
+
+def _get_embedding_spec_for_domain(active_domain: Optional[str]) -> Dict[str, Any]:
+    """Resolve embedding spec with domain config as source of truth for model selection."""
+    from backend.retrieval.config import resolve_retrieval_specs
+    from backend.llm.llm_client import get_model_info
+    from backend.retrieval.config_loader import get_model_config, get_model_config_by_key
+    
+    domain_cfg = _resolve_domain_config(active_domain)
+    retrieval_specs = resolve_retrieval_specs(
+        domain=domain_cfg["effective_domain"],
+        config_path=str(getattr(settings, "retrieval_config_path", "prompts/local_models_registry.yaml") or "").strip() or None,
+    )
+
+    emb_cfg = (retrieval_specs or {}).get("embedding") or {}
+
+    model_type = str(domain_cfg.get("model_type") or "hosted").lower()
+    model_key = domain_cfg["embedding_model_key"]
+    normalize = emb_cfg.get("normalize", True)
+    batch_size = emb_cfg.get("batch_size", 32)
+    device = emb_cfg.get("device")
+    extra = emb_cfg.get("extra") if isinstance(emb_cfg.get("extra"), dict) else {}
+
+    if model_type == "local":
+        local_dense_cfg = get_model_config("dense") or {}
+        resolved_local_cfg = local_dense_cfg
+        local_model_name = model_key
+        if str(model_key).startswith("local:"):
+            try:
+                resolved_local_cfg = get_model_config_by_key(model_key)
+                local_model_name = str(resolved_local_cfg.get("name") or model_key)
+            except Exception:
+                local_model_name = model_key
+        dimensions = emb_cfg.get("dimensions") or resolved_local_cfg.get("dimensions") or local_dense_cfg.get("dimensions")
+        return {
+            "runtime": emb_cfg.get("runtime", "fastembed"),
+            "provider": "local",
+            "model": local_model_name,
+            "dimensions": dimensions,
+            "normalize": normalize,
+            "batch_size": batch_size,
+            "device": device,
+            "extra": extra,
+        }
+
+    provider = str(model_key).split(":", 1)[0] if ":" in str(model_key) else "openai"
+    dimensions = emb_cfg.get("dimensions")
+    if dimensions is None:
+        try:
+            model_info = get_model_info(model_key=model_key)
+            dimensions = (getattr(model_info, "capabilities", {}) or {}).get("dimensions")
+        except Exception:
+            dimensions = None
+
+    return {
+        "runtime": "hosted",
+        "provider": provider,
+        "model": model_key,
+        "dimensions": dimensions,
+        "normalize": normalize,
+        "batch_size": batch_size,
+        "device": device,
+        "extra": extra,
+    }
+
+
+def _generate_embeddings_with_retrieval(texts: List[str], active_domain: Optional[str]) -> List[List[float]]:
+    """Generate embeddings using the retrieval module."""
+    from backend.retrieval.embedding_router import EmbeddingRouter
+    from backend.retrieval.schemas import EmbeddingSpec
+    
+    spec_dict = _get_embedding_spec_for_domain(active_domain)
+    spec = EmbeddingSpec(
+        task="embedding",
+        runtime=spec_dict["runtime"],
+        provider=spec_dict["provider"],
+        model=spec_dict["model"],
+        dimensions=spec_dict["dimensions"],
+        normalize=spec_dict["normalize"],
+        batch_size=spec_dict["batch_size"],
+        device=spec_dict["device"],
+        extra=spec_dict["extra"],
+    )
+    
+    router = EmbeddingRouter()
+    result = router.embed(texts, spec)
+    return result.vectors
+
+
+def _index_chunks_with_retrieval(
+    chunks: List[Dict[str, Any]],
+    active_domain: Optional[str],
+    force_delete: bool = True,
+    max_chunks: Optional[int] = None,
+) -> Dict[str, int]:
+    """Index chunks using the retrieval module instead of EmbeddingsManager."""
+    import uuid
+    import tiktoken
+    from qdrant_client import models
+    
+    domain_cfg = _resolve_domain_config(active_domain)
+    qdrant = _build_domain_qdrant(active_domain)
+    collection_name = domain_cfg["collection_name"]
+    
+    # Ensure collection exists
+    try:
+        qdrant.client.get_collection(collection_name)
+    except Exception:
+        logger.debug("Collection not found, creating it now...")
+        qdrant.create_collection()
+
+    # Detect whether collection expects named vectors (e.g., "dense")
+    try:
+        collection_info = qdrant.client.get_collection(collection_name)
+        vectors_cfg = collection_info.config.params.vectors
+        sparse_cfg = collection_info.config.params.sparse_vectors
+        has_named_dense_vector = isinstance(vectors_cfg, dict) and "dense" in vectors_cfg
+        has_sparse_vector = isinstance(sparse_cfg, dict) and "sparse" in sparse_cfg
+    except Exception:
+        has_named_dense_vector = False
+        has_sparse_vector = False
+    
+    # Cap chunks if needed
+    effective_cap = int(getattr(settings, "max_chunks_per_doc", 500))
+    if max_chunks is not None:
+        try:
+            user_cap = int(max_chunks)
+            if user_cap > 0:
+                effective_cap = min(effective_cap, user_cap)
+        except Exception:
+            pass
+    if len(chunks) > effective_cap:
+        chunks = chunks[:effective_cap]
+    
+    # Get embedding spec for metadata
+    spec_dict = _get_embedding_spec_for_domain(active_domain)
+    
+    # Process in batches
+    batch_size = spec_dict["batch_size"]
+    points = []
+    tokens_used = 0
+    
+    # Token encoder for estimation
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        encoding = None
+    
+    for batch_start in range(0, len(chunks), batch_size):
+        batch = chunks[batch_start:batch_start + batch_size]
+        batch_texts = []
+        for chunk in batch:
+            text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+            batch_texts.append(text)
+        
+        # Generate embeddings
+        embeddings = _generate_embeddings_with_retrieval(batch_texts, active_domain)
+        
+        # Create points
+        for offset, chunk in enumerate(batch):
+            idx = batch_start + offset
+            text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+            embedding = embeddings[offset]
+            
+            # Estimate tokens
+            if encoding:
+                try:
+                    tokens_used += len(encoding.encode(text, disallowed_special=()))
+                except Exception:
+                    pass
+            
+            # Build payload
+            chunk_url = chunk.get("url", "")
+            chunk_base_url = chunk.get("base_url", _strip_fragment_url(chunk_url))
+            payload = {
+                "text": text,
+                "chunk_index": idx,
+                "total_chunks": len(chunks),
+                "url": chunk_url,
+                "url_lower": (chunk_url or "").lower(),
+                "base_url": chunk_base_url,
+                "base_url_lower": (chunk_base_url or "").lower(),
+                "document_type": chunk.get("document_type", "mediawiki"),
+                "source": chunk_url,
+                "title": chunk.get("title", ""),
+                "section": chunk.get("section", "Lead"),
+                "subsection": chunk.get("subsection"),
+                "embedding_model": spec_dict["model"],
+                "embedding_provider": spec_dict["provider"],
+                "embedding_runtime": spec_dict["runtime"],
+            }
+            
+            point_id = str(uuid.uuid4())
+
+            sparse_vector = None
+            if has_sparse_vector:
+                try:
+                    sparse_emb = qdrant.generate_sparse_embeddings(text)
+                    sparse_indices = sparse_emb.get("indices") or []
+                    sparse_values = sparse_emb.get("values") or []
+                    sparse_vector = models.SparseVector(indices=sparse_indices, values=sparse_values)
+                except Exception:
+                    sparse_vector = models.SparseVector(indices=[], values=[])
+
+            if has_named_dense_vector and sparse_vector is not None:
+                vector_payload = {"dense": embedding, "sparse": sparse_vector}
+            elif has_named_dense_vector:
+                vector_payload = {"dense": embedding}
+            elif sparse_vector is not None:
+                vector_payload = {"sparse": sparse_vector}
+            else:
+                vector_payload = embedding
+
+            points.append(models.PointStruct(
+                id=point_id,
+                vector=vector_payload,
+                payload=payload,
+            ))
+    
+    # Delete existing if force_delete
+    if force_delete and chunks:
+        url = chunks[0].get("url", "")
+        if url:
+            qdrant.delete_by_url(url)
+    
+    # Insert points
+    qdrant.client.upsert(
+        collection_name=collection_name,
+        points=points,
+    )
+    
+    return {
+        "vectors_indexed": len(points),
+        "tokens_used": tokens_used,
+    }
 
 
 def enforce_origin_host(request: Request) -> None:
@@ -250,6 +492,19 @@ async def search_page():
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "search.html"))
 
+
+@app.get(
+    "/retrieval_evals",
+    tags=["1. UI Pages"],
+    summary="Retrieval evaluation page (HTML)",
+    response_class=HTMLResponse,
+    responses={200: {"content": {"text/html": {"example": "<!DOCTYPE html><html><body>Retrieval Evals Page</body></html>"}}}},
+)
+async def retrieval_evals_page():
+    """Serve the retrieval evaluation page with retrieval + reranking controls."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "retrieval-evals.html"))
+
 # Debug index HTML page (separate from API JSON at /debug-index)
 @app.get(
     "/debug_index",
@@ -262,6 +517,69 @@ async def debug_index_page():
     """Serve the debug-index HTML page"""
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "debug-index.html"))
+
+
+@app.get(
+    "/api/domains",
+    tags=["1. UI Pages"],
+    summary="Get available domains",
+    responses={200: {"content": {"application/json": {"example": "{\"domains\": [\"default\", \"mountains\", \"finance\"]}"}}}},
+)
+async def get_available_domains():
+    """Return a list of available domains from the retrieval config and legacy config."""
+    from backend.retrieval.config import _read_yaml
+    from pathlib import Path
+    
+    domains_set = set()
+    
+    # Add domains from legacy DOMAIN_EMBEDDING_CONFIG
+    try:
+        legacy_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+        if isinstance(legacy_domains, dict):
+            domains_set.update(legacy_domains.keys())
+    except Exception:
+        pass
+    
+    # Add domains from retrieval config YAML
+    try:
+        config_path = str(getattr(settings, "retrieval_config_path", "prompts/local_models_registry.yaml") or "").strip()
+        if config_path:
+            cfg = _read_yaml(config_path)
+            if isinstance(cfg, dict):
+                retrieval_cfg = cfg.get("retrieval") if isinstance(cfg.get("retrieval"), dict) else {}
+                domains_cfg = retrieval_cfg.get("domains") if isinstance(retrieval_cfg.get("domains"), dict) else {}
+                if isinstance(domains_cfg, dict):
+                    domains_set.update(domains_cfg.keys())
+    except Exception:
+        pass
+    
+    # Ensure "default" is always available
+    domains_set.add("default")
+    
+    # Sort domains for consistent display
+    domains = sorted(list(domains_set))
+    
+    return {"domains": domains}
+
+
+@app.get(
+    "/api/ui/runtime-context",
+    tags=["1. UI Pages"],
+    summary="Get shared UI runtime context",
+)
+async def get_ui_runtime_context():
+    """Return runtime context shared by frontend screens.
+
+    Includes active_domain and available domains so pages can initialize
+    consistently from a single source of truth.
+    """
+    domains_data = await get_available_domains()
+    domains = domains_data.get("domains") if isinstance(domains_data, dict) else []
+    active_domain = str(getattr(settings, "active_domain", "") or "").strip()
+    return {
+        "active_domain": active_domain,
+        "domains": domains if isinstance(domains, list) else [],
+    }
 
 
 @app.get(
@@ -444,7 +762,6 @@ async def index_mediawiki_url(
     enforce_origin_host(request)
 
     domain_cfg = _resolve_domain_config(mediawiki_input.active_domain)
-    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #logger.info("TRACE MW: Before MediaWikiExtractor init")
@@ -496,14 +813,17 @@ async def index_mediawiki_url(
             chunks = chunks[:max_chunks]
         #logger.info(f"TRACE MW: Chunks after capping (if any): {len(chunks)}")
         if mediawiki_input.estimate:
-            # Calculate estimated tokens using the embeddings manager's token counter
+            # Calculate estimated tokens
             tokens_used = 0
-            for chunk in chunks:
-                if isinstance(chunk, dict) and 'text' in chunk:
-                    tokens_used += embeddings_manager.estimate_tokens(chunk['text'])
-                elif isinstance(chunk, str):
-                    tokens_used += embeddings_manager.estimate_tokens(chunk)
-                    
+            import tiktoken
+            try:
+                encoding = tiktoken.get_encoding("cl100k_base")
+                for chunk in chunks:
+                    text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+                    tokens_used += len(encoding.encode(text, disallowed_special=()))
+            except Exception:
+                pass
+
             # logger.info("Estimate only; planned chunks: %d, tokens: %d", len(chunks), tokens_used)
             # Calculate estimated embedding cost using provider/model-aware rate
             rate_per_mm = _get_embedding_rate_per_mm_tokens()
@@ -515,10 +835,11 @@ async def index_mediawiki_url(
                 "embedding_cost": round(estimated_cost, 8)
             }
         #logger.info(f"TRACE MW: Sending {len(chunks)} chunks for embedding")
-        result = embeddings_manager.index_chunks(
+        result = _index_chunks_with_retrieval(
             chunks,
-            force_delete=  force_delete,
-            max_chunks=max_chunks
+            active_domain=mediawiki_input.active_domain,
+            force_delete=force_delete,
+            max_chunks=max_chunks,
         )
         logger.info(
             "Embedding finished. vectors_indexed=%s, tokens_used=%s",
@@ -585,9 +906,8 @@ async def index_pdf(
     enforce_origin_host(request)
 
     domain_cfg = _resolve_domain_config(pdf_input.active_domain)
-    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
-    
+
     logger.info(
         "PDF DEBUG: url=%s has_file=%s max_chunks=%s force_delete=%s estimate=%s pdfinputfilename=%s",
         pdf_input.url,
@@ -695,26 +1015,30 @@ async def index_pdf(
             chunks = chunks[:pdf_input.max_chunks]
         logger.debug("PDF: Final chunks for embedding=%d", len(chunks))  
         if pdf_input.estimate:
-            # Calculate estimated tokens using the embeddings manager's token counter
+            # Calculate estimated tokens
             tokens_used = 0
-            for chunk in chunks:
-                if isinstance(chunk, dict) and 'text' in chunk:
-                    tokens_used += embeddings_manager.estimate_tokens(chunk['text'])
-                elif isinstance(chunk, str):
-                    tokens_used += embeddings_manager.estimate_tokens(chunk)
-                    
+            import tiktoken
+            try:
+                encoding = tiktoken.get_encoding("cl100k_base")
+                for chunk in chunks:
+                    text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+                    tokens_used += len(encoding.encode(text, disallowed_special=()))
+            except Exception:
+                pass
+
             # Calculate estimated embedding cost using provider/model-aware rate
             rate_per_mm = _get_embedding_rate_per_mm_tokens()
             estimated_cost = (tokens_used * rate_per_mm) / 1_000_000.0
             return {
-                "message": "Estimate only", 
+                "message": "Estimate only",
                 "chunks_planned": len(chunks),
                 "tokens_used": tokens_used,
                 "embedding_cost": round(estimated_cost, 8)
             }
-            
-        result = embeddings_manager.index_chunks(
+
+        result = _index_chunks_with_retrieval(
             chunks,
+            active_domain=pdf_input.active_domain,
             force_delete=pdf_input.force_delete,
             max_chunks=pdf_input.max_chunks,
         )
@@ -943,7 +1267,6 @@ async def index_content(url_input: URLInput, request: Request):
     enforce_origin_host(request)
 
     domain_cfg = _resolve_domain_config(url_input.active_domain)
-    embeddings_manager = EmbeddingsManager(active_domain=domain_cfg["effective_domain"])
     qdrant_for_check = _build_domain_qdrant(domain_cfg["effective_domain"])
     try:
         #print("DEBUG: Entered index_content route")
@@ -1055,15 +1378,19 @@ async def index_content(url_input: URLInput, request: Request):
                         planned_chunks = min(len(chunks), effective_cap)
                         planned_chunks_total += planned_chunks
                         # Calculate tokens for the planned chunks
-                        for chunk in chunks[:planned_chunks]:
-                            if isinstance(chunk, dict) and 'text' in chunk:
-                                tokens_total += embeddings_manager.estimate_tokens(chunk['text'])
-                            elif isinstance(chunk, str):
-                                tokens_total += embeddings_manager.estimate_tokens(chunk)
+                        import tiktoken
+                        try:
+                            encoding = tiktoken.get_encoding("cl100k_base")
+                            for chunk in chunks[:planned_chunks]:
+                                text = chunk.get("text", "") if isinstance(chunk, dict) else chunk
+                                tokens_total += len(encoding.encode(text, disallowed_special=()))
+                        except Exception:
+                            pass
                     else:
                         #logger.debug("Indexing HTML chunks for: %s", page['url'])
-                        result = embeddings_manager.index_chunks(
+                        result = _index_chunks_with_retrieval(
                             chunks,
+                            active_domain=url_input.active_domain,
                             force_delete=url_input.force_delete,
                             max_chunks=user_max_chunks,
                         )
@@ -1147,7 +1474,13 @@ async def search_content(search_request: SearchRequest):
                     url=search_request.query_filter["url"],
                     limit=search_request.limit
                 )
-                return SearchResponse(results=results, total=len(results))
+                return SearchResponse(
+                    results=results,
+                    total=len(results),
+                    requested_search_mode="dense",
+                    effective_search_mode="dense",
+                    fallback_reason=None,
+                )
             else:
                 raise HTTPException(status_code=400, detail="URL must be provided in query_filter if no query is given.")
         else:
@@ -1171,18 +1504,103 @@ async def search_content(search_request: SearchRequest):
             score_threshold = search_request.score_threshold
             exact = search_request.exact
             with_payload = search_request.with_payload
+            search_mode = str(search_request.search_mode or "dense").strip().lower()
+            if search_mode not in {"dense", "hybrid", "sparse"}:
+                raise HTTPException(status_code=400, detail="search_mode must be one of: dense, hybrid, sparse")
+            effective_score_threshold = score_threshold if search_mode == "dense" else None
+            requested_search_mode = search_mode
+            effective_search_mode = search_mode
+            fallback_reason = None
+
+            try:
+                caps = qdrant_db._get_collection_vector_capabilities()
+            except Exception:
+                caps = {"has_dense": True, "has_sparse": False}
+
+            if search_mode == "hybrid" and not (caps.get("has_dense") and caps.get("has_sparse")):
+                effective_search_mode = "dense"
+                fallback_reason = "collection_missing_dense_or_sparse"
+            elif search_mode == "sparse" and not caps.get("has_sparse"):
+                effective_search_mode = "dense"
+                fallback_reason = "collection_missing_sparse"
             
-            # Use QdrantDB directly for the search with query string
-            results = qdrant_db.search_similar(
-                query=search_request.query,
-                limit=search_request.limit,
-                query_filter=qdrant_filter,
-                score_threshold=score_threshold,
-                exact=exact,
-                with_payload=with_payload
-            )
+            # Use QdrantDB directly for search mode selection.
+            if effective_search_mode == "hybrid":
+                results = qdrant_db.search_similar_hybrid(
+                    query=search_request.query,
+                    limit=search_request.limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=effective_score_threshold,
+                    exact=exact,
+                    with_payload=with_payload,
+                )
+            elif effective_search_mode == "sparse":
+                results = qdrant_db.search_similar_sparse(
+                    query=search_request.query,
+                    limit=search_request.limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=effective_score_threshold,
+                    exact=exact,
+                    with_payload=with_payload,
+                )
+            else:
+                results = qdrant_db.search_similar(
+                    query=search_request.query,
+                    limit=search_request.limit,
+                    query_filter=qdrant_filter,
+                    score_threshold=effective_score_threshold,
+                    exact=exact,
+                    with_payload=with_payload
+                )
             logger.debug("Search results count: %d", len(results))
-            return SearchResponse(results=results, total=len(results))
+            return SearchResponse(
+                results=results,
+                total=len(results),
+                requested_search_mode=requested_search_mode,
+                effective_search_mode=effective_search_mode,
+                fallback_reason=fallback_reason,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/retrieval-evals/run",
+    tags=["3. Search & Chat"],
+    summary="Run retrieval eval pipeline (retrieval + optional ColBERT + cross-encoder)",
+    response_model=RetrievalEvalResponse,
+)
+async def run_retrieval_evals(eval_request: RetrievalEvalRequest):
+    """Run retrieval and reranking stages for evaluation/testing."""
+    try:
+        service = RetrievalEvalService(active_domain=eval_request.active_domain)
+        colbert_top_n = int(
+            eval_request.colbert_top_n
+            if getattr(eval_request, "colbert_top_n", None) is not None
+            else eval_request.max_items_for_cross_encoder
+        )
+        cross_encoder_top_n = int(
+            eval_request.cross_encoder_top_n
+            if getattr(eval_request, "cross_encoder_top_n", None) is not None
+            else eval_request.reranked_top_n
+        )
+        result = service.run_pipeline(
+            query=eval_request.query,
+            search_mode=eval_request.search_mode,
+            top_k=eval_request.top_k,
+            score_threshold=eval_request.score_threshold,
+            query_filter=eval_request.query_filter,
+            with_payload=eval_request.with_payload,
+            exact=eval_request.exact,
+            use_colbert=eval_request.use_colbert,
+            colbert_top_n=colbert_top_n,
+            enable_cross_encoder_rerank=eval_request.enable_cross_encoder_rerank,
+            cross_encoder_top_n=cross_encoder_top_n,
+        )
+        result["payload_echo"] = eval_request.model_dump()
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1594,9 +2012,31 @@ class ToolRegistryUpdateRequest(BaseModel):
     registry: Dict[str, Any]
 
 
+class DomainEmbeddingConfigUpdateRequest(BaseModel):
+    """Request model for writing domain embedding config YAML."""
+
+    registry: Dict[str, Any]
+
+
+class ActiveDomainUpdateRequest(BaseModel):
+    """Request model for setting active domain at runtime."""
+
+    active_domain: str
+
+
 def _prompt_registry_path() -> Path:
     """Resolve configured prompt registry path to absolute path."""
     raw_path = str(getattr(settings, "inference_prompt_registry_path", "") or "").strip() or "prompts/prompt_registry.yaml"
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / candidate
+
+
+def _domain_embedding_config_path() -> Path:
+    """Resolve domain embedding config path to absolute path."""
+    raw_path = str(getattr(settings, "domain_embedding_config_path", "") or "").strip() or "prompts/domain_embedding_config.yaml"
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return candidate
@@ -1730,6 +2170,32 @@ def _validate_tool_registry_shape(registry: Dict[str, Any]) -> None:
                         status_code=400,
                         detail=f"tools[{idx}].artifact.{key} is required when produces_artifact=true",
                     )
+
+
+def _validate_domain_embedding_registry_shape(registry: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize domain embedding config payload."""
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=400, detail="Registry must be a JSON object")
+
+    candidate = registry.get("domains") if isinstance(registry.get("domains"), dict) else registry
+    if not isinstance(candidate, dict):
+        raise HTTPException(status_code=400, detail="Expected object or object with 'domains' mapping")
+
+    try:
+        validated = DomainEmbeddingConfigModel(domains=candidate)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid domain embedding config: {exc}")
+
+    normalized = {k: v.model_dump() for k, v in validated.domains.items()}
+
+    active_domain = str(getattr(settings, "active_domain", "") or "").strip()
+    if active_domain and active_domain not in normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"active_domain '{active_domain}' is not present in domains",
+        )
+
+    return {"domains": normalized}
 
 
 @app.get(
@@ -1913,6 +2379,143 @@ async def tool_registry_page():
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     return FileResponse(os.path.join(frontend_dir, "tool-registry.html"))
 
+
+@app.get(
+    "/domain-embedding-config",
+    tags=["1. UI Pages"],
+    summary="9. Domain Embedding Config editor (HTML)",
+    response_class=HTMLResponse,
+)
+async def domain_embedding_config_page():
+    """Serve the domain embedding config editor page."""
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    return FileResponse(os.path.join(frontend_dir, "domain-embedding-config.html"))
+
+
+@app.get(
+    "/api/domain-embedding-config",
+    tags=["5. Debug"],
+    summary="Get domain embedding config YAML",
+)
+async def get_domain_embedding_config():
+    """Return parsed domain embedding config YAML for UI editing."""
+    path = _domain_embedding_config_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Domain embedding config not found at {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            registry = yaml.safe_load(f) or {}
+
+        candidate = registry.get("domains") if isinstance(registry.get("domains"), dict) else registry
+        domains = sorted(list(candidate.keys())) if isinstance(candidate, dict) else []
+
+        return {
+            "registry_path": str(path),
+            "registry": registry,
+            "domains": domains,
+            "active_domain": str(getattr(settings, "active_domain", "") or ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read domain embedding config: {e}")
+
+
+@app.put(
+    "/api/domain-embedding-config",
+    tags=["5. Debug"],
+    summary="Update domain embedding config YAML",
+)
+async def update_domain_embedding_config(payload: DomainEmbeddingConfigUpdateRequest, request: Request):
+    """Validate and write domain embedding config YAML from editor UI."""
+    enforce_origin_host(request)
+    registry = payload.registry or {}
+    normalized = _validate_domain_embedding_registry_shape(registry)
+
+    path = _domain_embedding_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak")
+
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                previous = f.read()
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(previous)
+
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                {
+                    "active_domain": str(getattr(settings, "active_domain", "") or "").strip() or None,
+                    "domains": normalized.get("domains", {}),
+                },
+                f,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+
+        settings.DOMAIN_EMBEDDING_CONFIG = normalized.get("domains", {})
+
+        return {
+            "ok": True,
+            "registry_path": str(path),
+            "backup_path": str(backup_path) if backup_path.exists() else None,
+            "domains": sorted(list(settings.DOMAIN_EMBEDDING_CONFIG.keys())),
+            "message": "Domain embedding config updated. Restart service to ensure all components pick up new settings.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write domain embedding config: {e}")
+
+
+@app.put(
+    "/api/domain-embedding-config/active-domain",
+    tags=["5. Debug"],
+    summary="Set active domain",
+)
+async def set_active_domain(payload: ActiveDomainUpdateRequest, request: Request):
+    """Set settings.active_domain at runtime after validation."""
+    enforce_origin_host(request)
+
+    requested = str(payload.active_domain or "").strip()
+    if not requested:
+        raise HTTPException(status_code=400, detail="active_domain is required")
+
+    available_domains = getattr(settings, "DOMAIN_EMBEDDING_CONFIG", {}) or {}
+    if requested not in available_domains:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Domain '{requested}' not found. Available: {sorted(list(available_domains.keys()))}",
+        )
+
+    settings.active_domain = requested
+
+    path = _domain_embedding_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_domains = available_domains if isinstance(available_domains, dict) else {}
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                {
+                    "active_domain": settings.active_domain,
+                    "domains": existing_domains,
+                },
+                f,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist active_domain to YAML: {e}")
+
+    return {
+        "ok": True,
+        "active_domain": settings.active_domain,
+        "domains": sorted(list(available_domains.keys())),
+        "message": "Active domain updated for runtime requests.",
+    }
+
 @app.get("/api/config", response_model=ModelConfig, tags=["5. Debug"])
 async def get_model_config():
     """
@@ -1971,6 +2574,51 @@ async def get_model_config():
         rewrite_summary_turns=get_model_setting("rewrite_summary_turns"),
         inference_context_rows=get_model_setting("inference_context_rows"),
     )
+
+
+class DomainConfig(BaseModel):
+    collection_name: str
+    embedding_model_key: str
+    model_type: str
+    vector_type: Optional[str]
+    search_mode: str
+    rerank_model_key: Optional[str] = None
+
+
+@app.get("/api/config/domain/{domain}", response_model=DomainConfig, tags=["5. Debug"])
+async def get_domain_config(domain: str):
+    """
+    Get domain-specific configuration including collection, embedding model, and rerank model.
+    """
+    try:
+        domain_config = settings.DOMAIN_EMBEDDING_CONFIG.get(domain)
+        if not domain_config:
+            raise HTTPException(status_code=404, detail=f"Domain '{domain}' not found")
+        
+        # Get rerank model from local_models_registry.yaml for the domain
+        rerank_model_key = None
+        try:
+            from backend.retrieval.config_loader import get_model_config
+            retrieval_specs = get_model_config("reranker")
+            if retrieval_specs:
+                rerank_model_key = retrieval_specs.get("model_key")
+        except Exception as e:
+            logger.debug(f"Failed to get rerank model config: {e}")
+        
+        return DomainConfig(
+            collection_name=domain_config.get("collection_name", ""),
+            embedding_model_key=domain_config.get("embedding_model_key", ""),
+            model_type=domain_config.get("model_type", "hosted"),
+            vector_type=domain_config.get("vector_type"),
+            search_mode=domain_config.get("search_mode", "dense"),
+            rerank_model_key=rerank_model_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting domain config for '{domain}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get(
     "/api/config/api-defaults",

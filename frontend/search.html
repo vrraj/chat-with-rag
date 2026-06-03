@@ -20,6 +20,7 @@
                 <select id="activeDomain" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
                     <option value="">(default)</option>
                     <option value="mountains">mountains</option>
+                    <option value="oceans">oceans</option>
                     <option value="finance">finance</option>
                 </select>
             </div>
@@ -39,6 +40,15 @@
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Filter by URL (optional)</label>
                     <input type="text" id="searchUrlFilter" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" placeholder="Filter by specific URL">
+                </div>
+
+                <div>
+                    <label for="searchMode" class="block text-sm font-medium text-gray-700">Search Mode</label>
+                    <select id="searchMode" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                        <option value="dense" selected>Dense</option>
+                        <option value="hybrid">Hybrid (dense + sparse)</option>
+                        <option value="sparse">Sparse</option>
+                    </select>
                 </div>
 
                 <div class="grid grid-cols-3 gap-4">

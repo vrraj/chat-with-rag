@@ -18,6 +18,9 @@ WIKI_UA = settings.wiki_user_agent
 DEFAULT_TIMEOUT = int(settings.wiki_timeout_secs)
 MAX_RETRIES = int(settings.wiki_max_retries)
 
+# Reusable session for connection pooling
+_wiki_session = requests.Session()
+
 import re
 
 def clean_mediawiki_text(text: str) -> str:
@@ -45,7 +48,7 @@ def _wiki_get(params: Dict, api_url: str, ua: str) -> Response:
     backoff = 0.5
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            r = requests.get(
+            r = _wiki_session.get(
                 api_url,
                 params=params,
                 headers={
@@ -686,7 +689,7 @@ class MediaWikiExtractor:
         base = self._rest_base_from_api_url()
         rest_url = f"{base}/api/rest_v1/page/html/{title.replace(' ', '_')}"
         headers = {"User-Agent": self.user_agent, "Accept": "text/html"}
-        r = requests.get(rest_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+        r = _wiki_session.get(rest_url, headers=headers, timeout=DEFAULT_TIMEOUT)
         #logger.debug("Wiki: parsoid HTTP %s for %s", r.status_code, rest_url)
         r.raise_for_status()
         return r.text

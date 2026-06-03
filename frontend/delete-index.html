@@ -18,6 +18,7 @@
         <select id="activeDomain" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-red-500 focus:ring-red-500">
           <option value="">(default)</option>
           <option value="mountains">mountains</option>
+          <option value="oceans">oceans</option>
           <option value="finance">finance</option>
         </select>
       </div>
@@ -85,9 +86,38 @@
       }
     }
 
-    const initialDomain = getActiveDomain();
-    if (activeDomainSelect) {
-      activeDomainSelect.value = initialDomain || '';
+    async function initDomainContext() {
+      if (!activeDomainSelect) return;
+      try {
+        const resp = await fetch('/api/ui/runtime-context');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const ctx = await resp.json();
+        const domains = Array.isArray(ctx.domains) ? ctx.domains : [];
+
+        while (activeDomainSelect.options.length > 1) {
+          activeDomainSelect.remove(1);
+        }
+
+        domains.forEach((domain) => {
+          if (domain && domain !== 'default') {
+            const option = document.createElement('option');
+            option.value = domain;
+            option.textContent = domain;
+            activeDomainSelect.appendChild(option);
+          }
+        });
+
+        const backendDomain = String(ctx.active_domain || '').trim();
+        const localDomain = getActiveDomain();
+        const selected = backendDomain || localDomain || '';
+        activeDomainSelect.value = selected;
+        setActiveDomain(selected);
+      } catch (error) {
+        const initialDomain = getActiveDomain();
+        activeDomainSelect.value = initialDomain || '';
+        console.warn('Failed to initialize runtime domain context:', error);
+      }
+
       activeDomainSelect.addEventListener('change', () => {
         setActiveDomain(activeDomainSelect.value);
       });
@@ -206,6 +236,7 @@
 
     fetchPreviewBtn.addEventListener('click', fetchPreview);
     confirmDeleteBtn.addEventListener('click', confirmDelete);
+    initDomainContext();
   </script>
 
   <footer class="text-center text-xs text-gray-500 mt-8">

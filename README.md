@@ -8,7 +8,15 @@ Unlike simple vector-search demos, this project provides a **multi-stage RAG pip
 
 **🚀 Get Started:** See section **[Getting Started](#-getting-started)** to run the system locally.
 
-### 🆕 What's New in v2.0
+## 🆕 What's New in v2.5
+
+- **Local BGE-M3 + ColBERT stack**  
+Run retrieval, optional ColBERT late interaction, and the cross-encoder reranker entirely on-device with FastEmbed’s `BAAI/bge-m3` family, reducing hosted latency while letting you pass more context through the rerank window.
+- **Front-end active-domain switcher.** The chat/search UIs now source domains from `GET /api/ui/runtime-context`, so you can flip collections and prompt overrides directly in the browser without editing backend config or restarting services.
+- **Prompt registry + retrieval auto-routing.** Each request carries `params.active_domain`, and the chat manager wires that through the RetrievalEvalService so the matching Qdrant collection plus embedding/ColBERT/cross-encoder stack are loaded automatically—no manual `config.py` edits between runs.
+
+
+### 🆕 Features
 
 - **Multi‑LLM Pipeline Orchestration**  
 Use different LLM providers and models across pipeline stages through the **vrraj‑llm‑adapter**, based on cost, capabilities, and task suitability.
@@ -40,6 +48,8 @@ Isolation and authorization enforced consistently across APIs and embedded clien
 - **Dual Chat Modes: Stateful and Stateless**  
 Support for both **stateless** (`/chat`) and **stateful** (`/chat/{session_id}`) chat patterns.
 
+
+
 **For additional details, see the [Release Notes 2.0](Release_Notes_2.0.md).**
 
 <p align="center">
@@ -65,7 +75,7 @@ The system runs through two parallel workflows: an **Ingestion Pipeline** (build
 | Pipeline | Flow |
 |---|---|
 | **Ingestion** | `Documents / URLs` → `Load Sources` → `Extract & Parse` → `Chunk & Normalize` → `Metadata Augmentation` → `Embeddings` → `Vector Storage` |
-| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
+| **Chat** | `User Prompt` → `Query Rewrite` → `Retrieval` → `(Optional) ColBERT Late Interaction` → `(Optional) Local Cross-Encoder Rerank` → `Context Assembly` → `LLM Inference` → `Tool Execution` → `Response Synthesis` → `Post-Processing` → `Final Response` |
 
 ```mermaid
 %%{init: {'themeVariables': { 'fontSize': '16px', 'subgraphFontSize': '20px', 'subgraphTitleColor': '#1e6bb8'}}}%%
@@ -79,9 +89,12 @@ graph LR
         direction LR
         U[User Prompt] --> QR[Query Rewrite]
         QR --> Search[Retrieval]
+        Search --> ColBERT[ColBERT Late Interaction (optional)]
+        Search --> R
+        ColBERT --> R[Local Cross-Encoder Rerank (optional)]
 
         %% Return path from Ingestion back to Chat
-        R[Rerank] --> Ctx[Context Assembly] --> Inf[LLM Inference]
+        R --> Ctx[Context Assembly] --> Inf[LLM Inference]
 
         Inf --> Tools{Tool Execution?}
         Tools -- "Yes" --> API[Tool Calls] --> Synth[Response Synthesis] --> Post[Post-Processing]
@@ -97,13 +110,14 @@ graph LR
 
     %% PHYSICAL CONNECTIONS
     Search -- "Query" --> DB
+    DB -- "Results" --> ColBERT
     DB -- "Results" --> R
 
     %% Apply Themes
     %% Using 'core' style for the main entry/exit and database
     class U,Out,DB core;
     %% Using 'feat' style for standard logic steps
-    class QR,Search,R,Ctx,API,Post,S,P,C,D,E feat;
+    class QR,Search,ColBERT,R,Ctx,API,Post,S,P,C,D,E feat;
     %% Using 'highlight' (Cayman Green) for the critical LLM stages
     class Inf,Synth highlight;
 ```
@@ -475,6 +489,111 @@ The prompt registry uses **Jinja2 templating** to safely inject conversation his
 This ensures safe separation of system instructions from dynamic data while maintaining consistent formatting across all pipeline stages.
 
 For detailed configuration options, see the [Configuration Reference](https://github.com/vrraj/chat-with-rag/blob/main/docs/configuration.md#prompt-registry).
+
+---
+
+## 🌐 Domain Embedding Configuration
+
+The system uses a YAML-based domain configuration to map domain names to their embedding models, Qdrant collections, and vector/search settings. This enables domain isolation and runtime domain switching without code changes.
+
+### 📝 Configuration File
+
+- **Path:** `prompts/domain_embedding_config.yaml`
+- **Role:** Defines domain-to-embedding mappings and the default active domain.
+- **Format:**
+
+```yaml
+active_domain: finance
+domains:
+  default:
+    collection_name: document_index
+    embedding_model_key: openai:embed_small
+    model_type: hosted
+    vector_type: null
+    search_mode: dense
+  mountains:
+    collection_name: document_index
+    embedding_model_key: openai:embed_small
+    model_type: hosted
+    vector_type: null
+    search_mode: dense
+  finance:
+    collection_name: document_index_finance
+    embedding_model_key: local:dense_default
+    model_type: local
+    vector_type: hybrid
+    search_mode: hybrid
+```
+
+### 🎯 Active Domain Behavior
+
+The `active_domain` field determines the default domain used by the system when no request-level override is provided. The resolution priority is:
+
+1. **Request-level override** — If `params.active_domain` is sent in a chat/search request, that value is used.
+2. **Environment variable** — If `ACTIVE_DOMAIN` is set in `.env`, it overrides the YAML value.
+3. **YAML file** — The `active_domain` field in `prompts/domain_embedding_config.yaml` is used as the default.
+
+This means:
+- **Users can change domain per request** via dropdowns in `chat.html`, `search.html`, etc., without affecting the global default.
+- **Server restarts preserve the active domain** from YAML (unless env var overrides).
+- **Environment variables take precedence** for production deployments where you want centralized control.
+
+### 🔧 UI Editor
+
+A web UI is available at `/domain-embedding-config` to edit the domain configuration:
+
+- **View and edit** domain mappings (collection names, embedding models, vector types, search modes).
+- **Set the active domain** via a dropdown and "Apply" button.
+- **Save changes** to `prompts/domain_embedding_config.yaml` with automatic backup (`.bak`).
+- **Auto-apply active domain** — Saving the YAML automatically applies the selected active domain.
+
+### 🔄 Frontend Synchronization
+
+All relevant frontend screens (`chat.html`, `search.html`, `delete-index.html`, `list-docs.html`, home/ingestion) initialize their active domain selectors from a unified API endpoint:
+
+- **Endpoint:** `GET /api/ui/runtime-context`
+- **Response:**
+
+```json
+{
+  "active_domain": "finance",
+  "domains": ["mountains", "oceans", "finance"]
+}
+```
+
+This ensures consistency across the UI — when you change the active domain in the YAML editor or via API, all screens reflect the new value on reload.
+
+### 📋 Domain Configuration Fields
+
+| Field | Description | Valid Values |
+|-------|-------------|--------------|
+| `collection_name` | Qdrant collection name for the domain | Any valid Qdrant collection |
+| `embedding_model_key` | Embedding model identifier from model registry | e.g., `openai:embed_small`, `gemini:native-embed`, `local:dense_default` |
+| `model_type` | Whether the model is hosted or local | `hosted`, `local` |
+| `vector_type` | Vector storage type (null for default, or named vectors) | `null`, `dense`, `hybrid` |
+| `search_mode` | Retrieval search mode | `dense`, `hybrid`, `sparse` |
+
+> **Note:** When `vector_type` is `hybrid`, `search_mode` must also be `hybrid`. This is validated on load.
+
+
+### ⚡ Local Retrieval + Rerank Options (BGE-M3 + ColBERT)
+
+- **Local BGE-M3 embeddings.** The FastEmbed build of `BAAI/bge-m3` can simultaneously produce dense semantic vectors, lexical (sparse) representations, and ColBERT-style token grids, letting you keep the entire retrieval stack on-box for lower token usage and zero hosted-network latency. Use `prompts/local_models_registry.yaml` to point the `dense`, `sparse`, and `late_interaction` entries at the BGE-M3 checkpoint; the helper script in `scripts/test_bge-m3.py` validates that the model exposes all three capabilities in one artifact (@scripts/test_bge-m3.py#3-28).
+- **Cross-encoder rerank with the same checkpoint.** Because the reranker stage also resolves from `local_models_registry.yaml`, you can reuse the BGE family locally (for example, `BAAI/bge-m3` or `BAAI/bge-reranker-base`) so cross-encoder scoring happens without hosted limits and you can safely push more context (higher `cross_encoder_top_n`) through the rerank window (@prompts/local_models_registry.yaml#53-86; @backend/retrieval/retrieval_eval_service.py#202-252).
+- **ColBERT late interaction stage.** When `use_colbert` is enabled, retrieved documents are rescored with the FastEmbed Late Interaction model before they are handed to the cross-encoder, keeping code/token-heavy domains precise at the token level (@backend/retrieval/retrieval_eval_service.py#149-200).
+
+#### Tuning the pipeline from chat/search requests
+
+The chat/search APIs expose the retrieval parameters so you can opt into the new flow per request (UI dropdowns set the same keys) (@backend/chat/chat_manager.py#3011-3151):
+
+| Param | What it controls |
+|-------|------------------|
+| `active_domain` | Chooses which domain entry (and therefore which embedding/rerank stack) to load. |
+| `search_mode` | Switch between dense, sparse, or hybrid retrieval before reranking. |
+| `use_colbert` + `colbert_top_n` | Enable ColBERT late interaction scoring and decide how many candidates it forwards to the reranker. |
+| `enable_cross_encoder_rerank` + `cross_encoder_top_n` | Toggle the cross-encoder stage and control how many ColBERT-ranked (or raw) docs are rescored locally. |
+
+This staging lets you mix and match: keep BGE-M3 embeddings for retrieval, optionally apply ColBERT for token-level precision, and finish with a cross-encoder that shares the same local weights—maximizing consistency while sidestepping hosted rate limits.
 
 
 ---
