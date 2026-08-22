@@ -1,5 +1,14 @@
 # Chat with Your Docs: End-to-End RAG Pipeline
 
+> ## Project status
+>
+> This repository is no longer actively maintained. Development continues in
+> [Aina-Veris](https://github.com/vrraj/aina-veris), which retains the RAG
+> foundation while substantially refactoring the system for maintainability,
+> modularity, and extensibility. Use Aina-Veris for new deployments and
+> contributions; this repository remains available as the earlier reference
+> implementation.
+
 
 A modular **Tool-Assisted Retrieval-Augmented Generation (RAG) framework** for building AI applications that generate grounded answers with **citations** from structured and unstructured knowledge sources.
 
